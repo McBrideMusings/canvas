@@ -22,7 +22,10 @@ the terminal all day.
   and Stop turns each finished turn into a card. `canvas post <file|->` posts HTML
   from a file or stdin into the calling session's open card, and unlike a hook
   it fails loudly — one line on stderr, non-zero exit — on any error.
-- `skill/canvas/` — the skill agents load to know how to post.
+- `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
+  repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and
+  Stop to `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents
+  load to know how to post. `admin deploy` installs the `canvas` binary there.
 
 ## Rules
 

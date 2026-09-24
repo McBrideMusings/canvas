@@ -1,0 +1,6 @@
+{
+  "name": "canvas",
+  "version": "0.1.0",
+  "author": { "name": "pierce" },
+  "description": "Session and Stop hooks that feed canvasd, plus the canvas skill for posting HTML."
+}

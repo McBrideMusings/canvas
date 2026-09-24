@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace-manifest.json",
+  "name": "canvas",
+  "owner": { "name": "pierce" },
+  "description": "Canvas: a live stream of posts from every Claude Code session on this Mac.",
+  "plugins": [
+    {
+      "name": "canvas",
+      "source": "./plugin",
+      "description": "Session and Stop hooks that feed canvasd, plus the canvas skill for posting HTML."
+    }
+  ]
+}
