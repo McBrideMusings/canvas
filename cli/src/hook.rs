@@ -15,6 +15,10 @@ struct HookInput {
     cwd: String,
     #[serde(default)]
     transcript_path: String,
+    /// The turn's final reply. Claude Code is often still writing the
+    /// transcript when Stop fires, so this is the only reliable copy of it.
+    #[serde(default)]
+    last_assistant_message: String,
 }
 
 pub fn run(event: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +35,11 @@ pub fn run(event: &str) -> Result<(), Box<dyn std::error::Error>> {
             client::end_session(&input.session_id)?;
         }
         "stop" => {
-            let entries = transcript::entries_since_last_prompt(&input.transcript_path)?;
+            let mut entries = transcript::entries_since_last_prompt(&input.transcript_path)?;
+            entries.push(crate::extract::TranscriptEntry {
+                assistant_text: vec![input.last_assistant_message],
+                ..Default::default()
+            });
             let extracted = crate::extract::extract(&entries);
             client::post_turn(
                 &input.session_id,
