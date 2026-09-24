@@ -136,8 +136,16 @@
 
     // A rebuild is about to detach every row, including any button an armed
     // confirm is pointing at — clear it first so the state machine never
-    // holds a reference to a node that is no longer in the document.
+    // holds a reference to a node that is no longer in the document, then
+    // re-arm the rebuilt button for the same session with the time it had
+    // left, so a card arriving mid-confirm doesn't cancel the clear.
+    let rearm = null;
     if (pendingConfirm && sidebarEl.contains(pendingConfirm.button)) {
+      rearm = {
+        sessionId: pendingConfirm.button.dataset.sessionId,
+        opts: pendingConfirm.opts,
+        ms: pendingConfirm.deadline - Date.now(),
+      };
       clearPendingConfirm();
     }
 
@@ -151,6 +159,13 @@
       sidebarEl.appendChild(
         buildSidebarRow(s.id, s.name, s, selectedSessionId === s.id, focusedKey)
       );
+    }
+
+    if (rearm && rearm.ms > 0) {
+      const btn = sidebarEl.querySelector(
+        `.sidebar-row-delete[data-session-id="${CSS.escape(rearm.sessionId)}"]`
+      );
+      if (btn) armConfirm(btn, rearm.opts, rearm.ms);
     }
   }
 
@@ -232,7 +247,8 @@
     pendingConfirm = null;
   }
 
-  function armConfirm(button, { idleLabel, idleText, confirmLabel, confirmText, onConfirm }) {
+  function armConfirm(button, opts, ms = 4000) {
+    const { idleLabel, idleText, confirmLabel, confirmText, onConfirm } = opts;
     if (pendingConfirm && pendingConfirm.button === button) {
       clearPendingConfirm();
       onConfirm();
@@ -242,9 +258,11 @@
     button.textContent = confirmText;
     button.setAttribute("aria-label", confirmLabel);
     button.classList.add("confirming");
-    const timeoutId = setTimeout(clearPendingConfirm, 4000);
+    const timeoutId = setTimeout(clearPendingConfirm, ms);
     pendingConfirm = {
       button,
+      opts,
+      deadline: Date.now() + ms,
       timeoutId,
       revert() {
         button.textContent = idleText;
