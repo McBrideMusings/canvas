@@ -95,9 +95,9 @@ pub async fn upsert_session(
             ended_at,
         };
         inner.sessions.insert(session.id.clone(), session.clone());
+        state.publish(CanvasEvent::SessionUpserted(session.clone()));
         session
     };
-    state.publish(CanvasEvent::SessionUpserted(session.clone()));
 
     (StatusCode::OK, Json(session))
 }
@@ -132,17 +132,16 @@ pub async fn end_session(
         let mut inner = state.inner.write().await;
         if let Some(session) = inner.sessions.get_mut(&id) {
             session.ended_at = Some(now());
-            Some(session.clone())
+            let session = session.clone();
+            state.publish(CanvasEvent::SessionUpserted(session.clone()));
+            Some(session)
         } else {
             None
         }
     };
 
     match updated {
-        Some(session) => {
-            state.publish(CanvasEvent::SessionUpserted(session.clone()));
-            (StatusCode::OK, Json(Some(session))).into_response()
-        }
+        Some(session) => (StatusCode::OK, Json(Some(session))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -155,7 +154,7 @@ pub async fn post_turn(
 
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
-    let (created_session, card) = {
+    let card = {
         let mut inner = state.inner.write().await;
         let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
         let card = match inner.open_card_index(&req.session_id) {
@@ -187,17 +186,19 @@ pub async fn post_turn(
                 }
             }
         };
-        (created_session, card)
+        // Published under the lock, so the persisted log records changes in
+        // the order they were applied.
+        if let Some(session) = created_session {
+            state.publish(CanvasEvent::SessionUpserted(session));
+        }
+        if let Some(card) = &card {
+            state.publish(CanvasEvent::CardUpserted(card.clone()));
+        }
+        card
     };
-    if let Some(session) = created_session {
-        state.publish(CanvasEvent::SessionUpserted(session));
-    }
 
     match card {
-        Some(card) => {
-            state.publish(CanvasEvent::CardUpserted(card.clone()));
-            (StatusCode::OK, Json(Some(card))).into_response()
-        }
+        Some(card) => (StatusCode::OK, Json(Some(card))).into_response(),
         None => (StatusCode::OK, Json(Option::<TurnCard>::None)).into_response(),
     }
 }
@@ -208,7 +209,7 @@ pub async fn post_explicit(
 ) -> impl IntoResponse {
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
-    let (created_session, card) = {
+    let card = {
         let mut inner = state.inner.write().await;
         let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
         let card = match inner.open_card_index(&req.session_id) {
@@ -233,13 +234,15 @@ pub async fn post_explicit(
                 card
             }
         };
-        (created_session, card)
+        // Published under the lock, so the persisted log records changes in
+        // the order they were applied.
+        if let Some(session) = created_session {
+            state.publish(CanvasEvent::SessionUpserted(session));
+        }
+        state.publish(CanvasEvent::CardUpserted(card.clone()));
+        card
     };
-    if let Some(session) = created_session {
-        state.publish(CanvasEvent::SessionUpserted(session));
-    }
 
-    state.publish(CanvasEvent::CardUpserted(card.clone()));
     (StatusCode::OK, Json(card)).into_response()
 }
 
@@ -256,14 +259,16 @@ pub async fn delete_card(
         let mut inner = state.inner.write().await;
         let before = inner.cards.len();
         inner.cards.retain(|c| c.id != id);
-        inner.cards.len() != before
+        let removed = inner.cards.len() != before;
+        if removed {
+            state.publish(CanvasEvent::CardRemoved(id));
+        }
+        removed
     };
 
     if !removed {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    state.publish(CanvasEvent::CardRemoved(id));
     StatusCode::OK.into_response()
 }
 
@@ -282,6 +287,7 @@ pub async fn delete_session(
             false
         } else {
             inner.cards.retain(|c| c.session_id != id);
+            state.publish(CanvasEvent::SessionRemoved(id));
             true
         }
     };
@@ -289,8 +295,6 @@ pub async fn delete_session(
     if !removed {
         return StatusCode::NOT_FOUND.into_response();
     }
-
-    state.publish(CanvasEvent::SessionRemoved(id));
     StatusCode::OK.into_response()
 }
 
