@@ -88,22 +88,14 @@
       // A thumbtack drawn upright — round head, flat collar, tapering body
       // to a point — then tilted 45° like SF Symbols' "pin". The group
       // rotates as a whole so the head and body stay one rigid shape.
-      case "pin": {
-        const group = svgEl("g", { transform: "rotate(45 12 12)" });
-        group.appendChild(svgEl("circle", { cx: "12", cy: "7", r: "3.2" }));
-        group.appendChild(svgEl("path", { d: "M8.8 9.6h6.4L12 20z" }));
-        svg.appendChild(group);
-        break;
-      }
+      // An upright pushpin: flat cap, body flaring to a wide collar, needle.
+      case "pin":
       case "pin-fill": {
-        const group = svgEl("g", { transform: "rotate(45 12 12)" });
-        group.appendChild(
-          svgEl("circle", { cx: "12", cy: "7", r: "3.2", fill: "currentColor", stroke: "none" })
-        );
-        group.appendChild(
-          svgEl("path", { d: "M8.8 9.6h6.4L12 20z", fill: "currentColor", stroke: "none" })
-        );
-        svg.appendChild(group);
+        const fill = name === "pin-fill" ? "currentColor" : "none";
+        svg.appendChild(svgEl("path", { d: "M8 3h8M9.5 3l-1 8.5M14.5 3l1 8.5", fill: "none" }));
+        svg.appendChild(svgEl("path", { d: "M9.5 3h5l1 8.5h-7z", fill, stroke: "none" }));
+        svg.appendChild(svgEl("rect", { x: "6", y: "11.5", width: "12", height: "2.5", rx: "1.25", fill }));
+        svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
         break;
       }
       default:
