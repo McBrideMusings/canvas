@@ -17,7 +17,9 @@
         "height": 720,
         "resizable": true,
         "fullscreen": false,
-        "visible": true
+        "visible": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
