@@ -12,6 +12,45 @@
   const bannerEl = document.getElementById("disconnected-banner");
   const overlayEl = document.getElementById("image-overlay");
   const overlayImgEl = document.getElementById("image-overlay-img");
+  const layoutEl = document.querySelector(".layout");
+  const sidebarToggleEl = document.getElementById("sidebar-toggle");
+
+  const SIDEBAR_HIDDEN_KEY = "canvas.sidebarHidden";
+
+  // localStorage can throw (private browsing, blocked site data) — the
+  // toggle still has to work within the page's own lifetime even then.
+  function loadSidebarHidden() {
+    try {
+      return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function saveSidebarHidden(hidden) {
+    try {
+      localStorage.setItem(SIDEBAR_HIDDEN_KEY, hidden ? "1" : "0");
+    } catch (e) {}
+  }
+
+  let sidebarHidden = loadSidebarHidden();
+
+  function applySidebarHidden() {
+    layoutEl.classList.toggle("sidebar-hidden", sidebarHidden);
+    sidebarToggleEl.setAttribute("aria-expanded", sidebarHidden ? "false" : "true");
+    sidebarToggleEl.setAttribute(
+      "aria-label",
+      sidebarHidden ? "Show sessions" : "Hide sessions"
+    );
+  }
+
+  applySidebarHidden();
+
+  sidebarToggleEl.addEventListener("click", () => {
+    sidebarHidden = !sidebarHidden;
+    applySidebarHidden();
+    saveSidebarHidden(sidebarHidden);
+  });
 
   function relativeTime(iso) {
     const then = new Date(iso).getTime();
