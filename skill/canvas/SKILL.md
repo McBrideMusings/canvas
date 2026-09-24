@@ -12,8 +12,9 @@ carry links, file paths, images, and posted HTML.
 ## What to post
 
 Post plans, designs, and structured explanations — anything a diagram, a
-layout, or formatted HTML would make clearer than a wall of chat text. A
-short answer or a one-line status update doesn't need a post.
+layout, or formatted HTML would make clearer than a wall of chat text — as
+self-contained HTML at the end of the turn that produced them. A short answer
+or a one-line status update doesn't need a post.
 
 **Never post links, file paths, or images by hand.** The `Stop` hook already
 pulls those out of the turn's own text and tool calls and attaches them to
