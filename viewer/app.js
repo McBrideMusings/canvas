@@ -198,7 +198,8 @@
     );
   }
 
-  // Full rebuild — only for the initial load, where every card is new anyway.
+  // Full rebuild — used for the initial load and for resyncing after an SSE
+  // reconnect, where cards may have changed without the browser seeing it.
   function bootstrapRender() {
     renderSidebar();
     const sorted = sortedCards();
@@ -267,9 +268,18 @@
 
   function connectEvents() {
     const source = new EventSource("/api/events");
+    let hasConnectedOnce = false;
 
     source.addEventListener("open", () => {
       bannerEl.hidden = true;
+      // A reconnect (not the first connection) means events published while
+      // this browser was disconnected went to a broadcast channel with no
+      // subscriber and are gone for good — re-fetch the full snapshot so the
+      // view catches back up instead of silently missing them forever.
+      if (hasConnectedOnce) {
+        loadState();
+      }
+      hasConnectedOnce = true;
     });
 
     source.addEventListener("error", () => {

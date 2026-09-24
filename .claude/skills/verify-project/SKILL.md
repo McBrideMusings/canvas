@@ -45,7 +45,7 @@ The API is the primary surface; the viewer renders whatever the API holds. Drive
 ```
 curl -s -X POST http://127.0.0.1:8231/api/sessions \
   -H 'content-type: application/json' \
-  -d '{"sessionId":"s1","cwd":"/Users/me/Projects/canvas","claudePid":11111}'
+  -d '{"session_id":"s1","cwd":"/Users/me/Projects/canvas","claude_pid":11111}'
 ```
 
 **Viewer, with Playwright** (headless Chrome via `--headless --screenshot` has hung in
