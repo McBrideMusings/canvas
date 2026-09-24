@@ -5,9 +5,19 @@ use tauri::{Manager, WindowEvent};
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
+// Same env var the CLI already reads (cli/src/client.rs) to point at a
+// non-default canvasd. The main window's waiting page (app/dist/index.html)
+// invokes this command to learn where to poll and, once canvasd answers,
+// where to navigate itself.
+#[tauri::command]
+fn canvas_url() -> String {
+    std::env::var("CANVAS_URL").unwrap_or_else(|_| "http://127.0.0.1:8229".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![canvas_url])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

@@ -9,9 +9,12 @@ the terminal all day.
 - `canvasd/` — Rust daemon (axum). Listens on `127.0.0.1:8229`, holds the newest
   500 posts in memory, pushes new posts to viewers over SSE, serves `viewer/`.
   Runs as a launchd agent (`com.piercemakes.canvasd`).
-- `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon,
-  pointed at `canvasd`. Its own Cargo workspace, outside the root one. It holds
-  no state; quitting it loses nothing.
+- `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
+  The window loads a local waiting page (`app/dist/index.html`) that polls
+  canvasd and navigates to it once it answers, so a not-yet-started or
+  restarting canvasd never leaves the window on a dead error page. Its own
+  Cargo workspace, outside the root one. It holds no state; quitting it loses
+  nothing.
 - `viewer/` — plain `index.html` + JS, no build step. Sidebar of sessions
   ("All" by default), stream of turn cards.
 - `cli/` — the `canvas` binary. `canvas hook session-start|session-end|stop` reads

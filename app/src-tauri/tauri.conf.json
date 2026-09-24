@@ -7,11 +7,12 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "Canvas",
-        "url": "http://127.0.0.1:8229",
+        "url": "index.html",
         "width": 1100,
         "height": 720,
         "resizable": true,
