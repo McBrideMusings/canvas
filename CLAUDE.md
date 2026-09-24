@@ -6,22 +6,26 @@ the terminal all day.
 
 ## Map
 
-- `canvasd/` — Rust daemon (axum). Listens on `127.0.0.1:8229`, holds the newest
-  500 posts in memory, pushes new posts to viewers over SSE, serves `viewer/`.
-  Runs as a launchd agent (`com.piercemakes.canvasd`).
+- `canvasd/` — library crate (axum): the router, in-memory state (newest 500
+  posts, evicted oldest-first), SSE push to viewers, and `viewer/` asset
+  serving. No binary of its own — `canvas daemon` runs it.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The window loads a local waiting page (`app/dist/index.html`) that polls
-  canvasd and navigates to it once it answers, so a not-yet-started or
-  restarting canvasd never leaves the window on a dead error page. Its own
+  the daemon and navigates to it once it answers, so a not-yet-started or
+  restarting daemon never leaves the window on a dead error page. Its own
   Cargo workspace, outside the root one. It holds no state; quitting it loses
   nothing.
 - `viewer/` — plain `index.html` + JS, no build step. Sidebar of sessions
   ("All" by default), stream of turn cards.
-- `cli/` — the `canvas` binary. `canvas hook session-start|session-end|stop` reads
-  Claude Code hook JSON on stdin: SessionStart and SessionEnd register sessions,
-  and Stop turns each finished turn into a card. `canvas post <file|->` posts HTML
-  from a file or stdin into the calling session's open card, and unlike a hook
-  it fails loudly — one line on stderr, non-zero exit — on any error.
+- `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
+  `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
+  override), and runs as a launchd agent (`com.piercemakes.canvasd`).
+  `canvas hook session-start|session-end|stop` reads Claude Code hook JSON on
+  stdin: SessionStart and SessionEnd register sessions, and Stop turns each
+  finished turn into a card. `canvas post <file|->` posts HTML from a file or
+  stdin into the calling session's open card, and unlike a hook it fails
+  loudly — one line on stderr, non-zero exit — on any error. Hook dispatch
+  never starts a tokio runtime; only `canvas daemon` does.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and
   Stop to `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents
@@ -29,7 +33,7 @@ the terminal all day.
 
 ## Rules
 
-- A hook never slows a Claude session: every request to `canvasd` has a 1s
+- A hook never slows a Claude session: every request to the daemon has a 1s
   timeout and the hook exits 0 on any failure.
 - HTML posts render in `<iframe sandbox="allow-scripts">` (no `allow-same-origin`)
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no

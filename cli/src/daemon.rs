@@ -1,8 +1,12 @@
 use canvasd::build_router;
 use canvasd::state::AppState;
 
-#[tokio::main]
-async fn main() {
+pub fn run() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
+    rt.block_on(serve());
+}
+
+async fn serve() {
     let port: u16 = std::env::var("CANVAS_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
