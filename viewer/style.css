@@ -1,0 +1,158 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  background: #f4f3ef;
+  color: #1a1a1a;
+}
+
+.banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #b45309;
+  color: #fff;
+  text-align: center;
+  padding: 6px 12px;
+}
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  flex: 0 0 200px;
+  background: #f4f3ef;
+  border-right: 1px solid #e2e0d8;
+  padding: 16px 0;
+}
+
+.sidebar-row {
+  padding: 8px 20px;
+  cursor: pointer;
+  color: #444;
+}
+
+.sidebar-row.selected {
+  font-weight: 600;
+  color: #111;
+}
+
+.sidebar-row:hover {
+  background: #ece9e0;
+}
+
+.stream {
+  flex: 1;
+  padding: 24px;
+  max-width: 900px;
+}
+
+.empty-state {
+  color: #666;
+  padding: 40px 8px;
+  max-width: 480px;
+  line-height: 1.5;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e2e0d8;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.card-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #eee;
+  font-weight: 600;
+}
+
+.card-header .time {
+  font-weight: 400;
+  color: #888;
+  margin-left: 6px;
+}
+
+.card-body {
+  padding: 12px 16px;
+}
+
+.card-body iframe {
+  width: 100%;
+  border: none;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.card-image {
+  max-width: 100%;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  cursor: zoom-in;
+  display: block;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: #f4f3ef;
+}
+
+.row .row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2563eb;
+}
+
+.row.path-row .row-text {
+  color: #1a1a1a;
+}
+
+.row button.copy-btn {
+  border: 1px solid #ddd;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.image-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  cursor: zoom-out;
+}
+
+.image-overlay img {
+  max-width: 92vw;
+  max-height: 92vh;
+}
+
+[hidden] {
+  display: none !important;
+}
