@@ -22,8 +22,6 @@ the terminal all day.
   and Stop turns each finished turn into a card. `canvas post <file|->` posts HTML
   from a file or stdin into the calling session's open card, and unlike a hook
   it fails loudly — one line on stderr, non-zero exit — on any error.
-- `scripts/canvasd-service.sh` — installs and controls the launchd agent with
-  plain `launchctl`; `admin deploy` and `admin service` call it.
 - `skill/canvas/` — the skill agents load to know how to post.
 
 ## Rules
