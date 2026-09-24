@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Canvas</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="disconnected-banner" class="banner" hidden>Reconnecting to canvasd…</div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-row selected" data-session-id="">All</div>
+    </aside>
+    <main class="stream" id="stream">
+      <div class="empty-state" id="empty-state">
+        No posts yet. Canvas shows links, files and images from your Claude sessions as they work.
+      </div>
+      <div id="cards"></div>
+    </main>
+  </div>
+  <div id="image-overlay" class="image-overlay" hidden>
+    <img id="image-overlay-img" src="" alt="" />
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
