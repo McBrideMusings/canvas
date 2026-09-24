@@ -10,6 +10,8 @@ pub const CARD_RING_CAPACITY: usize = 500;
 pub enum CanvasEvent {
     SessionUpserted(Session),
     CardUpserted(TurnCard),
+    CardRemoved(String),
+    SessionRemoved(String),
 }
 
 pub struct Inner {

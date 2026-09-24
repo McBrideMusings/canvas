@@ -33,6 +33,21 @@ fn get(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// `host` simulates the `Host` header a real connection would carry (the
+/// `oneshot` test harness never opens a real socket, so nothing sets it for
+/// us). Every real request to canvasd carries one at whichever of
+/// `127.0.0.1:<port>` or `localhost:<port>` the client connected to.
+fn delete(uri: &str, origin: Option<&str>, host: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("host", host);
+    if let Some(origin) = origin {
+        builder = builder.header("origin", origin);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 #[tokio::test]
 async fn root_serves_viewer() {
     let response = app().oneshot(get("/")).await.unwrap();
@@ -336,6 +351,197 @@ async fn events_endpoint_is_sse() {
         .unwrap()
         .to_string();
     assert!(content_type.starts_with("text/event-stream"));
+}
+
+async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str, claude_pid: i64) -> TurnCard {
+    app.clone()
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": session_id, "cwd": cwd, "claude_pid": claude_pid}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/turns",
+            json!({"session_id": session_id, "links": ["https://example.com"], "paths": [], "images": []}),
+        ))
+        .await
+        .unwrap();
+    json_body(response).await
+}
+
+#[tokio::test]
+async fn delete_card_removes_it_from_state() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card.id),
+            None,
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.iter().all(|c| c.id != card.id));
+}
+
+#[tokio::test]
+async fn delete_unknown_card_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(delete("/api/cards/nope", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_session_removes_session_and_its_cards_but_not_others() {
+    let app = app();
+    let card1 = seed_card(&app, "s1", "/tmp/proj", 1).await;
+    let card2 = seed_card(&app, "s2", "/tmp/proj2", 2).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/s1", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.iter().all(|s| s.id != "s1"));
+    assert!(state.cards.iter().all(|c| c.id != card1.id));
+    assert!(state.sessions.iter().any(|s| s.id == "s2"));
+    assert!(state.cards.iter().any(|c| c.id == card2.id));
+}
+
+#[tokio::test]
+async fn delete_session_rejects_cross_origin_and_removes_nothing() {
+    let app = app();
+    seed_card(&app, "s1", "/tmp/proj", 1).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            "/api/sessions/s1",
+            Some("https://evil.example"),
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.iter().any(|s| s.id == "s1"));
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            "/api/sessions/s1",
+            Some("http://127.0.0.1:8242"),
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn delete_unknown_session_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/nope", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn delete_card_rejects_cross_origin_and_removes_nothing() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card.id),
+            Some("https://evil.example"),
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.iter().any(|c| c.id == card.id));
+}
+
+#[tokio::test]
+async fn delete_card_rejects_https_origin_even_with_matching_host_and_port() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card.id),
+            Some("https://127.0.0.1:8242"),
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.iter().any(|c| c.id == card.id));
+}
+
+#[tokio::test]
+async fn delete_card_accepts_same_origin_127_and_localhost() {
+    let app = app();
+    let card1 = seed_card(&app, "s1", "/tmp/proj", 1).await;
+    let card2 = seed_card(&app, "s2", "/tmp/proj2", 2).await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card1.id),
+            Some("http://127.0.0.1:8242"),
+            "127.0.0.1:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card2.id),
+            Some("http://localhost:8242"),
+            "localhost:8242",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.is_empty());
 }
 
 fn urlencoding_encode(s: &str) -> String {
