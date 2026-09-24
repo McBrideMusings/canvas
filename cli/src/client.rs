@@ -19,15 +19,24 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// Serialize `body` and POST it to `path` under `base_url()`. A body that
+/// fails to serialize still gets sent (as `null`) rather than panicking or
+/// short-circuiting the request. The raw `ureq::Result` is returned unchanged
+/// so each caller keeps its own handling: the hook calls just propagate it,
+/// while `post_explicit` inspects it to build its one-line error messages.
+fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<ureq::Response, ureq::Error> {
+    agent()
+        .post(&format!("{}{}", base_url(), path))
+        .send_json(serde_json::to_value(body).unwrap_or_default())
+}
+
 pub fn upsert_session(session_id: &str, cwd: &str, claude_pid: u32) -> Result<(), ureq::Error> {
     let body = UpsertSessionRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
         claude_pid,
     };
-    agent()
-        .post(&format!("{}/api/sessions", base_url()))
-        .send_json(serde_json::to_value(body).unwrap_or_default())?;
+    post_json("/api/sessions", body)?;
     Ok(())
 }
 
@@ -50,9 +59,7 @@ pub fn post_turn(
         paths,
         images,
     };
-    agent()
-        .post(&format!("{}/api/turns", base_url()))
-        .send_json(serde_json::to_value(body).unwrap_or_default())?;
+    post_json("/api/turns", body)?;
     Ok(())
 }
 
@@ -62,9 +69,7 @@ pub fn post_turn(
 /// message for the 404 canvasd returns when no live session claims this pid.
 pub fn post_explicit(claude_pid: u32, html: String) -> Result<(), String> {
     let body = PostRequest { claude_pid, html };
-    let result = agent()
-        .post(&format!("{}/api/posts", base_url()))
-        .send_json(serde_json::to_value(body).unwrap_or_default());
+    let result = post_json("/api/posts", body);
 
     match result {
         Ok(_) => Ok(()),
