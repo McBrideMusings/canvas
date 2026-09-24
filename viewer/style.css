@@ -123,6 +123,13 @@ body {
   white-space: nowrap;
 }
 
+.sidebar-row-repo {
+  font-size: 12px;
+  color: #666;
+  margin-top: 1px;
+  overflow-wrap: anywhere;
+}
+
 .sidebar-row-meta {
   font-size: 12px;
   color: #888;
@@ -226,6 +233,12 @@ body {
 
 .card-header-info {
   min-width: 0;
+}
+
+.card-header .session-repo {
+  font-weight: 400;
+  color: #666;
+  margin-left: 6px;
 }
 
 .card-header .time {

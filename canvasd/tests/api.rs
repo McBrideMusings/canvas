@@ -87,6 +87,67 @@ async fn upsert_and_end_session() {
     assert!(s.ended_at.is_some());
 }
 
+/// A throwaway git checkout whose `origin` is `remote`, plus a linked
+/// worktree of it.
+fn git_checkout_with_origin(remote: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("canvasd-repo-{}", uuid::Uuid::new_v4()));
+    let main = root.join("main");
+    let linked = root.join("linked");
+    std::fs::create_dir_all(&main).unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["remote", "add", "origin", remote]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&["worktree", "add", "-q", linked.to_str().unwrap()]);
+    (main, linked)
+}
+
+#[tokio::test]
+async fn sessions_record_the_github_repo_of_their_cwd() {
+    let app = app();
+    let (main, linked) = git_checkout_with_origin("git@github.com:octo/hello.git");
+
+    // SessionStart in the main checkout.
+    let response = app
+        .clone()
+        .oneshot(post("/api/sessions", json!({"session_id": "r1", "cwd": main})))
+        .await
+        .unwrap();
+    let session: Session = json_body(response).await;
+    assert_eq!(session.repo.as_deref(), Some("octo/hello"));
+
+    // A post for a session the daemon never saw, in a linked worktree.
+    app.clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "r2", "cwd": linked, "html": "<p>x</p>"}),
+        ))
+        .await
+        .unwrap();
+
+    // Outside any git checkout.
+    app.clone()
+        .oneshot(post("/api/sessions", json!({"session_id": "r3", "cwd": "/"})))
+        .await
+        .unwrap();
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let repo = |id: &str| state.sessions.iter().find(|s| s.id == id).unwrap().repo.clone();
+    assert_eq!(repo("r2").as_deref(), Some("octo/hello"));
+    assert_eq!(repo("r3"), None);
+
+    std::fs::remove_dir_all(main.parent().unwrap()).unwrap();
+}
+
 #[tokio::test]
 async fn empty_turn_with_no_open_card_creates_nothing() {
     let app = app();

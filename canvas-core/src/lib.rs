@@ -10,6 +10,10 @@ pub struct Session {
     pub cwd: String,
     /// cwd basename, computed on upsert.
     pub name: String,
+    /// `owner/repo` of the cwd's `origin` remote when it points at
+    /// github.com, read once when the daemon first learns of the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
