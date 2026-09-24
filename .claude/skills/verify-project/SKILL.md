@@ -77,6 +77,40 @@ Also run the API test suite and paste the pass count:
 cargo test --workspace --manifest-path <repo>/Cargo.toml
 ```
 
+## Hooks CLI (`cli/`, the `canvas` binary)
+
+Build with `cargo build -p canvas`. Point it at your spare-port canvasd with `CANVAS_URL`:
+
+```
+echo '{"session_id":"t1","cwd":"/Users/me/Projects/canvas"}' | CANVAS_URL=http://127.0.0.1:8231 target/debug/canvas hook session-start
+echo '{"session_id":"t1","cwd":"/Users/me/Projects/canvas","transcript_path":"<real ~/.claude/projects/*/*.jsonl>"}' | CANVAS_URL=http://127.0.0.1:8231 target/debug/canvas hook stop
+```
+
+Pass: `/api/state` gains a card with that transcript's last-turn links/paths/images.
+Loop over the 15 newest transcripts — some end in an empty turn and correctly produce
+no card. Silence check: with `CANVAS_URL=http://10.255.255.1:8229` (never answers)
+each hook exits 0, prints nothing, in about 1.0s.
+
+The context-mode hook blocks a bare `curl` Bash call; inside a `bash <script>` it runs,
+or use `python3 -c` with `urllib.request`.
+
+## Canvas.app and the launchd agent
+
+`admin deploy` from the main checkout installs `~/.local/bin/canvasd` under launchd
+(`com.piercemakes.canvasd`) and copies `/Applications/Canvas.app`. It runs the real
+agent on 8229, so seed it with python and clear it afterwards with
+`launchctl kickstart -k gui/$(id -u)/com.piercemakes.canvasd`.
+
+- Service: `launchctl print gui/$(id -u)/com.piercemakes.canvasd | grep -E '^\s*(state|pid) ='`
+  shows `state = running`. `kill -9` its pid; within 2s a new pid serves 200 on 8229.
+- Window: `open -g /Applications/Canvas.app` (no focus steal). Find the window id with
+  a `CGWindowListCopyWindowInfo` swift script — take the one whose `kCGWindowName` is
+  `Canvas` (a 500x500 unnamed window from the same app captures blank white). Then
+  `screencapture -x -o -l <id> <png>` and look at it.
+- Quit: `osascript -e 'tell application id "com.piercemakes.canvas" to quit'`.
+- Not drivable from here: the tray menu (Show/Hide, Quit) and close-hides-window. Those
+  need a person clicking.
+
 ## Cleanup
 
 Kill the exact PID you started, never `pkill -f canvasd` blindly (a real launchd-managed

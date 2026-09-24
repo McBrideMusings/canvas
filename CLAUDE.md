@@ -9,13 +9,16 @@ the terminal all day.
 - `canvasd/` — Rust daemon (axum). Listens on `127.0.0.1:8229`, holds the newest
   500 posts in memory, pushes new posts to viewers over SSE, serves `viewer/`.
   Runs as a launchd agent (`com.piercemakes.canvasd`).
-- `app/` — Tauri shell: one WKWebView window plus a menu bar icon, pointed at
-  `canvasd`. It holds no state; quitting it loses nothing.
+- `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon,
+  pointed at `canvasd`. Its own Cargo workspace, outside the root one. It holds
+  no state; quitting it loses nothing.
 - `viewer/` — plain `index.html` + JS, no build step. Sidebar of sessions
   ("All" by default), stream of turn cards.
-- `hooks/` — Claude Code hook scripts: SessionStart and SessionEnd register sessions,
+- `cli/` — the `canvas` binary. `canvas hook session-start|session-end|stop` reads
+  Claude Code hook JSON on stdin: SessionStart and SessionEnd register sessions,
   and Stop turns each finished turn into a card.
-- `cli/` — `canvas post` for explicit HTML posts from an agent.
+- `scripts/canvasd-service.sh` — installs and controls the launchd agent with
+  plain `launchctl`; `admin deploy` and `admin service` call it.
 - `skill/canvas/` — the skill agents load to know how to post.
 
 ## Rules
