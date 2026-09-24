@@ -14,6 +14,110 @@
   const overlayImgEl = document.getElementById("image-overlay-img");
   const layoutEl = document.querySelector(".layout");
   const sidebarToggleEl = document.getElementById("sidebar-toggle");
+  const titlebarEl = document.getElementById("titlebar");
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const key in attrs) {
+      el.setAttribute(key, attrs[key]);
+    }
+    return el;
+  }
+
+  // SF Symbols-style glyphs, built with createElementNS (never innerHTML).
+  // Shared by every icon button. An unknown name throws rather than
+  // silently rendering an empty <svg>, so a typo'd icon name fails loudly
+  // at the call site instead of shipping a blank button.
+  function buildIcon(name) {
+    const svg = svgEl("svg", {
+      viewBox: "0 0 24 24",
+      width: "16",
+      height: "16",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      focusable: "false",
+    });
+    switch (name) {
+      case "open":
+        svg.appendChild(
+          svgEl("rect", { x: "3", y: "3", width: "18", height: "18", rx: "4" })
+        );
+        svg.appendChild(svgEl("path", { d: "M9 15L15 9" }));
+        svg.appendChild(svgEl("path", { d: "M11 9h4v4" }));
+        break;
+      case "copy":
+        svg.appendChild(
+          svgEl("rect", { x: "8", y: "2", width: "13", height: "15", rx: "2" })
+        );
+        svg.appendChild(
+          svgEl("rect", { x: "3", y: "7", width: "13", height: "15", rx: "2" })
+        );
+        break;
+      case "check":
+        svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
+        break;
+      case "xmark":
+        svg.appendChild(svgEl("path", { d: "M6 6l12 12" }));
+        svg.appendChild(svgEl("path", { d: "M18 6L6 18" }));
+        break;
+      case "trash":
+        svg.appendChild(svgEl("path", { d: "M4 7h16" }));
+        svg.appendChild(
+          svgEl("path", {
+            d: "M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7",
+          })
+        );
+        svg.appendChild(
+          svgEl("path", { d: "M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" })
+        );
+        svg.appendChild(svgEl("path", { d: "M10 11v6" }));
+        svg.appendChild(svgEl("path", { d: "M14 11v6" }));
+        break;
+      case "sidebar":
+        svg.appendChild(
+          svgEl("rect", { x: "3", y: "4", width: "18", height: "16", rx: "3" })
+        );
+        svg.appendChild(svgEl("line", { x1: "9", y1: "4", x2: "9", y2: "20" }));
+        break;
+      // A thumbtack drawn upright — round head, flat collar, tapering body
+      // to a point — then tilted 45° like SF Symbols' "pin". The group
+      // rotates as a whole so the head and body stay one rigid shape.
+      // An upright pushpin: flat cap, body flaring to a wide collar, needle.
+      case "pin":
+      case "pin-fill": {
+        const fill = name === "pin-fill" ? "currentColor" : "none";
+        svg.appendChild(svgEl("path", { d: "M8 3h8M9.5 3l-1 8.5M14.5 3l1 8.5", fill: "none" }));
+        svg.appendChild(svgEl("path", { d: "M9.5 3h5l1 8.5h-7z", fill, stroke: "none" }));
+        svg.appendChild(svgEl("rect", { x: "6", y: "11.5", width: "12", height: "2.5", rx: "1.25", fill }));
+        svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
+        break;
+      }
+      default:
+        throw new Error(`buildIcon: unknown icon name "${name}"`);
+    }
+    return svg;
+  }
+
+  function setButtonIcon(button, iconName) {
+    while (button.firstChild) {
+      button.removeChild(button.firstChild);
+    }
+    button.appendChild(buildIcon(iconName));
+  }
+
+  // window.__TAURI__ is only ever injected into Canvas.app's own WKWebView
+  // (withGlobalTauri in tauri.conf.json) — a plain browser tab never sees
+  // it, which is how the bar knows whether to leave room for the traffic
+  // lights it doesn't draw itself.
+  if (window.__TAURI__) {
+    titlebarEl.classList.add("has-traffic-lights");
+  }
 
   const SIDEBAR_HIDDEN_KEY = "canvas.sidebarHidden";
 
@@ -44,6 +148,7 @@
     );
   }
 
+  sidebarToggleEl.appendChild(buildIcon("sidebar"));
   applySidebarHidden();
 
   sidebarToggleEl.addEventListener("click", () => {
@@ -58,12 +163,15 @@
   const pinToggleEl = document.getElementById("pin-toggle");
   const tauriCore = window.__TAURI__ && window.__TAURI__.core;
 
+  pinToggleEl.appendChild(buildIcon("pin"));
+
   function applyPinnedState(pinned) {
     pinToggleEl.setAttribute("aria-pressed", pinned ? "true" : "false");
     pinToggleEl.setAttribute(
       "aria-label",
       pinned ? "Unpin window" : "Pin window on top"
     );
+    setButtonIcon(pinToggleEl, pinned ? "pin-fill" : "pin");
   }
 
   if (tauriCore) {
@@ -217,14 +325,14 @@
       delBtn.dataset.sessionId = sessionId;
       delBtn.dataset.role = "delete";
       delBtn.setAttribute("aria-label", "Clear session");
-      delBtn.textContent = "\u{1F5D1}";
+      delBtn.appendChild(buildIcon("trash"));
       delBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         armConfirm(delBtn, {
           idleLabel: "Clear session",
-          idleText: "\u{1F5D1}",
+          idleIcon: "trash",
           confirmLabel: "Confirm clear",
-          confirmText: "✓",
+          confirmIcon: "check",
           onConfirm: () => clearSession(session.id),
         });
       });
@@ -248,14 +356,14 @@
   }
 
   function armConfirm(button, opts, ms = 4000) {
-    const { idleLabel, idleText, confirmLabel, confirmText, onConfirm } = opts;
+    const { idleLabel, idleIcon, confirmLabel, confirmIcon, onConfirm } = opts;
     if (pendingConfirm && pendingConfirm.button === button) {
       clearPendingConfirm();
       onConfirm();
       return;
     }
     clearPendingConfirm();
-    button.textContent = confirmText;
+    setButtonIcon(button, confirmIcon);
     button.setAttribute("aria-label", confirmLabel);
     button.classList.add("confirming");
     const timeoutId = setTimeout(clearPendingConfirm, ms);
@@ -265,7 +373,7 @@
       deadline: Date.now() + ms,
       timeoutId,
       revert() {
-        button.textContent = idleText;
+        setButtonIcon(button, idleIcon);
         button.setAttribute("aria-label", idleLabel);
         button.classList.remove("confirming");
       },
@@ -396,55 +504,10 @@
     }
   });
 
-  const SVG_NS = "http://www.w3.org/2000/svg";
-
-  function svgEl(tag, attrs) {
-    const el = document.createElementNS(SVG_NS, tag);
-    for (const key in attrs) {
-      el.setAttribute(key, attrs[key]);
-    }
-    return el;
-  }
-
-  // SF Symbols-style glyphs, built with createElementNS (never innerHTML).
-  // Shared by any icon button; canvas-8ie.2.13 reuses this for the rest of
-  // the Mac restyle's icons.
-  function buildIcon(name) {
-    const svg = svgEl("svg", {
-      viewBox: "0 0 24 24",
-      width: "16",
-      height: "16",
-      fill: "none",
-      stroke: "currentColor",
-      "stroke-width": "1.5",
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-      "aria-hidden": "true",
-      focusable: "false",
-    });
-    if (name === "open") {
-      svg.appendChild(
-        svgEl("rect", { x: "3", y: "3", width: "18", height: "18", rx: "4" })
-      );
-      svg.appendChild(svgEl("path", { d: "M9 15L15 9" }));
-      svg.appendChild(svgEl("path", { d: "M11 9h4v4" }));
-    } else if (name === "copy") {
-      svg.appendChild(
-        svgEl("rect", { x: "8", y: "2", width: "13", height: "15", rx: "2" })
-      );
-      svg.appendChild(
-        svgEl("rect", { x: "3", y: "7", width: "13", height: "15", rx: "2" })
-      );
-    } else if (name === "check") {
-      svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
-    }
-    return svg;
-  }
-
   function createIconButton(iconName, ariaLabel, onClick) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "path-icon-btn";
+    btn.className = "icon-btn";
     btn.setAttribute("aria-label", ariaLabel);
     btn.appendChild(buildIcon(iconName));
     btn.addEventListener("click", (e) => {
@@ -452,13 +515,6 @@
       onClick(btn);
     });
     return btn;
-  }
-
-  function setButtonIcon(button, iconName) {
-    while (button.firstChild) {
-      button.removeChild(button.firstChild);
-    }
-    button.appendChild(buildIcon(iconName));
   }
 
   function showCopied(button) {
@@ -524,14 +580,14 @@
     delBtn.type = "button";
     delBtn.className = "icon-btn card-delete-btn";
     delBtn.setAttribute("aria-label", "Delete card");
-    delBtn.textContent = "×";
+    delBtn.appendChild(buildIcon("xmark"));
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       armConfirm(delBtn, {
         idleLabel: "Delete card",
-        idleText: "×",
+        idleIcon: "xmark",
         confirmLabel: "Confirm delete",
-        confirmText: "✓",
+        confirmIcon: "check",
         onConfirm: () => deleteCard(card.id),
       });
     });

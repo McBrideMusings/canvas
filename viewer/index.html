@@ -8,26 +8,27 @@
 </head>
 <body>
   <div id="disconnected-banner" class="banner" hidden>Reconnecting to canvasd…</div>
+  <div class="titlebar" id="titlebar" data-tauri-drag-region>
+    <button
+      type="button"
+      id="sidebar-toggle"
+      class="icon-btn titlebar-btn"
+      aria-expanded="true"
+      aria-label="Hide sessions"
+    ></button>
+    <div class="titlebar-spacer"></div>
+    <button
+      type="button"
+      id="pin-toggle"
+      class="icon-btn titlebar-btn"
+      aria-pressed="false"
+      aria-label="Pin window on top"
+      hidden
+    ></button>
+  </div>
   <div class="layout">
     <aside class="sidebar" id="sidebar"></aside>
     <main class="stream" id="stream">
-      <div class="stream-toolbar" id="stream-toolbar">
-        <button
-          type="button"
-          id="sidebar-toggle"
-          class="toolbar-btn"
-          aria-expanded="true"
-          aria-label="Hide sessions"
-        >☰</button>
-        <button
-          type="button"
-          id="pin-toggle"
-          class="toolbar-btn"
-          aria-pressed="false"
-          aria-label="Pin window on top"
-          hidden
-        >📌</button>
-      </div>
       <div class="empty-state" id="empty-state">
         No posts yet. Canvas shows links, files and images from your Claude sessions as they work.
       </div>
