@@ -81,10 +81,53 @@ body {
   margin-top: 2px;
 }
 
+.layout.sidebar-hidden .sidebar {
+  display: none;
+}
+
+.layout.sidebar-hidden .stream {
+  max-width: none;
+}
+
 .stream {
   flex: 1;
   padding: 24px;
   max-width: 900px;
+}
+
+.stream-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.toolbar-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #e2e0d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #444;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.toolbar-btn:hover {
+  background: #ece9e0;
+}
+
+.toolbar-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
 }
 
 .empty-state {
