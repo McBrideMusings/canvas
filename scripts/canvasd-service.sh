@@ -47,6 +47,19 @@ write_plist() {
 PLIST_EOF
 }
 
+# launchctl bootout returns before launchd has finished removing the service;
+# a bootstrap issued in that window fails with "5: Input/output error". Wait
+# until the service is gone (up to 10s) before anything re-adds it.
+bootout() {
+  launchctl bootout "$UID_GUI/$LABEL" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    launchctl print "$UID_GUI/$LABEL" >/dev/null 2>&1 || return 0
+    sleep 0.2
+  done
+  echo "canvasd-service: $LABEL still loaded 10s after bootout" >&2
+  exit 1
+}
+
 install() {
   if [ ! -f "$SOURCE" ]; then
     echo "canvasd-service: $SOURCE not found — run the build step first" >&2
@@ -55,14 +68,14 @@ install() {
   mkdir -p "$(dirname "$PROGRAM")"
   cp "$SOURCE" "$PROGRAM"
   write_plist
-  launchctl bootout "$UID_GUI/$LABEL" 2>/dev/null || true
+  bootout
   launchctl bootstrap "$UID_GUI" "$PLIST"
   launchctl enable "$UID_GUI/$LABEL"
   echo "canvasd-service: installed and bootstrapped $LABEL"
 }
 
 uninstall() {
-  launchctl bootout "$UID_GUI/$LABEL" 2>/dev/null || true
+  bootout
   rm -f "$PLIST"
   echo "canvasd-service: uninstalled $LABEL"
 }
@@ -72,7 +85,7 @@ status() {
 }
 
 stop() {
-  launchctl bootout "$UID_GUI/$LABEL" 2>/dev/null || true
+  bootout
   echo "canvasd-service: stopped $LABEL"
 }
 
