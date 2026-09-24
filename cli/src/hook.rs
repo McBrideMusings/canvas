@@ -34,7 +34,9 @@ pub fn run(event: &str) -> Result<(), Box<dyn std::error::Error>> {
             client::end_session(&input.session_id)?;
         }
         "stop" => {
-            let mut entries = transcript::entries_since_last_prompt(&input.transcript_path)?;
+            // An unreadable transcript still leaves the final reply to scan.
+            let mut entries =
+                transcript::entries_since_last_prompt(&input.transcript_path).unwrap_or_default();
             entries.push(crate::extract::TranscriptEntry {
                 assistant_text: vec![input.last_assistant_message],
                 ..Default::default()

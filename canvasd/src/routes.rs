@@ -153,17 +153,12 @@ pub async fn post_turn(
 ) -> impl IntoResponse {
     let all_empty = req.links.is_empty() && req.paths.is_empty() && req.images.is_empty();
 
-    let created_session = {
+    // One lock hold for both writes, so a concurrent DELETE of the session
+    // can't land between creating it and adding its card.
+    let (created_session, card) = {
         let mut inner = state.inner.write().await;
-        ensure_session(&mut inner, &req.session_id, &req.cwd)
-    };
-    if let Some(session) = created_session {
-        state.publish(CanvasEvent::SessionUpserted(session));
-    }
-
-    let card = {
-        let mut inner = state.inner.write().await;
-        match inner.open_card_index(&req.session_id) {
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];
                 card.links.extend(req.links);
@@ -191,8 +186,12 @@ pub async fn post_turn(
                     Some(card)
                 }
             }
-        }
+        };
+        (created_session, card)
     };
+    if let Some(session) = created_session {
+        state.publish(CanvasEvent::SessionUpserted(session));
+    }
 
     match card {
         Some(card) => {
@@ -207,17 +206,12 @@ pub async fn post_explicit(
     State(state): State<AppState>,
     Json(req): Json<PostRequest>,
 ) -> impl IntoResponse {
-    let created_session = {
+    // One lock hold for both writes, so a concurrent DELETE of the session
+    // can't land between creating it and adding its card.
+    let (created_session, card) = {
         let mut inner = state.inner.write().await;
-        ensure_session(&mut inner, &req.session_id, &req.cwd)
-    };
-    if let Some(session) = created_session {
-        state.publish(CanvasEvent::SessionUpserted(session));
-    }
-
-    let card = {
-        let mut inner = state.inner.write().await;
-        match inner.open_card_index(&req.session_id) {
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];
                 card.html.push(req.html.clone());
@@ -238,8 +232,12 @@ pub async fn post_explicit(
                 inner.push_card(card.clone());
                 card
             }
-        }
+        };
+        (created_session, card)
     };
+    if let Some(session) = created_session {
+        state.publish(CanvasEvent::SessionUpserted(session));
+    }
 
     state.publish(CanvasEvent::CardUpserted(card.clone()));
     (StatusCode::OK, Json(card)).into_response()
