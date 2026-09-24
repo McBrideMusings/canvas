@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "canvas",
+  "project_id": "12d3b1b1-a425-42e7-9bd9-8093fe21be2b"
+}
