@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -28,6 +28,50 @@ fn cwd_basename(cwd: &str) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.to_string())
+}
+
+/// Same-origin check for the delete endpoints.
+///
+/// A request with no `Origin` header (curl, the CLI) is allowed — only a
+/// browser sets `Origin`, and canvasd never knows the port it's bound to
+/// ahead of time in a way that's easy to plumb into every handler. Instead
+/// of comparing against a configured port, this compares the `Origin`
+/// header's host and port against the request's own `Host` header: the
+/// `Host` header is always whichever of `127.0.0.1` or `localhost` the
+/// client actually connected to, at the actual bound port, so matching the
+/// `Origin`'s port against it is equivalent to checking against the real
+/// port without canvasd ever needing to know it. The `Origin`'s hostname
+/// still has to be `127.0.0.1` or `localhost` — a cross-origin page loaded
+/// from a real domain but proxied so its `Host` header matches must not
+/// pass just because the ports line up.
+fn is_same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return true;
+    };
+
+    let Ok(origin_uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    if origin_uri.scheme_str() != Some("http") {
+        return false;
+    }
+    let Some(origin_host) = origin_uri.host() else {
+        return false;
+    };
+    if origin_host != "127.0.0.1" && origin_host != "localhost" {
+        return false;
+    }
+
+    let Some(host_header) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let host_port = host_header.rsplit_once(':').map(|(_, port)| port);
+    let origin_port = origin_uri.port_u16().map(|p| p.to_string());
+
+    match (origin_port.as_deref(), host_port) {
+        (Some(op), Some(hp)) => op == hp,
+        _ => false,
+    }
 }
 
 pub async fn upsert_session(
@@ -178,6 +222,57 @@ pub async fn post_explicit(
     (StatusCode::OK, Json(card)).into_response()
 }
 
+pub async fn delete_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let removed = {
+        let mut inner = state.inner.write().await;
+        let before = inner.cards.len();
+        inner.cards.retain(|c| c.id != id);
+        inner.cards.len() != before
+    };
+
+    if !removed {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    state.publish(CanvasEvent::CardRemoved(id));
+    StatusCode::OK.into_response()
+}
+
+pub async fn delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let removed = {
+        let mut inner = state.inner.write().await;
+        if inner.sessions.remove(&id).is_none() {
+            false
+        } else {
+            inner.cards.retain(|c| c.session_id != id);
+            true
+        }
+    };
+
+    if !removed {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    state.publish(CanvasEvent::SessionRemoved(id));
+    StatusCode::OK.into_response()
+}
+
 pub async fn get_state(State(state): State<AppState>) -> impl IntoResponse {
     let inner = state.inner.read().await;
     let sessions: Vec<Session> = inner.sessions.values().cloned().collect();
@@ -196,6 +291,12 @@ pub async fn events(
         Ok(CanvasEvent::SessionUpserted(session)) => Some(Ok(SseEvent::default()
             .event("session-upserted")
             .data(serde_json::to_string(&session).unwrap_or_default()))),
+        Ok(CanvasEvent::CardRemoved(id)) => Some(Ok(SseEvent::default()
+            .event("card-removed")
+            .data(serde_json::to_string(&serde_json::json!({"id": id})).unwrap_or_default()))),
+        Ok(CanvasEvent::SessionRemoved(id)) => Some(Ok(SseEvent::default()
+            .event("session-removed")
+            .data(serde_json::to_string(&serde_json::json!({"id": id})).unwrap_or_default()))),
         Err(_) => None,
     });
 
