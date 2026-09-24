@@ -6,7 +6,7 @@
 
 use std::io::Read;
 
-use crate::{client, pid, transcript};
+use crate::{client, transcript};
 
 #[derive(Debug, serde::Deserialize)]
 struct HookInput {
@@ -28,8 +28,7 @@ pub fn run(event: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     match event {
         "session-start" => {
-            let claude_pid = pid::claude_pid().ok_or("could not resolve claude_pid")?;
-            client::upsert_session(&input.session_id, &input.cwd, claude_pid)?;
+            client::upsert_session(&input.session_id, &input.cwd)?;
         }
         "session-end" => {
             client::end_session(&input.session_id)?;
@@ -43,6 +42,7 @@ pub fn run(event: &str) -> Result<(), Box<dyn std::error::Error>> {
             let extracted = crate::extract::extract(&entries);
             client::post_turn(
                 &input.session_id,
+                &input.cwd,
                 extracted.links,
                 extracted.paths,
                 extracted.images,

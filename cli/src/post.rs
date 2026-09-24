@@ -8,14 +8,30 @@
 
 use std::io::Read;
 
-use crate::{client, pid};
+use crate::client;
 
 pub fn run(arg: Option<&str>) -> Result<(), String> {
     let html = read_html(arg, std::io::stdin())?;
     validate(&html)?;
-    let claude_pid =
-        pid::claude_pid().ok_or_else(|| "could not resolve the calling claude pid".to_string())?;
-    client::post_explicit(claude_pid, html)
+    let session_id = session_id()?;
+    let cwd = current_dir()?;
+    client::post_explicit(&session_id, &cwd, html)
+}
+
+/// Claude Code sets `CLAUDE_CODE_SESSION_ID` in every Bash tool shell, equal
+/// to the `session_id` the hooks get on stdin. There is no other reliable
+/// way for a plain shell command to learn which session it's running in.
+fn session_id() -> Result<String, String> {
+    std::env::var("CLAUDE_CODE_SESSION_ID").map_err(|_| {
+        "canvas post must run inside a Claude Code session (CLAUDE_CODE_SESSION_ID is not set)"
+            .to_string()
+    })
+}
+
+fn current_dir() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format!("could not resolve the current directory: {e}"))
 }
 
 /// A file argument reads that file; no argument, or `-`, reads `stdin`.

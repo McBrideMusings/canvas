@@ -22,10 +22,13 @@ the terminal all day.
   override), and runs as a launchd agent (`com.piercemakes.canvasd`).
   `canvas hook session-start|session-end|stop` reads Claude Code hook JSON on
   stdin: SessionStart and SessionEnd register sessions, and Stop turns each
-  finished turn into a card. `canvas post <file|->` posts HTML from a file or
-  stdin into the calling session's open card, and unlike a hook it fails
-  loudly — one line on stderr, non-zero exit — on any error. Hook dispatch
-  never starts a tokio runtime; only `canvas daemon` does.
+  finished turn into a card. `canvas post <file|->` reads the session id from
+  `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in every Bash tool shell) and
+  posts HTML from a file or stdin into that session's open card, creating the
+  session if the daemon doesn't already know it (e.g. after a daemon
+  restart) — and unlike a hook it fails loudly — one line on stderr, non-zero
+  exit — on any error, including when `CLAUDE_CODE_SESSION_ID` isn't set.
+  Hook dispatch never starts a tokio runtime; only `canvas daemon` does.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and
   Stop to `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents

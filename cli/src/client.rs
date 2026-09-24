@@ -30,11 +30,10 @@ fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<ureq::Response,
         .send_json(serde_json::to_value(body).unwrap_or_default())
 }
 
-pub fn upsert_session(session_id: &str, cwd: &str, claude_pid: u32) -> Result<(), ureq::Error> {
+pub fn upsert_session(session_id: &str, cwd: &str) -> Result<(), ureq::Error> {
     let body = UpsertSessionRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
-        claude_pid,
     };
     post_json("/api/sessions", body)?;
     Ok(())
@@ -49,12 +48,14 @@ pub fn end_session(session_id: &str) -> Result<(), ureq::Error> {
 
 pub fn post_turn(
     session_id: &str,
+    cwd: &str,
     links: Vec<String>,
     paths: Vec<String>,
     images: Vec<String>,
 ) -> Result<(), ureq::Error> {
     let body = TurnRequest {
         session_id: session_id.to_string(),
+        cwd: cwd.to_string(),
         links,
         paths,
         images,
@@ -65,17 +66,17 @@ pub fn post_turn(
 
 /// Unlike the hook calls above, `canvas post` is meant to be seen by the
 /// agent that ran it, so this returns a one-line, human-readable message on
-/// every failure instead of the raw `ureq::Error` — including a specific
-/// message for the 404 canvasd returns when no live session claims this pid.
-pub fn post_explicit(claude_pid: u32, html: String) -> Result<(), String> {
-    let body = PostRequest { claude_pid, html };
+/// every failure instead of the raw `ureq::Error`.
+pub fn post_explicit(session_id: &str, cwd: &str, html: String) -> Result<(), String> {
+    let body = PostRequest {
+        session_id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        html,
+    };
     let result = post_json("/api/posts", body);
 
     match result {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(404, _)) => Err(format!(
-            "no live Canvas session is registered for claude pid {claude_pid}"
-        )),
         Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
         Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
     }
