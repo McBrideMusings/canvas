@@ -21,7 +21,7 @@ pub fn claude_pid() -> Option<u32> {
             return None;
         }
         let comm = command_name(ppid).unwrap_or_default();
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
+        let base = base_name(&comm);
 
         if base.contains("claude") {
             return Some(ppid);
@@ -35,6 +35,14 @@ pub fn claude_pid() -> Option<u32> {
     }
 
     None
+}
+
+/// `ps -o comm=` prints the path with a trailing newline, and a login shell
+/// shows as `-zsh`; reduce both to the bare command name.
+fn base_name(comm: &str) -> &str {
+    let comm = comm.trim();
+    let base = comm.rsplit('/').next().unwrap_or(comm);
+    base.trim_start_matches('-')
 }
 
 fn parent_of(pid: u32) -> Option<u32> {
@@ -54,4 +62,17 @@ fn run_ps(args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ps_output_reduces_to_a_matchable_shell_name() {
+        assert_eq!(base_name("/bin/zsh\n"), "zsh");
+        assert_eq!(base_name("bash\n"), "bash");
+        assert_eq!(base_name("-zsh\n"), "zsh");
+        assert_eq!(base_name("claude\n"), "claude");
+    }
 }
