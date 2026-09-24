@@ -135,14 +135,10 @@ body {
   display: none;
 }
 
-.layout.sidebar-hidden .stream {
-  max-width: none;
-}
-
 .stream {
   flex: 1;
+  min-width: 0;
   padding: 24px;
-  max-width: 900px;
 }
 
 .stream-toolbar {
