@@ -2,23 +2,33 @@
 //!
 //! Claude Code runs a hook command through a shell (`sh -c "<command>"`), so
 //! this process's immediate parent (`getppid`) is that shell, not `claude`
-//! itself. We walk up the process tree from our own pid, skipping any
-//! ancestor whose command name looks like a shell, and return the first
-//! ancestor that either looks like `claude` or isn't a shell (a best-effort
-//! stop so a broken ancestry still returns something rather than looping).
-//! Standard library Rust has no `getppid`/`ps` wrapper, so each step shells
-//! out to `ps`, which is always present on macOS.
+//! itself. Worse, an agent can wrap that command in another non-shell
+//! process — `timeout 5 canvas post`, or a `python3 -c 'subprocess.run(...)'`
+//! — which sits between the shell and `claude` in the ancestry. We walk up
+//! the process tree from our own pid looking for an ancestor whose command
+//! name looks like `claude`, and only fall back to the first non-shell
+//! ancestor (the old best guess) if no such ancestor turns up within
+//! `MAX_HOPS` — a broken or unusually deep ancestry still returns something
+//! rather than nothing. Standard library Rust has no `getppid`/`ps`
+//! wrapper, so each step shells out to `ps`, which is always present on
+//! macOS.
 
 const MAX_HOPS: usize = 8;
 const SHELL_NAMES: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
 pub fn claude_pid() -> Option<u32> {
     let mut pid = std::process::id();
+    let mut fallback: Option<u32> = None;
 
     for _ in 0..MAX_HOPS {
-        let ppid = parent_of(pid)?;
+        // A `ps` failure this far up the tree doesn't erase a fallback
+        // already found on an earlier hop — stop the walk and return
+        // whatever we have rather than discarding it.
+        let Some(ppid) = parent_of(pid) else {
+            break;
+        };
         if ppid == 0 {
-            return None;
+            break;
         }
         let comm = command_name(ppid).unwrap_or_default();
         let base = base_name(&comm);
@@ -26,15 +36,17 @@ pub fn claude_pid() -> Option<u32> {
         if base.contains("claude") {
             return Some(ppid);
         }
-        if SHELL_NAMES.contains(&base) {
-            pid = ppid;
-            continue;
+        if !SHELL_NAMES.contains(&base) && fallback.is_none() {
+            // Not a shell and not obviously claude — remember it as a best
+            // guess, but keep walking in case a real `claude` ancestor is
+            // further up (e.g. this is `timeout`, `env`, or a `python3`
+            // wrapper sitting between the shell and `claude`).
+            fallback = Some(ppid);
         }
-        // Not a shell and not obviously claude — best guess, stop here.
-        return Some(ppid);
+        pid = ppid;
     }
 
-    None
+    fallback
 }
 
 /// `ps -o comm=` prints the path with a trailing newline, and a login shell
