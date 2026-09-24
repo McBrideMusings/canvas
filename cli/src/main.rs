@@ -1,9 +1,13 @@
-const USAGE: &str = "usage: canvas hook <session-start|session-end|stop> | canvas post [file|-]";
+const USAGE: &str =
+    "usage: canvas hook <session-start|session-end|stop> | canvas post [file|-] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     match args.get(1).map(String::as_str) {
+        Some("daemon") => {
+            canvas::daemon::run();
+        }
         Some("hook") => {
             let event = match args.get(2) {
                 Some(e) => e,
