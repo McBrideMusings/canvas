@@ -3,6 +3,7 @@
 
   const sessions = new Map(); // id -> session
   const cards = new Map(); // id -> card
+  let selectedSessionId = null; // null = "All"
 
   const streamEl = document.getElementById("stream");
   const cardsEl = document.getElementById("cards");
@@ -31,19 +32,83 @@
     return s ? s.name : sessionId;
   }
 
+  function sessionCardCount(sessionId) {
+    let n = 0;
+    for (const c of cards.values()) {
+      if (c.sessionId === sessionId) n++;
+    }
+    return n;
+  }
+
+  function selectSession(id) {
+    selectedSessionId = id;
+    renderSidebar();
+    applyFilter();
+  }
+
   function renderSidebar() {
     sidebarEl.innerHTML = "";
+
     const all = document.createElement("div");
-    all.className = "sidebar-row selected";
+    all.className =
+      "sidebar-row" + (selectedSessionId === null ? " selected" : "");
     all.textContent = "All";
+    all.addEventListener("click", () => selectSession(null));
     sidebarEl.appendChild(all);
 
     for (const s of sessions.values()) {
       const row = document.createElement("div");
-      row.className = "sidebar-row";
-      row.textContent = s.name;
+      row.className =
+        "sidebar-row" + (selectedSessionId === s.id ? " selected" : "");
+      row.dataset.sessionId = s.id;
+
+      const name = document.createElement("div");
+      name.className = "sidebar-row-name";
+      name.textContent = s.name;
+      row.appendChild(name);
+
+      const meta = document.createElement("div");
+      meta.className = "sidebar-row-meta";
+      const status = document.createElement("span");
+      status.className = "sidebar-row-status";
+      status.textContent = s.endedAt ? "ended" : "active";
+      const count = sessionCardCount(s.id);
+      const countSpan = document.createElement("span");
+      countSpan.className = "sidebar-row-count";
+      countSpan.textContent = ` · ${count} card${count === 1 ? "" : "s"}`;
+      meta.appendChild(status);
+      meta.appendChild(countSpan);
+      row.appendChild(meta);
+
+      row.addEventListener("click", () => selectSession(s.id));
       sidebarEl.appendChild(row);
     }
+  }
+
+  function cardMatchesFilter(sessionId) {
+    return selectedSessionId === null || sessionId === selectedSessionId;
+  }
+
+  // Hide/show existing card elements per the current filter without
+  // touching any other card's DOM node (and any live iframe inside it).
+  function applyFilter() {
+    let visible = 0;
+    for (const el of cardsEl.children) {
+      const matches = cardMatchesFilter(el.dataset.sessionId);
+      el.hidden = !matches;
+      if (matches) visible++;
+    }
+    updateEmptyState(visible);
+  }
+
+  // The empty-state message differs depending on whether there are no
+  // posts at all, or just none matching the current sidebar filter.
+  function updateEmptyState(visible) {
+    emptyStateEl.hidden = visible > 0;
+    emptyStateEl.textContent =
+      cards.size === 0
+        ? "No posts yet. Canvas shows links, files and images from your Claude sessions as they work."
+        : "No cards yet for this session.";
   }
 
   function buildIframeDoc(html) {
@@ -203,11 +268,11 @@
   function bootstrapRender() {
     renderSidebar();
     const sorted = sortedCards();
-    emptyStateEl.hidden = sorted.length > 0;
     cardsEl.innerHTML = "";
     for (const card of sorted) {
       cardsEl.appendChild(renderCard(card));
     }
+    applyFilter();
   }
 
   // Insert or replace only the one card that changed, leaving every other
@@ -222,6 +287,7 @@
     if (existing) existing.remove();
 
     const el = renderCard(card);
+    el.hidden = !cardMatchesFilter(card.sessionId);
     const siblings = Array.from(cardsEl.children);
     const insertBefore = siblings.find(
       (child) => new Date(child.dataset.at) < new Date(card.at)
@@ -232,7 +298,12 @@
       cardsEl.appendChild(el);
     }
 
-    emptyStateEl.hidden = cards.size > 0;
+    applyFilter();
+
+    // A new card changes its session's count — refresh the sidebar without
+    // touching the stream, so a card for a non-selected session updates its
+    // row's count and leaves the visible stream alone.
+    renderSidebar();
   }
 
   // A session's name can change (e.g. re-registration); patch just the
