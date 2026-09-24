@@ -52,6 +52,39 @@
     saveSidebarHidden(sidebarHidden);
   });
 
+  // Only Canvas.app's WKWebView injects window.__TAURI__ (withGlobalTauri in
+  // tauri.conf.json); a plain browser tab never sees it, which is how the
+  // button knows to stay hidden there.
+  const pinToggleEl = document.getElementById("pin-toggle");
+  const tauriCore = window.__TAURI__ && window.__TAURI__.core;
+
+  function applyPinnedState(pinned) {
+    pinToggleEl.setAttribute("aria-pressed", pinned ? "true" : "false");
+    pinToggleEl.setAttribute(
+      "aria-label",
+      pinned ? "Unpin window" : "Pin window on top"
+    );
+  }
+
+  if (tauriCore) {
+    pinToggleEl.hidden = false;
+    tauriCore
+      .invoke("get_pinned")
+      .then((pinned) => applyPinnedState(!!pinned))
+      .catch(() => {});
+
+    pinToggleEl.addEventListener("click", async () => {
+      const nextPinned = pinToggleEl.getAttribute("aria-pressed") !== "true";
+      try {
+        await tauriCore.invoke("set_pinned", { pinned: nextPinned });
+        applyPinnedState(nextPinned);
+      } catch (e) {
+        // Refused invoke (wrong origin, missing capability) — leave the
+        // button's displayed state as it was.
+      }
+    });
+  }
+
   function relativeTime(iso) {
     const then = new Date(iso).getTime();
     if (Number.isNaN(then)) return "";
