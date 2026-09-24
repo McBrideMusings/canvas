@@ -255,17 +255,54 @@ body {
   color: #2563eb;
 }
 
-.row.path-row .row-text {
-  color: #1a1a1a;
+.row.path-row {
+  cursor: default;
 }
 
-.row button.copy-btn {
-  border: 1px solid #ddd;
-  background: #fafafa;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 12px;
+.row.path-row .row-text {
+  color: #1a1a1a;
+  flex: 1;
+  min-width: 0;
+  cursor: text;
+  user-select: text;
+}
+
+.path-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: 8px;
+}
+
+.path-icon-btn {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: #444;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.path-icon-btn:hover {
+  background: #ece9e0;
+}
+
+.path-icon-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+}
+
+.path-icon-btn.copied {
+  color: #16a34a;
 }
 
 .image-overlay {
