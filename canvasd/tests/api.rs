@@ -374,7 +374,7 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str, claude_pid: 
 }
 
 #[tokio::test]
-async fn delete_card_removes_it_and_emits_event() {
+async fn delete_card_removes_it_from_state() {
     let app = app();
     let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
 
