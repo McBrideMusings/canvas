@@ -17,6 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
+use crate::repo::github_repo;
 use crate::state::{AppState, CanvasEvent};
 
 fn now() -> String {
@@ -78,6 +79,9 @@ pub async fn upsert_session(
     State(state): State<AppState>,
     Json(req): Json<UpsertSessionRequest>,
 ) -> impl IntoResponse {
+    // Read before taking the lock: it runs `git`, and nothing else should
+    // wait on that.
+    let repo = github_repo(&req.cwd).await;
     let session = {
         let mut inner = state.inner.write().await;
         // A genuine upsert: a retried or re-fired registration for an id that
@@ -91,6 +95,7 @@ pub async fn upsert_session(
             id: req.session_id.clone(),
             cwd: req.cwd.clone(),
             name: cwd_basename(&req.cwd),
+            repo,
             started_at,
             ended_at,
         };
@@ -108,8 +113,14 @@ pub async fn upsert_session(
 /// session that never got a `SessionStart` (e.g. the daemon restarted after
 /// the session began). Returns the new session so the caller can publish a
 /// `SessionUpserted` event; returns `None` when the session already existed,
-/// since nothing about it changed.
-fn ensure_session(inner: &mut crate::state::Inner, session_id: &str, cwd: &str) -> Option<Session> {
+/// since nothing about it changed. `repo` comes from
+/// [`repo_if_unknown`], resolved before the caller took the lock.
+fn ensure_session(
+    inner: &mut crate::state::Inner,
+    session_id: &str,
+    cwd: &str,
+    repo: Option<String>,
+) -> Option<Session> {
     if inner.sessions.contains_key(session_id) {
         return None;
     }
@@ -117,11 +128,22 @@ fn ensure_session(inner: &mut crate::state::Inner, session_id: &str, cwd: &str) 
         id: session_id.to_string(),
         cwd: cwd.to_string(),
         name: cwd_basename(cwd),
+        repo,
         started_at: now(),
         ended_at: None,
     };
     inner.sessions.insert(session.id.clone(), session.clone());
     Some(session)
+}
+
+/// The repo for a session `ensure_session` may be about to create, read
+/// only when the daemon doesn't know the session yet, so an ordinary turn
+/// never runs `git`.
+async fn repo_if_unknown(state: &AppState, session_id: &str, cwd: &str) -> Option<String> {
+    if state.inner.read().await.sessions.contains_key(session_id) {
+        return None;
+    }
+    github_repo(cwd).await
 }
 
 pub async fn end_session(
@@ -154,9 +176,10 @@ pub async fn post_turn(
 
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
+    let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
-        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
         let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];
@@ -209,9 +232,10 @@ pub async fn post_explicit(
 ) -> impl IntoResponse {
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
+    let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
-        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
         let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];

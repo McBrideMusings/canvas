@@ -212,6 +212,12 @@
     return s ? s.name : sessionId;
   }
 
+  // `owner/repo` on GitHub, or "" when the session's directory has none.
+  function sessionRepo(sessionId) {
+    const s = sessions.get(sessionId);
+    return (s && s.repo) || "";
+  }
+
   function sessionCardCount(sessionId) {
     let n = 0;
     for (const c of cards.values()) {
@@ -297,6 +303,20 @@
       nameEl.className = "sidebar-row-name";
       nameEl.textContent = name;
       row.appendChild(nameEl);
+
+      if (session.repo) {
+        const repoEl = document.createElement("div");
+        repoEl.className = "sidebar-row-repo";
+        // Break after the slash, not mid-name: the sidebar is too narrow
+        // for most `owner/repo` pairs on one line.
+        const slash = session.repo.indexOf("/") + 1;
+        repoEl.append(
+          session.repo.slice(0, slash),
+          document.createElement("wbr"),
+          session.repo.slice(slash)
+        );
+        row.appendChild(repoEl);
+      }
 
       const meta = document.createElement("div");
       meta.className = "sidebar-row-meta";
@@ -567,11 +587,16 @@
     const nameSpan = document.createElement("span");
     nameSpan.className = "session-name";
     nameSpan.textContent = sessionName(card.sessionId);
+    const repoSpan = document.createElement("span");
+    repoSpan.className = "session-repo";
+    repoSpan.textContent = sessionRepo(card.sessionId);
+    repoSpan.hidden = !repoSpan.textContent;
     const sep = document.createTextNode(" · ");
     const timeSpan = document.createElement("span");
     timeSpan.className = "time";
     timeSpan.textContent = relativeTime(card.at);
     headerInfo.appendChild(nameSpan);
+    headerInfo.appendChild(repoSpan);
     headerInfo.appendChild(sep);
     headerInfo.appendChild(timeSpan);
     header.appendChild(headerInfo);
@@ -710,13 +735,18 @@
     renderSidebar();
   }
 
-  // A session's name can change (e.g. re-registration); patch just the
-  // header text of that session's existing cards instead of rebuilding them.
+  // A session's name and repo can change (e.g. re-registration); patch just
+  // the header text of that session's existing cards instead of rebuilding them.
   function patchSessionNames(sessionId) {
     const name = sessionName(sessionId);
-    const selector = `.card[data-session-id="${CSS.escape(sessionId)}"] .session-name`;
-    for (const el of cardsEl.querySelectorAll(selector)) {
+    const repo = sessionRepo(sessionId);
+    const card = `.card[data-session-id="${CSS.escape(sessionId)}"]`;
+    for (const el of cardsEl.querySelectorAll(`${card} .session-name`)) {
       el.textContent = name;
+    }
+    for (const el of cardsEl.querySelectorAll(`${card} .session-repo`)) {
+      el.textContent = repo;
+      el.hidden = !repo;
     }
   }
 
