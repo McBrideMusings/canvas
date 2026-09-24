@@ -50,7 +50,7 @@ async fn upsert_and_end_session() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/Users/me/Projects/canvas", "claudePid": 111}),
+            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas", "claude_pid": 111}),
         ))
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn empty_turn_with_no_open_card_creates_nothing() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
         ))
         .await
         .unwrap();
@@ -88,7 +88,7 @@ async fn empty_turn_with_no_open_card_creates_nothing() {
         .clone()
         .oneshot(post(
             "/api/turns",
-            json!({"sessionId": "s1", "links": [], "paths": [], "images": []}),
+            json!({"session_id": "s1", "links": [], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -106,7 +106,7 @@ async fn turn_with_content_and_no_open_card_creates_closed_card() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
         ))
         .await
         .unwrap();
@@ -114,7 +114,7 @@ async fn turn_with_content_and_no_open_card_creates_closed_card() {
     app.clone()
         .oneshot(post(
             "/api/turns",
-            json!({"sessionId": "s1", "links": ["https://example.com"], "paths": [], "images": []}),
+            json!({"session_id": "s1", "links": ["https://example.com"], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -133,7 +133,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 42}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 42}),
         ))
         .await
         .unwrap();
@@ -142,7 +142,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claudePid": 42, "html": "<p>hello</p>"}),
+            json!({"claude_pid": 42, "html": "<p>hello</p>"}),
         ))
         .await
         .unwrap();
@@ -156,7 +156,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claudePid": 42, "html": "<p>again</p>"}),
+            json!({"claude_pid": 42, "html": "<p>again</p>"}),
         ))
         .await
         .unwrap();
@@ -173,7 +173,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
     app.clone()
         .oneshot(post(
             "/api/turns",
-            json!({"sessionId": "s1", "links": ["/tmp/foo"], "paths": [], "images": []}),
+            json!({"session_id": "s1", "links": ["/tmp/foo"], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -192,7 +192,7 @@ async fn post_with_unknown_pid_is_404() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claudePid": 9999, "html": "<p>x</p>"}),
+            json!({"claude_pid": 9999, "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
@@ -205,7 +205,7 @@ async fn ring_evicts_oldest_at_501() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
         ))
         .await
         .unwrap();
@@ -214,7 +214,7 @@ async fn ring_evicts_oldest_at_501() {
         app.clone()
             .oneshot(post(
                 "/api/turns",
-                json!({"sessionId": "s1", "links": [format!("https://example.com/{i}")], "paths": [], "images": []}),
+                json!({"session_id": "s1", "links": [format!("https://example.com/{i}")], "paths": [], "images": []}),
             ))
             .await
             .unwrap();
@@ -283,7 +283,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
         ))
         .await
         .unwrap();
@@ -303,7 +303,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"sessionId": "s1", "cwd": "/tmp/proj", "claudePid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
         ))
         .await
         .unwrap();

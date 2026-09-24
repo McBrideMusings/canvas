@@ -7,7 +7,7 @@ none exists.
 
 ## Sub-features
 
-- `pid-to-session` — resolves `claudePid` to the session that registered it and hasn't
+- `pid-to-session` — resolves `claude_pid` to the session that registered it and hasn't
   ended; 404 if none matches.
 - `post-opens-card` — first post on a session with no open card creates one, `open:true`.
 - `post-extends-card` — a second post before any turn closes it appends to the same
@@ -22,15 +22,15 @@ directly.
 
 ## Driving it with curl
 
-Preconditions: a session registered with a known `claudePid` (see
+Preconditions: a session registered with a known `claude_pid` (see
 `session-and-turn-stream.md`).
 
 - **Unknown pid** — `curl -s -o /dev/null -w '%{http_code}' -X POST
   http://127.0.0.1:8231/api/posts -H 'content-type: application/json' -d
-  '{"claudePid":99999,"html":"<p>x</p>"}'` → `404`.
+  '{"claude_pid":99999,"html":"<p>x</p>"}'` → `404`.
 - **Opens a card** — `curl -s -X POST http://127.0.0.1:8231/api/posts -H
   'content-type: application/json' -d
-  '{"claudePid":111,"html":"<p>hello</p>"}'` → returned card has `"open":true` and
+  '{"claude_pid":111,"html":"<p>hello</p>"}'` → returned card has `"open":true` and
   `"html":["<p>hello</p>"]`.
 - **Extends it** — repeat with different html → same card `id`, `html` now has both
   strings.
@@ -41,6 +41,6 @@ Preconditions: a session registered with a known `claudePid` (see
 
 - A session must be registered (via `/api/sessions`) *before* posting — the pid lookup
   only checks sessions canvasd already knows about, and only unended ones.
-- Two sessions can't share a `claudePid` and both be open at once in this implementation
+- Two sessions can't share a `claude_pid` and both be open at once in this implementation
   — canvasd picks whichever unended session matches first. Don't register two open
   sessions with the same pid in a single drive.

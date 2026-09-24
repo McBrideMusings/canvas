@@ -31,16 +31,16 @@ pub struct TurnCard {
     pub open: bool,
 }
 
+/// Request bodies use snake_case, matching Claude Code hook JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UpsertSessionRequest {
     pub session_id: String,
     pub cwd: String,
     pub claude_pid: u32,
 }
 
+/// Request bodies use snake_case, matching Claude Code hook JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TurnRequest {
     pub session_id: String,
     #[serde(default)]
@@ -51,8 +51,8 @@ pub struct TurnRequest {
     pub images: Vec<String>,
 }
 
+/// Request bodies use snake_case, matching Claude Code hook JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PostRequest {
     pub claude_pid: u32,
     pub html: String,

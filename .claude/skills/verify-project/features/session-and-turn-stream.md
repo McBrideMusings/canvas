@@ -25,13 +25,13 @@ Preconditions: canvasd running on a spare port (see SKILL.md Launch).
 
 - **Create a session** — `curl -s -X POST http://127.0.0.1:8231/api/sessions -H
   'content-type: application/json' -d
-  '{"sessionId":"s1","cwd":"/Users/me/Projects/canvas","claudePid":111}'` → JSON
+  '{"session_id":"s1","cwd":"/Users/me/Projects/canvas","claude_pid":111}'` → JSON
   session with `"name":"canvas"`.
 - **End it** — `curl -s -X POST http://127.0.0.1:8231/api/sessions/s1/end` → `endedAt`
   is now set in a follow-up `GET /api/state`.
 - **Empty turn, no open card** — `curl -s -X POST http://127.0.0.1:8231/api/turns -H
   'content-type: application/json' -d
-  '{"sessionId":"s1","links":[],"paths":[],"images":[]}'` then `GET /api/state` → `cards`
+  '{"session_id":"s1","links":[],"paths":[],"images":[]}'` then `GET /api/state` → `cards`
   is still empty.
 - **Turn with content, no open card** — same call with a non-empty `links` array →
   `GET /api/state` shows one new card with `"open":false`.
