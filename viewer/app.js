@@ -396,6 +396,83 @@
     }
   });
 
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const key in attrs) {
+      el.setAttribute(key, attrs[key]);
+    }
+    return el;
+  }
+
+  // SF Symbols-style glyphs, built with createElementNS (never innerHTML).
+  // Shared by any icon button; canvas-8ie.2.13 reuses this for the rest of
+  // the Mac restyle's icons.
+  function buildIcon(name) {
+    const svg = svgEl("svg", {
+      viewBox: "0 0 24 24",
+      width: "16",
+      height: "16",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      focusable: "false",
+    });
+    if (name === "open") {
+      svg.appendChild(
+        svgEl("rect", { x: "3", y: "3", width: "18", height: "18", rx: "4" })
+      );
+      svg.appendChild(svgEl("path", { d: "M9 15L15 9" }));
+      svg.appendChild(svgEl("path", { d: "M11 9h4v4" }));
+    } else if (name === "copy") {
+      svg.appendChild(
+        svgEl("rect", { x: "8", y: "2", width: "13", height: "15", rx: "2" })
+      );
+      svg.appendChild(
+        svgEl("rect", { x: "3", y: "7", width: "13", height: "15", rx: "2" })
+      );
+    } else if (name === "check") {
+      svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
+    }
+    return svg;
+  }
+
+  function createIconButton(iconName, ariaLabel, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "path-icon-btn";
+    btn.setAttribute("aria-label", ariaLabel);
+    btn.appendChild(buildIcon(iconName));
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClick(btn);
+    });
+    return btn;
+  }
+
+  function setButtonIcon(button, iconName) {
+    while (button.firstChild) {
+      button.removeChild(button.firstChild);
+    }
+    button.appendChild(buildIcon(iconName));
+  }
+
+  function showCopied(button) {
+    clearTimeout(button._copyTimer);
+    setButtonIcon(button, "check");
+    button.classList.add("copied");
+    button.setAttribute("aria-label", "Copied");
+    button._copyTimer = setTimeout(() => {
+      setButtonIcon(button, "copy");
+      button.classList.remove("copied");
+      button.setAttribute("aria-label", "Copy path");
+    }, 1500);
+  }
+
   function copyToClipboard(text, button) {
     navigator.clipboard
       .writeText(text)
@@ -408,11 +485,7 @@
         document.body.removeChild(ta);
       })
       .finally(() => {
-        const original = button.textContent;
-        button.textContent = "Copied";
-        setTimeout(() => {
-          button.textContent = original;
-        }, 1500);
+        showCopied(button);
       });
   }
 
@@ -504,16 +577,18 @@
       const text = document.createElement("span");
       text.className = "row-text";
       text.textContent = path;
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "copy-btn";
-      copyBtn.textContent = "Copy";
-      copyBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        copyToClipboard(path, copyBtn);
-      });
       row.appendChild(text);
-      row.appendChild(copyBtn);
-      row.addEventListener("click", () => openTarget(path));
+
+      const actions = document.createElement("div");
+      actions.className = "path-row-actions";
+      actions.appendChild(
+        createIconButton("open", "Open file", () => openTarget(path))
+      );
+      actions.appendChild(
+        createIconButton("copy", "Copy path", (btn) => copyToClipboard(path, btn))
+      );
+      row.appendChild(actions);
+
       body.appendChild(row);
     }
 
