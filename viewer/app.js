@@ -118,16 +118,25 @@
       "style-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com; " +
       "font-src https://fonts.gstatic.com data:; " +
       "img-src * data:;";
+    // Measure the content wrapper, not documentElement: documentElement's
+    // scrollHeight is clamped to at least the iframe's own current viewport
+    // height, so once the parent sets a height it can never report a
+    // smaller one again (the "ratchets up, never down" bug). The wrapper
+    // has no imposed height, so its own box always equals its content's
+    // extent. `overflow:hidden` on it opens a new block formatting context
+    // so children's margins don't collapse out through it and go
+    // unmeasured.
     const resizeScript = `
       <script>
+        var canvasRoot = document.getElementById('__canvas_root');
         function canvasSendHeight() {
-          var h = document.documentElement.scrollHeight;
+          var h = Math.ceil(canvasRoot.getBoundingClientRect().height);
           parent.postMessage({ type: 'canvas-resize', height: h }, '*');
         }
         window.addEventListener('load', canvasSendHeight);
         window.addEventListener('resize', canvasSendHeight);
         try {
-          new ResizeObserver(canvasSendHeight).observe(document.documentElement);
+          new ResizeObserver(canvasSendHeight).observe(canvasRoot);
         } catch (e) {}
         setInterval(canvasSendHeight, 400);
       </script>
@@ -135,8 +144,10 @@
     return (
       `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
-      `<style>body{margin:0;font-family:-apple-system,sans-serif;}</style>` +
-      `</head><body>${html}${resizeScript}</body></html>`
+      `<style>html,body{margin:0;overflow:hidden;}` +
+      `body{font-family:-apple-system,sans-serif;}` +
+      `#__canvas_root{overflow:hidden;}</style>` +
+      `</head><body><div id="__canvas_root">${html}</div>${resizeScript}</body></html>`
     );
   }
 
