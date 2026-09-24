@@ -120,60 +120,202 @@
 
   // Rebuilding every row from scratch on each render drops keyboard focus,
   // since the previously focused button is removed from the document. Note
-  // which row (by session id, or the sentinel below for "All") had focus
-  // beforehand so it can be restored to its replacement afterward.
+  // which button (by session id, or the sentinel below for "All", plus which
+  // of the two buttons in the row) had focus beforehand so it can be
+  // restored to its replacement afterward.
   const ALL_ROW_KEY = "__all__";
+
+  function focusKeyFor(el) {
+    return `${el.dataset.sessionId ?? ALL_ROW_KEY}::${el.dataset.role}`;
+  }
 
   function renderSidebar() {
     const active = document.activeElement;
     const focusedKey =
-      active && sidebarEl.contains(active)
-        ? active.dataset.sessionId ?? ALL_ROW_KEY
-        : null;
+      active && sidebarEl.contains(active) ? focusKeyFor(active) : null;
+
+    // A rebuild is about to detach every row, including any button an armed
+    // confirm is pointing at — clear it first so the state machine never
+    // holds a reference to a node that is no longer in the document, then
+    // re-arm the rebuilt button for the same session with the time it had
+    // left, so a card arriving mid-confirm doesn't cancel the clear.
+    let rearm = null;
+    if (pendingConfirm && sidebarEl.contains(pendingConfirm.button)) {
+      rearm = {
+        sessionId: pendingConfirm.button.dataset.sessionId,
+        opts: pendingConfirm.opts,
+        ms: pendingConfirm.deadline - Date.now(),
+      };
+      clearPendingConfirm();
+    }
 
     sidebarEl.innerHTML = "";
 
-    const all = document.createElement("button");
-    all.type = "button";
-    all.className =
-      "sidebar-row" + (selectedSessionId === null ? " selected" : "");
-    all.setAttribute("aria-pressed", selectedSessionId === null ? "true" : "false");
-    all.dataset.sessionId = ALL_ROW_KEY;
-    all.textContent = "All";
-    all.addEventListener("click", () => selectSession(null));
-    sidebarEl.appendChild(all);
-    if (focusedKey === ALL_ROW_KEY) all.focus();
+    sidebarEl.appendChild(
+      buildSidebarRow(ALL_ROW_KEY, "All", null, selectedSessionId === null, focusedKey)
+    );
 
     for (const s of sessions.values()) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className =
-        "sidebar-row" + (selectedSessionId === s.id ? " selected" : "");
-      row.setAttribute("aria-pressed", selectedSessionId === s.id ? "true" : "false");
-      row.dataset.sessionId = s.id;
+      sidebarEl.appendChild(
+        buildSidebarRow(s.id, s.name, s, selectedSessionId === s.id, focusedKey)
+      );
+    }
 
-      const name = document.createElement("div");
-      name.className = "sidebar-row-name";
-      name.textContent = s.name;
-      row.appendChild(name);
+    if (rearm && rearm.ms > 0) {
+      const btn = sidebarEl.querySelector(
+        `.sidebar-row-delete[data-session-id="${CSS.escape(rearm.sessionId)}"]`
+      );
+      if (btn) armConfirm(btn, rearm.opts, rearm.ms);
+    }
+  }
+
+  // A row is a container holding the select button and (for a real session,
+  // not "All") a trash button beside it — never nested inside the select
+  // button, since the select button is itself a real <button> (needed for
+  // keyboard reachability) and buttons cannot nest.
+  function buildSidebarRow(sessionId, name, session, selected, focusedKey) {
+    const wrap = document.createElement("div");
+    wrap.className = "sidebar-row-wrap";
+
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "sidebar-row" + (selected ? " selected" : "");
+    row.setAttribute("aria-pressed", selected ? "true" : "false");
+    row.dataset.sessionId = sessionId;
+    row.dataset.role = "select";
+
+    if (session) {
+      const nameEl = document.createElement("div");
+      nameEl.className = "sidebar-row-name";
+      nameEl.textContent = name;
+      row.appendChild(nameEl);
 
       const meta = document.createElement("div");
       meta.className = "sidebar-row-meta";
       const status = document.createElement("span");
       status.className = "sidebar-row-status";
-      status.textContent = s.endedAt ? "ended" : "active";
-      const count = sessionCardCount(s.id);
+      status.textContent = session.endedAt ? "ended" : "active";
+      const count = sessionCardCount(session.id);
       const countSpan = document.createElement("span");
       countSpan.className = "sidebar-row-count";
       countSpan.textContent = ` · ${count} card${count === 1 ? "" : "s"}`;
       meta.appendChild(status);
       meta.appendChild(countSpan);
       row.appendChild(meta);
-
-      row.addEventListener("click", () => selectSession(s.id));
-      sidebarEl.appendChild(row);
-      if (focusedKey === s.id) row.focus();
+    } else {
+      row.textContent = name;
     }
+
+    row.addEventListener("click", () => selectSession(session ? session.id : null));
+    wrap.appendChild(row);
+    if (focusedKey === focusKeyFor(row)) row.focus();
+
+    if (session) {
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "icon-btn sidebar-row-delete";
+      delBtn.dataset.sessionId = sessionId;
+      delBtn.dataset.role = "delete";
+      delBtn.setAttribute("aria-label", "Clear session");
+      delBtn.textContent = "\u{1F5D1}";
+      delBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        armConfirm(delBtn, {
+          idleLabel: "Clear session",
+          idleText: "\u{1F5D1}",
+          confirmLabel: "Confirm clear",
+          confirmText: "✓",
+          onConfirm: () => clearSession(session.id),
+        });
+      });
+      wrap.appendChild(delBtn);
+      if (focusedKey === focusKeyFor(delBtn)) delBtn.focus();
+    }
+
+    return wrap;
+  }
+
+  // One button may be armed to "confirm" at a time. A second click on the
+  // same (still-armed) button runs the action; a click anywhere else, the
+  // Escape key, or 4s passing reverts it back to idle instead.
+  let pendingConfirm = null;
+
+  function clearPendingConfirm() {
+    if (!pendingConfirm) return;
+    clearTimeout(pendingConfirm.timeoutId);
+    pendingConfirm.revert();
+    pendingConfirm = null;
+  }
+
+  function armConfirm(button, opts, ms = 4000) {
+    const { idleLabel, idleText, confirmLabel, confirmText, onConfirm } = opts;
+    if (pendingConfirm && pendingConfirm.button === button) {
+      clearPendingConfirm();
+      onConfirm();
+      return;
+    }
+    clearPendingConfirm();
+    button.textContent = confirmText;
+    button.setAttribute("aria-label", confirmLabel);
+    button.classList.add("confirming");
+    const timeoutId = setTimeout(clearPendingConfirm, ms);
+    pendingConfirm = {
+      button,
+      opts,
+      deadline: Date.now() + ms,
+      timeoutId,
+      revert() {
+        button.textContent = idleText;
+        button.setAttribute("aria-label", idleLabel);
+        button.classList.remove("confirming");
+      },
+    };
+  }
+
+  document.addEventListener("click", (e) => {
+    if (pendingConfirm && !pendingConfirm.button.contains(e.target)) {
+      clearPendingConfirm();
+    }
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && pendingConfirm) {
+      clearPendingConfirm();
+    }
+  });
+
+  function deleteCard(id) {
+    fetch(`/api/cards/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  function clearSession(id) {
+    fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  // The server is the source of truth for removal: these run only once the
+  // card-removed / session-removed SSE event arrives, so every open viewer
+  // (including the one that clicked Confirm) stays in sync the same way.
+  function removeCard(id) {
+    if (!cards.has(id)) return;
+    cards.delete(id);
+    const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
+    if (el) el.remove();
+    applyFilter();
+    renderSidebar();
+  }
+
+  function removeSession(id) {
+    if (!sessions.has(id)) return;
+    sessions.delete(id);
+    for (const [cardId, c] of Array.from(cards.entries())) {
+      if (c.sessionId !== id) continue;
+      cards.delete(cardId);
+      const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
+      if (el) el.remove();
+    }
+    if (selectedSessionId === id) selectedSessionId = null;
+    renderSidebar();
+    applyFilter();
   }
 
   function cardMatchesFilter(sessionId) {
@@ -291,6 +433,8 @@
 
     const header = document.createElement("div");
     header.className = "card-header";
+    const headerInfo = document.createElement("div");
+    headerInfo.className = "card-header-info";
     const nameSpan = document.createElement("span");
     nameSpan.className = "session-name";
     nameSpan.textContent = sessionName(card.sessionId);
@@ -298,9 +442,27 @@
     const timeSpan = document.createElement("span");
     timeSpan.className = "time";
     timeSpan.textContent = relativeTime(card.at);
-    header.appendChild(nameSpan);
-    header.appendChild(sep);
-    header.appendChild(timeSpan);
+    headerInfo.appendChild(nameSpan);
+    headerInfo.appendChild(sep);
+    headerInfo.appendChild(timeSpan);
+    header.appendChild(headerInfo);
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "icon-btn card-delete-btn";
+    delBtn.setAttribute("aria-label", "Delete card");
+    delBtn.textContent = "×";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      armConfirm(delBtn, {
+        idleLabel: "Delete card",
+        idleText: "×",
+        confirmLabel: "Confirm delete",
+        confirmText: "✓",
+        onConfirm: () => deleteCard(card.id),
+      });
+    });
+    header.appendChild(delBtn);
     el.appendChild(header);
 
     const body = document.createElement("div");
@@ -386,7 +548,16 @@
     const existing = cardsEl.querySelector(
       `[data-card-id="${CSS.escape(card.id)}"]`
     );
-    if (existing) existing.remove();
+    if (existing) {
+      // The replacement is about to detach this card's delete button too —
+      // clear an armed confirm pointing at it first, the same way
+      // renderSidebar does for a sidebar rebuild, so pendingConfirm never
+      // holds a reference to a node no longer in the document.
+      if (pendingConfirm && existing.contains(pendingConfirm.button)) {
+        clearPendingConfirm();
+      }
+      existing.remove();
+    }
 
     const el = renderCard(card);
     el.hidden = !cardMatchesFilter(card.sessionId);
@@ -469,6 +640,16 @@
     source.addEventListener("card-upserted", (event) => {
       const card = JSON.parse(event.data);
       upsertCard(card);
+    });
+
+    source.addEventListener("card-removed", (event) => {
+      const { id } = JSON.parse(event.data);
+      removeCard(id);
+    });
+
+    source.addEventListener("session-removed", (event) => {
+      const { id } = JSON.parse(event.data);
+      removeSession(id);
     });
   }
 
