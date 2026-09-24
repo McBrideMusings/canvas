@@ -236,7 +236,7 @@ async fn file_endpoint_serves_allowed_images_and_rejects_others() {
     let app = app();
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let image_path = format!("{manifest_dir}/../docs/spikes/sideshow-reference/populated.png");
+    let image_path = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
 
     let response = app
         .clone()
@@ -268,7 +268,7 @@ async fn file_endpoint_rejects_relative_paths() {
     let response = app
         .clone()
         .oneshot(get(
-            "/api/file?path=../docs/spikes/sideshow-reference/populated.png",
+            "/api/file?path=../app/src-tauri/icons/tray.png",
         ))
         .await
         .unwrap();
