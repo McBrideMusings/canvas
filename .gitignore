@@ -4,3 +4,17 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Agent scratch — plans, summaries, handoffs. Never committed.
+tmp/
+
+# Local-only notes and settings (CLAUDE.local.md, *.local.json).
+*.local.*
+
+# Secrets.
+.env
+.env.*
+!.env.example
+
+# Rust
+target/
