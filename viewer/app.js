@@ -46,20 +46,38 @@
     applyFilter();
   }
 
+  // Rebuilding every row from scratch on each render drops keyboard focus,
+  // since the previously focused button is removed from the document. Note
+  // which row (by session id, or the sentinel below for "All") had focus
+  // beforehand so it can be restored to its replacement afterward.
+  const ALL_ROW_KEY = "__all__";
+
   function renderSidebar() {
+    const active = document.activeElement;
+    const focusedKey =
+      active && sidebarEl.contains(active)
+        ? active.dataset.sessionId ?? ALL_ROW_KEY
+        : null;
+
     sidebarEl.innerHTML = "";
 
-    const all = document.createElement("div");
+    const all = document.createElement("button");
+    all.type = "button";
     all.className =
       "sidebar-row" + (selectedSessionId === null ? " selected" : "");
+    all.setAttribute("aria-pressed", selectedSessionId === null ? "true" : "false");
+    all.dataset.sessionId = ALL_ROW_KEY;
     all.textContent = "All";
     all.addEventListener("click", () => selectSession(null));
     sidebarEl.appendChild(all);
+    if (focusedKey === ALL_ROW_KEY) all.focus();
 
     for (const s of sessions.values()) {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      row.type = "button";
       row.className =
         "sidebar-row" + (selectedSessionId === s.id ? " selected" : "");
+      row.setAttribute("aria-pressed", selectedSessionId === s.id ? "true" : "false");
       row.dataset.sessionId = s.id;
 
       const name = document.createElement("div");
@@ -82,6 +100,7 @@
 
       row.addEventListener("click", () => selectSession(s.id));
       sidebarEl.appendChild(row);
+      if (focusedKey === s.id) row.focus();
     }
   }
 

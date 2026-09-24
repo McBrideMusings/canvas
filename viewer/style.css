@@ -38,9 +38,18 @@ body {
 }
 
 .sidebar-row {
+  display: block;
+  width: 100%;
+  margin: 0;
   padding: 8px 20px;
   cursor: pointer;
   color: #444;
+  background: none;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  text-align: left;
 }
 
 .sidebar-row.selected {
@@ -51,6 +60,11 @@ body {
 
 .sidebar-row:hover {
   background: #ece9e0;
+}
+
+.sidebar-row:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
 }
 
 .sidebar-row-name {
