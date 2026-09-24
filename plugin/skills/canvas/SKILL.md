@@ -43,6 +43,7 @@ no `connect-src`, so the page cannot `fetch()` or open a `WebSocket`;
 everything it shows has to already be in the HTML you post.
 
 Unlike a hook, `canvas post` is meant to be seen: if canvasd isn't running,
-the pid can't be resolved, or the HTML is empty, it prints one line to
-stderr and exits non-zero. Check the exit code and read the message rather
-than assuming the post landed.
+`CLAUDE_CODE_SESSION_ID` isn't set (it only runs inside a Claude Code
+session), or the HTML is empty, it prints one line to stderr and exits
+non-zero. Check the exit code and read the message rather than assuming the
+post landed.

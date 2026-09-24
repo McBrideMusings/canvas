@@ -65,7 +65,7 @@ async fn upsert_and_end_session() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas", "claude_pid": 111}),
+            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas"}),
         ))
         .await
         .unwrap();
@@ -94,7 +94,7 @@ async fn empty_turn_with_no_open_card_creates_nothing() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -103,7 +103,7 @@ async fn empty_turn_with_no_open_card_creates_nothing() {
         .clone()
         .oneshot(post(
             "/api/turns",
-            json!({"session_id": "s1", "links": [], "paths": [], "images": []}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": [], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -121,7 +121,7 @@ async fn turn_with_content_and_no_open_card_creates_closed_card() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -129,7 +129,7 @@ async fn turn_with_content_and_no_open_card_creates_closed_card() {
     app.clone()
         .oneshot(post(
             "/api/turns",
-            json!({"session_id": "s1", "links": ["https://example.com"], "paths": [], "images": []}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": ["https://example.com"], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -148,7 +148,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 42}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -157,7 +157,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claude_pid": 42, "html": "<p>hello</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>hello</p>"}),
         ))
         .await
         .unwrap();
@@ -171,7 +171,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claude_pid": 42, "html": "<p>again</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>again</p>"}),
         ))
         .await
         .unwrap();
@@ -188,7 +188,7 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
     app.clone()
         .oneshot(post(
             "/api/turns",
-            json!({"session_id": "s1", "links": ["/tmp/foo"], "paths": [], "images": []}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": ["/tmp/foo"], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -201,17 +201,47 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
 }
 
 #[tokio::test]
-async fn post_with_unknown_pid_is_404() {
+async fn post_for_unknown_session_creates_it_named_from_cwd() {
     let app = app();
     let response = app
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"claude_pid": 9999, "html": "<p>x</p>"}),
+            json!({"session_id": "s9", "cwd": "/tmp/unregistered-proj", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    let card: TurnCard = json_body(response).await;
+    assert_eq!(card.session_id, "s9");
+    assert_eq!(card.html, vec!["<p>x</p>"]);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let session = state.sessions.iter().find(|s| s.id == "s9").unwrap();
+    assert_eq!(session.cwd, "/tmp/unregistered-proj");
+    assert_eq!(session.name, "unregistered-proj");
+}
+
+#[tokio::test]
+async fn turn_for_unknown_session_creates_it_named_from_cwd() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/turns",
+            json!({"session_id": "s8", "cwd": "/tmp/unregistered-turn-proj", "links": ["https://example.com"], "paths": [], "images": []}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let session = state.sessions.iter().find(|s| s.id == "s8").unwrap();
+    assert_eq!(session.cwd, "/tmp/unregistered-turn-proj");
+    assert_eq!(session.name, "unregistered-turn-proj");
+    assert!(state.cards.iter().any(|c| c.session_id == "s8"));
 }
 
 #[tokio::test]
@@ -220,7 +250,7 @@ async fn ring_evicts_oldest_at_501() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -229,7 +259,7 @@ async fn ring_evicts_oldest_at_501() {
         app.clone()
             .oneshot(post(
                 "/api/turns",
-                json!({"session_id": "s1", "links": [format!("https://example.com/{i}")], "paths": [], "images": []}),
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "links": [format!("https://example.com/{i}")], "paths": [], "images": []}),
             ))
             .await
             .unwrap();
@@ -298,7 +328,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -318,7 +348,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "claude_pid": 1}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
         ))
         .await
         .unwrap();
@@ -353,11 +383,11 @@ async fn events_endpoint_is_sse() {
     assert!(content_type.starts_with("text/event-stream"));
 }
 
-async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str, claude_pid: i64) -> TurnCard {
+async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> TurnCard {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": session_id, "cwd": cwd, "claude_pid": claude_pid}),
+            json!({"session_id": session_id, "cwd": cwd}),
         ))
         .await
         .unwrap();
@@ -366,7 +396,7 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str, claude_pid: 
         .clone()
         .oneshot(post(
             "/api/turns",
-            json!({"session_id": session_id, "links": ["https://example.com"], "paths": [], "images": []}),
+            json!({"session_id": session_id, "cwd": cwd, "links": ["https://example.com"], "paths": [], "images": []}),
         ))
         .await
         .unwrap();
@@ -376,7 +406,7 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str, claude_pid: 
 #[tokio::test]
 async fn delete_card_removes_it_from_state() {
     let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
 
     let response = app
         .clone()
@@ -408,8 +438,8 @@ async fn delete_unknown_card_is_404() {
 #[tokio::test]
 async fn delete_session_removes_session_and_its_cards_but_not_others() {
     let app = app();
-    let card1 = seed_card(&app, "s1", "/tmp/proj", 1).await;
-    let card2 = seed_card(&app, "s2", "/tmp/proj2", 2).await;
+    let card1 = seed_card(&app, "s1", "/tmp/proj").await;
+    let card2 = seed_card(&app, "s2", "/tmp/proj2").await;
 
     let response = app
         .clone()
@@ -429,7 +459,7 @@ async fn delete_session_removes_session_and_its_cards_but_not_others() {
 #[tokio::test]
 async fn delete_session_rejects_cross_origin_and_removes_nothing() {
     let app = app();
-    seed_card(&app, "s1", "/tmp/proj", 1).await;
+    seed_card(&app, "s1", "/tmp/proj").await;
 
     let response = app
         .clone()
@@ -472,7 +502,7 @@ async fn delete_unknown_session_is_404() {
 #[tokio::test]
 async fn delete_card_rejects_cross_origin_and_removes_nothing() {
     let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
 
     let response = app
         .clone()
@@ -493,7 +523,7 @@ async fn delete_card_rejects_cross_origin_and_removes_nothing() {
 #[tokio::test]
 async fn delete_card_rejects_https_origin_even_with_matching_host_and_port() {
     let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj", 1).await;
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
 
     let response = app
         .clone()
@@ -514,8 +544,8 @@ async fn delete_card_rejects_https_origin_even_with_matching_host_and_port() {
 #[tokio::test]
 async fn delete_card_accepts_same_origin_127_and_localhost() {
     let app = app();
-    let card1 = seed_card(&app, "s1", "/tmp/proj", 1).await;
-    let card2 = seed_card(&app, "s2", "/tmp/proj2", 2).await;
+    let card1 = seed_card(&app, "s1", "/tmp/proj").await;
+    let card2 = seed_card(&app, "s2", "/tmp/proj2").await;
 
     let response = app
         .clone()

@@ -91,7 +91,6 @@ pub async fn upsert_session(
             id: req.session_id.clone(),
             cwd: req.cwd.clone(),
             name: cwd_basename(&req.cwd),
-            claude_pid: req.claude_pid,
             started_at,
             ended_at,
         };
@@ -101,6 +100,28 @@ pub async fn upsert_session(
     state.publish(CanvasEvent::SessionUpserted(session.clone()));
 
     (StatusCode::OK, Json(session))
+}
+
+/// Creates `session_id` with `name` set from `cwd`'s basename when the
+/// daemon doesn't already know it — the pid → session lookup this used to
+/// depend on is gone, so `/api/turns` and `/api/posts` can arrive for a
+/// session that never got a `SessionStart` (e.g. the daemon restarted after
+/// the session began). Returns the new session so the caller can publish a
+/// `SessionUpserted` event; returns `None` when the session already existed,
+/// since nothing about it changed.
+fn ensure_session(inner: &mut crate::state::Inner, session_id: &str, cwd: &str) -> Option<Session> {
+    if inner.sessions.contains_key(session_id) {
+        return None;
+    }
+    let session = Session {
+        id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        name: cwd_basename(cwd),
+        started_at: now(),
+        ended_at: None,
+    };
+    inner.sessions.insert(session.id.clone(), session.clone());
+    Some(session)
 }
 
 pub async fn end_session(
@@ -132,9 +153,12 @@ pub async fn post_turn(
 ) -> impl IntoResponse {
     let all_empty = req.links.is_empty() && req.paths.is_empty() && req.images.is_empty();
 
-    let card = {
+    // One lock hold for both writes, so a concurrent DELETE of the session
+    // can't land between creating it and adding its card.
+    let (created_session, card) = {
         let mut inner = state.inner.write().await;
-        match inner.open_card_index(&req.session_id) {
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];
                 card.links.extend(req.links);
@@ -162,8 +186,12 @@ pub async fn post_turn(
                     Some(card)
                 }
             }
-        }
+        };
+        (created_session, card)
     };
+    if let Some(session) = created_session {
+        state.publish(CanvasEvent::SessionUpserted(session));
+    }
 
     match card {
         Some(card) => {
@@ -178,23 +206,12 @@ pub async fn post_explicit(
     State(state): State<AppState>,
     Json(req): Json<PostRequest>,
 ) -> impl IntoResponse {
-    let session_id = {
-        let inner = state.inner.read().await;
-        inner
-            .sessions
-            .values()
-            .find(|s| s.claude_pid == req.claude_pid && s.ended_at.is_none())
-            .map(|s| s.id.clone())
-    };
-
-    let session_id = match session_id {
-        Some(id) => id,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-
-    let card = {
+    // One lock hold for both writes, so a concurrent DELETE of the session
+    // can't land between creating it and adding its card.
+    let (created_session, card) = {
         let mut inner = state.inner.write().await;
-        match inner.open_card_index(&session_id) {
+        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd);
+        let card = match inner.open_card_index(&req.session_id) {
             Some(idx) => {
                 let card = &mut inner.cards[idx];
                 card.html.push(req.html.clone());
@@ -204,7 +221,7 @@ pub async fn post_explicit(
             None => {
                 let card = TurnCard {
                     id: Uuid::new_v4().to_string(),
-                    session_id: session_id.clone(),
+                    session_id: req.session_id.clone(),
                     at: now(),
                     html: vec![req.html.clone()],
                     links: Vec::new(),
@@ -215,8 +232,12 @@ pub async fn post_explicit(
                 inner.push_card(card.clone());
                 card
             }
-        }
+        };
+        (created_session, card)
     };
+    if let Some(session) = created_session {
+        state.publish(CanvasEvent::SessionUpserted(session));
+    }
 
     state.publish(CanvasEvent::CardUpserted(card.clone()));
     (StatusCode::OK, Json(card)).into_response()

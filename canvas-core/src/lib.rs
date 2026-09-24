@@ -10,7 +10,6 @@ pub struct Session {
     pub cwd: String,
     /// cwd basename, computed on upsert.
     pub name: String,
-    pub claude_pid: u32,
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
@@ -36,13 +35,13 @@ pub struct TurnCard {
 pub struct UpsertSessionRequest {
     pub session_id: String,
     pub cwd: String,
-    pub claude_pid: u32,
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRequest {
     pub session_id: String,
+    pub cwd: String,
     #[serde(default)]
     pub links: Vec<String>,
     #[serde(default)]
@@ -54,7 +53,8 @@ pub struct TurnRequest {
 /// Request bodies use snake_case, matching Claude Code hook JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostRequest {
-    pub claude_pid: u32,
+    pub session_id: String,
+    pub cwd: String,
     pub html: String,
 }
 
