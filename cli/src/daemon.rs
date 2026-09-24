@@ -12,7 +12,13 @@ async fn serve() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8229);
 
-    let state = AppState::new();
+    let state = match canvasd::store::default_dir() {
+        Some(dir) => AppState::open(&dir),
+        None => {
+            eprintln!("canvasd: no data directory; the stream will not persist");
+            AppState::new()
+        }
+    };
     let app = build_router(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));

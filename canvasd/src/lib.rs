@@ -1,5 +1,6 @@
 pub mod routes;
 pub mod state;
+pub mod store;
 pub mod viewer;
 
 use axum::routing::{delete, get, post};

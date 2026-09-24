@@ -6,9 +6,11 @@ the terminal all day.
 
 ## Map
 
-- `canvasd/` — library crate (axum): the router, in-memory state (newest 500
-  posts, evicted oldest-first), SSE push to viewers, and `viewer/` asset
-  serving. No binary of its own — `canvas daemon` runs it.
+- `canvasd/` — library crate (axum): the router, state (newest 500 posts, evicted
+  oldest-first, held in memory and appended to `stream.jsonl` in
+  `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
+  the last 24h reload and the file is rewritten compacted), SSE push to
+  viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The window loads a local waiting page (`app/dist/index.html`) that polls
   the daemon and navigates to it once it answers, so a not-yet-started or
