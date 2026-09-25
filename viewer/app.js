@@ -123,6 +123,9 @@
           })
         );
         break;
+      case "arrow-up":
+        svg.appendChild(svgEl("path", { d: "M12 19V5M5.5 11.5L12 5l6.5 6.5" }));
+        break;
       case "chevron-left":
         svg.appendChild(svgEl("path", { d: "M15 5l-7 7 7 7" }));
         break;
@@ -190,6 +193,25 @@
 
   const prefs = loadPrefs();
 
+  // Arrival. WKWebView has no CSS scroll anchoring, so a reader scrolled
+  // down more than SCROLLED_PX keeps their place by hand: the height of a
+  // card inserted above them, and every later height change of a card above
+  // them, is added to the stream's scrollTop. `overflow-anchor: none` in the
+  // stylesheet stops browsers that do anchor from correcting a second time.
+  const SCROLLED_PX = 40;
+  const TO_TOP_PX = 500;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const unseen = { count: 0, sessionIds: new Set() };
+  // True from a click on the pill or back-to-top button until the stream
+  // reaches the top, so place-holding does not fight the smooth scroll.
+  let returningToTop = false;
+  const newPillEl = document.getElementById("new-pill");
+  const toTopEl = document.getElementById("to-top");
+
+  function animating() {
+    return prefs.animate && !reducedMotion.matches;
+  }
+
   // The one rule for a hidden session. The stream filter, the chip row, the
   // Settings list and the gear's badge all ask it.
   function isHidden(session) {
@@ -254,6 +276,7 @@
     renderChips();
     applyFilter();
     renderSettings();
+    renderPill();
   }
 
   function setPrefsAndRefresh(change) {
@@ -606,6 +629,26 @@
     settingsEl.appendChild(hideEndedRow);
 
     settingsEl.appendChild(settingsHeading("Stream"));
+
+    const animateRow = document.createElement("label");
+    animateRow.className = "settings-row";
+    const animateLabel = document.createElement("span");
+    animateLabel.className = "settings-row-text";
+    animateLabel.textContent = "Animate new posts";
+    const animateToggle = document.createElement("input");
+    animateToggle.type = "checkbox";
+    animateToggle.className = "switch";
+    animateToggle.setAttribute("role", "switch");
+    animateToggle.dataset.pref = "animate";
+    animateToggle.checked = prefs.animate;
+    animateToggle.addEventListener("change", () =>
+      setPrefsAndRefresh(() => {
+        prefs.animate = animateToggle.checked;
+      })
+    );
+    animateRow.append(animateLabel, animateToggle);
+    settingsEl.appendChild(animateRow);
+
     const colourRow = document.createElement("div");
     colourRow.className = "settings-row static";
     const colourLabel = document.createElement("span");
@@ -1084,7 +1127,11 @@
       const frames = cardsEl.querySelectorAll("iframe");
       for (const frame of frames) {
         if (frame.contentWindow === event.source) {
+          const cardEl = frame.closest(".card");
+          const wasAbove = cardIsAboveViewport(cardEl);
+          const before = frame.offsetHeight;
           frame.style.height = `${Math.max(20, data.height)}px`;
+          if (wasAbove) holdPlace(frame.offsetHeight - before);
           break;
         }
       }
@@ -1224,11 +1271,118 @@
       cardsEl.appendChild(el);
     }
 
+    // Only a new post from a session the reader can see arrives; replacing
+    // a card, or a post from a hidden session, is silent.
+    const session = sessions.get(card.sessionId);
+    const arrives = !existing && !(session && isHidden(session));
+    if (arrives && !el.hidden) arrive(el, card);
+
     // A new card changes its session's count — refresh the chip row and
     // Settings without touching any other card, so a card for a
     // non-selected session updates its chip's count and leaves the visible
     // stream alone.
     refreshVisibility();
+
+    if (arrives && !el.hidden) pulseChip(card.sessionId);
+    if (arrives && el.hidden) {
+      toast(`New post from ${sessionName(card.sessionId)} (filtered out)`, "Show", () => {
+        selectSession(card.sessionId);
+        scrollToTop();
+      });
+    }
+  }
+
+  function cardIsAboveViewport(cardEl) {
+    if (!cardEl || cardEl.hidden) return false;
+    return cardEl.getBoundingClientRect().bottom <= streamEl.getBoundingClientRect().top;
+  }
+
+  // Adds a height change above the reader to scrollTop so what they are
+  // reading stays where it was.
+  function holdPlace(delta) {
+    if (!delta || returningToTop || streamEl.scrollTop <= SCROLLED_PX) return;
+    streamEl.scrollTop += delta;
+  }
+
+  function arrive(el, card) {
+    if (streamEl.scrollTop > SCROLLED_PX) {
+      const gap = parseFloat(getComputedStyle(el).marginBottom) || 0;
+      // A card dated before the reader's position lands below them: nothing
+      // to hold and nothing new above.
+      if (el.getBoundingClientRect().top >= streamEl.getBoundingClientRect().top) return;
+      if (!returningToTop) streamEl.scrollTop += el.offsetHeight + gap;
+      unseen.count++;
+      unseen.sessionIds.add(card.sessionId);
+    } else if (animating()) {
+      el.style.setProperty("--arrive-height", `${el.offsetHeight}px`);
+      el.classList.add("arriving");
+    }
+    if (animating()) el.classList.add("ring");
+    // Each class comes off when its own animation ends; the timer covers a
+    // card the filter hides mid-animation, which never fires animationend.
+    el.addEventListener("animationend", (e) => {
+      if (e.animationName === "card-slide") el.classList.remove("arriving");
+      if (e.animationName === "card-ring") el.classList.remove("ring");
+    });
+    setTimeout(() => el.classList.remove("arriving", "ring"), 1900);
+  }
+
+  function pulseChip(sessionId) {
+    if (!animating()) return;
+    const chip = chipsEl.querySelector(`.chip[data-session-id="${CSS.escape(sessionId)}"]`);
+    if (!chip) return;
+    chip.classList.add("pulse");
+    chip.addEventListener("animationend", () => chip.classList.remove("pulse"), { once: true });
+    setTimeout(() => chip.classList.remove("pulse"), 1900);
+  }
+
+  function scrollToTop() {
+    returningToTop = streamEl.scrollTop > SCROLLED_PX;
+    streamEl.scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
+    clearUnseen();
+  }
+
+  function clearUnseen() {
+    unseen.count = 0;
+    unseen.sessionIds.clear();
+    renderPill();
+  }
+
+  // "↑", up to four dots in the colours of the sessions with unseen posts,
+  // and the count.
+  function renderPill() {
+    newPillEl.hidden = unseen.count === 0;
+    newPillEl.dataset.count = String(unseen.count);
+    if (unseen.count === 0) return;
+    const dots = document.createElement("span");
+    dots.className = "pill-dots";
+    for (const id of Array.from(unseen.sessionIds).slice(-4)) {
+      const s = sessions.get(id);
+      if (!s) continue;
+      const dot = document.createElement("span");
+      dot.className = "session-dot";
+      dot.style.setProperty("--session-colour", sessionColour(s));
+      dots.appendChild(dot);
+    }
+    const n = unseen.count;
+    newPillEl.replaceChildren("↑", dots, `${n} new post${n === 1 ? "" : "s"}`);
+  }
+
+  newPillEl.addEventListener("click", scrollToTop);
+  toTopEl.appendChild(buildIcon("arrow-up"));
+  toTopEl.addEventListener("click", scrollToTop);
+
+  streamEl.addEventListener("scroll", () => {
+    const y = streamEl.scrollTop;
+    toTopEl.hidden = y <= TO_TOP_PX;
+    if (y < SCROLLED_PX) {
+      returningToTop = false;
+      if (unseen.count > 0) clearUnseen();
+    }
+  });
+  // The reader taking the wheel or a finger back ends a smooth scroll to top.
+  for (const type of ["wheel", "touchstart"]) {
+    streamEl.addEventListener(type, () => (returningToTop = false), { passive: true });
   }
 
   // A session's name and repo can change (e.g. re-registration); patch just
