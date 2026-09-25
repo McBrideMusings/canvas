@@ -497,6 +497,7 @@ body {
 }
 
 .stream {
+  overflow-anchor: none;
   flex: 1;
   min-height: 0;
   padding: 20px 24px;
@@ -803,4 +804,118 @@ body {
 
 [hidden] {
   display: none !important;
+}
+
+/* Arrival. The card grows from nothing to --arrive-height (set from its
+   measured height) while a 2px ring in its session colour fades out; JS
+   removes both classes when they finish. */
+.card.arriving {
+  overflow: hidden;
+  animation: card-slide 300ms ease-out;
+}
+
+/* The ring is a pseudo-element, so it survives the card's overflow: hidden
+   during the slide and runs independently of it. */
+.card.ring {
+  position: relative;
+}
+
+.card.ring::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: card-ring 1800ms ease-out;
+}
+
+@keyframes card-slide {
+  from { max-height: 0; opacity: 0; margin-bottom: 0; }
+  to { max-height: var(--arrive-height); opacity: 1; margin-bottom: 16px; }
+}
+
+@keyframes card-ring {
+  from { box-shadow: inset 0 0 0 2px var(--session-colour, #888); }
+  to { box-shadow: inset 0 0 0 2px transparent; }
+}
+
+.chip.pulse {
+  animation: chip-pulse 900ms ease-out;
+}
+
+.chip[data-arriving] {
+  animation: chip-slide 300ms ease-out;
+}
+
+@keyframes chip-slide {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes chip-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--session-colour, #888) 60%, transparent); }
+  to { box-shadow: 0 0 0 8px transparent; }
+}
+
+/* Zero-height row under the chip row that holds the pill, so the pill floats
+   over the top of the stream, centred, without moving it. */
+.pill-anchor {
+  position: relative;
+  flex: none;
+  height: 0;
+  z-index: 15;
+  display: flex;
+  justify-content: center;
+}
+
+.new-pill {
+  position: absolute;
+  top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 14px;
+  background: #1a1a1a;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.new-pill:focus-visible,
+.to-top:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.pill-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.pill-dots .session-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.to-top {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e2e0d8;
+  border-radius: 50%;
+  background: #fff;
+  color: #1a1a1a;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
 }

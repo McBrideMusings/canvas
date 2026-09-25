@@ -140,6 +140,8 @@
       case "clear":
         svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "9" }));
         svg.appendChild(svgEl("path", { d: "M9 9l6 6M15 9l-6 6" }));
+      case "arrow-up":
+        svg.appendChild(svgEl("path", { d: "M12 19V5M5.5 11.5L12 5l6.5 6.5" }));
         break;
       case "chevron-left":
         svg.appendChild(svgEl("path", { d: "M15 5l-7 7 7 7" }));
@@ -239,6 +241,25 @@
   window.addEventListener("focus", syncPrefsFromStorage);
   lastStoredPrefs = readStoredPrefs();
 
+  // Arrival. WKWebView has no CSS scroll anchoring, so a reader scrolled
+  // down more than SCROLLED_PX keeps their place by hand: the height of a
+  // card inserted above them, and every later height change of a card above
+  // them, is added to the stream's scrollTop. `overflow-anchor: none` in the
+  // stylesheet stops browsers that do anchor from correcting a second time.
+  const SCROLLED_PX = 40;
+  const TO_TOP_PX = 500;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const unseen = { count: 0, sessionIds: new Set() };
+  // True from a click on the pill or back-to-top button until the stream
+  // reaches the top, so place-holding does not fight the smooth scroll.
+  let returningToTop = false;
+  const newPillEl = document.getElementById("new-pill");
+  const toTopEl = document.getElementById("to-top");
+
+  function animating() {
+    return prefs.animate && !reducedMotion.matches;
+  }
+
   // The one rule for an archived session. The stream filter, the chip row,
   // the Sessions drawer and its toggle's badge all ask it.
   function isHidden(session) {
@@ -295,10 +316,13 @@
   // out behind a filter the chip row no longer shows.
   function refreshVisibility() {
     const selected = selectedSessionId && sessions.get(selectedSessionId);
-    if (selected && isHidden(selected)) selectedSessionId = null;
+    if (selected && (isHidden(selected) || sessionCardCount(selected.id) === 0)) {
+      selectedSessionId = null;
+    }
     renderChips();
     applyFilter();
     renderDrawer();
+    renderPill();
   }
 
   function setPrefsAndRefresh(change) {
@@ -444,9 +468,22 @@
     return list.sort((a, b) => lastActive(b) - lastActive(a));
   }
 
+  // Visible sessions that have posted, most recent post first.
   function chipSessions() {
-    return byRecency(Array.from(sessions.values()).filter((s) => !isHidden(s)));
+    const posted = new Set();
+    for (const c of cards.values()) posted.add(c.sessionId);
+    return byRecency(
+      Array.from(sessions.values()).filter((s) => !isHidden(s) && posted.has(s.id))
+    );
   }
+
+  // Ids of the chips in the last render, so the next one can tell which are
+  // new; whether a chip new to this render enters with motion (true only
+  // while a live card-upserted is being applied); and the chips still
+  // mid-slide, which every render rebuilds and so must mark again.
+  let renderedChipIds = new Set();
+  let chipsMayArrive = false;
+  const arrivingChipIds = new Set();
 
   // Rebuilding every chip on each render drops keyboard focus, since the
   // focused button leaves the document. Note which chip (by session id, ""
@@ -470,6 +507,10 @@
       const selected = selectedSessionId === s.id;
       const chip = buildChip(s.id, selected);
       chip.style.setProperty("--session-colour", sessionColour(s));
+      if (chipsMayArrive && animating() && !renderedChipIds.has(s.id)) {
+        startChipArrival(s.id);
+      }
+      if (arrivingChipIds.has(s.id)) chip.dataset.arriving = "";
       chip.title = s.repo ? `${s.name} · ${s.repo}` : s.name;
       const name = document.createElement("span");
       name.className = "chip-name";
@@ -486,10 +527,22 @@
     }
 
     chipsEl.replaceChildren(...chips);
+    renderedChipIds = new Set(visible.map((s) => s.id));
     if (focusedKey !== null) {
       const again = chips.find((c) => c.dataset.sessionId === focusedKey);
       if (again) again.focus();
     }
+  }
+
+  // A chip carries data-arriving for the 300ms slide. The timer, not
+  // animationend, ends it, since a re-render replaces the chip element.
+  function startChipArrival(sessionId) {
+    arrivingChipIds.add(sessionId);
+    setTimeout(() => {
+      arrivingChipIds.delete(sessionId);
+      const chip = chipsEl.querySelector(`.chip[data-session-id="${CSS.escape(sessionId)}"]`);
+      if (chip) chip.removeAttribute("data-arriving");
+    }, 300);
   }
 
   function buildChip(sessionId, selected) {
@@ -724,7 +777,7 @@
       active && drawerBodyEl.contains(active) ? active.dataset.key : null;
     const scrollTop = drawerBodyEl.scrollTop;
 
-    const activeList = chipSessions();
+    const activeList = byRecency(Array.from(sessions.values()).filter((x) => !isHidden(x)));
     const archivedList = byRecency(archived);
     const deleteAll =
       archivedList.length > 0
@@ -980,6 +1033,17 @@
       const step = e.key === "ArrowDown" ? 1 : -1;
       const at = items.indexOf(document.activeElement);
       items[(at + step + items.length) % items.length].focus();
+    });
+
+    // Items have tabIndex -1, so Tab leaves the menu. relatedTarget is null
+    // for that Tab in Chromium, so check where focus is once the move is done.
+    // Window blur leaves activeElement inside the menu, so the menu stays.
+    menu.addEventListener("focusout", () => {
+      setTimeout(() => {
+        if (!openMenu || openMenu.menu !== menu) return;
+        const active = document.activeElement;
+        if (!menu.contains(active) && active !== button) closeMenu();
+      }, 0);
     });
 
     header.appendChild(menu);
@@ -1283,7 +1347,7 @@
           var q = query.toLowerCase();
           var walker = document.createTreeWalker(canvasRoot, NodeFilter.SHOW_TEXT, {
             acceptNode: function (n) {
-              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea')
+              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea, .__cv-head, .__cv-more, .__cv-linkbar')
                 ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
             }
           });
@@ -1331,6 +1395,96 @@
           parent.postMessage({ type: 'canvas-open', index: n }, '*');
         });
 
+        // Hovering or focusing such a link shows a bar with Open and Copy.
+        // The parent says which kind each index is (kinds only, never the
+        // targets), so the bar can word its buttons.
+        var canvasKinds = [];
+        var canvasBar = null, canvasBarTimer = null, canvasBarLink = null;
+        function canvasReportBar(open) {
+          parent.postMessage({ type: 'canvas-linkbar', open: open }, '*');
+        }
+        function canvasHideBar() {
+          clearTimeout(canvasBarTimer);
+          if (!canvasBar) return;
+          canvasBar.remove();
+          canvasBar = null;
+          canvasBarLink = null;
+          canvasReportBar(false);
+        }
+        function canvasHideSoon() {
+          clearTimeout(canvasBarTimer);
+          canvasBarTimer = setTimeout(canvasHideBar, 250);
+        }
+        function canvasLinkIndex(a) {
+          return parseInt(a.getAttribute('href').slice('#canvas-open-'.length), 10);
+        }
+        function canvasShowBar(a) {
+          var n = canvasLinkIndex(a);
+          var kind = canvasKinds[n];
+          if (Number.isNaN(n) || (kind !== 'path' && kind !== 'url')) return;
+          if (canvasBarLink === a) { clearTimeout(canvasBarTimer); return; }
+          canvasHideBar();
+          var bar = document.createElement('div');
+          bar.className = '__cv-linkbar';
+          [['open', kind === 'url' ? 'Open in browser' : 'Open'],
+           ['copy', kind === 'url' ? 'Copy link' : 'Copy path']].forEach(function (b) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = b[1];
+            btn.addEventListener('click', function () {
+              parent.postMessage({ type: b[0] === 'open' ? 'canvas-open' : 'canvas-copy-target', index: n }, '*');
+              canvasHideBar();
+            });
+            bar.appendChild(btn);
+          });
+          bar.addEventListener('mouseenter', function () { clearTimeout(canvasBarTimer); });
+          bar.addEventListener('mouseleave', canvasHideSoon);
+          bar.addEventListener('focusout', function (e) {
+            if (e.relatedTarget && (bar.contains(e.relatedTarget) || e.relatedTarget === a)) return;
+            canvasHideSoon();
+          });
+          // Right after the link in tab order, so Tab from the link reaches
+          // the buttons; fixed, so it takes no space in the post's layout.
+          a.parentNode.insertBefore(bar, a.nextSibling);
+          var r = a.getBoundingClientRect();
+          var top = r.top - bar.offsetHeight - 6;
+          if (top < 2) top = r.bottom + 6;
+          bar.style.left = Math.max(4, Math.min(r.left, window.innerWidth - bar.offsetWidth - 4)) + 'px';
+          bar.style.top = top + 'px';
+          canvasBar = bar;
+          canvasBarLink = a;
+          canvasReportBar(true);
+        }
+        function canvasBarLinkOf(e) {
+          return e.target.closest && e.target.closest('a[href^="#canvas-open-"]');
+        }
+        document.addEventListener('mouseover', function (e) {
+          var a = canvasBarLinkOf(e);
+          if (a) canvasShowBar(a);
+        });
+        document.addEventListener('mouseout', function (e) {
+          if (canvasBarLinkOf(e)) canvasHideSoon();
+        });
+        document.addEventListener('focusin', function (e) {
+          var a = canvasBarLinkOf(e);
+          if (a) canvasShowBar(a);
+        });
+        document.addEventListener('focusout', function (e) {
+          if (!canvasBarLinkOf(e)) return;
+          // Focus moving into the bar keeps it; anywhere else hides it.
+          var next = e.relatedTarget;
+          if (next && canvasBar && canvasBar.contains(next)) return;
+          canvasHideSoon();
+        });
+        window.addEventListener('scroll', canvasHideBar, true);
+        window.addEventListener('message', function (e) {
+          if (e.source !== parent) return;
+          var d = e.data;
+          if (!d) return;
+          if (d.type === 'canvas-target-kinds' && Array.isArray(d.kinds)) canvasKinds = d.kinds;
+          if (d.type === 'canvas-hide-linkbar') canvasHideBar();
+        });
+
         // A card image — its src absolutized above to
         // '<origin>/api/cards/<id>/images/<n>' — opens in the viewer's
         // lightbox. Like a link, it sends only the index n; an image inside a
@@ -1342,8 +1496,81 @@
           if (!m) return;
           parent.postMessage({ type: 'canvas-image', index: parseInt(m[1], 10) }, '*');
         });
+
+        // Code blocks: each <pre> gets a header (language, Copy) and, past
+        // 14 lines, a clamp with a Show all / Collapse bar. The index n is
+        // the block's position among the post's <pre> elements, taken before
+        // any wrapping. Copy sends only n; the parent reads the text from
+        // its own parse of card.html.
+        var CANVAS_CLAMP_LINES = 14;
+        var CANVAS_ICON_COPY = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>';
+        var CANVAS_ICON_CHECK = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg>';
+        Array.prototype.slice.call(canvasRoot.querySelectorAll('pre')).forEach(function (pre, n) {
+          var box = document.createElement('div');
+          box.className = '__cv-code';
+          var head = document.createElement('div');
+          head.className = '__cv-head';
+          var label = document.createElement('span');
+          var code = pre.querySelector('code');
+          var m = code && /(?:^|\\s)language-(\\S+)/.exec(code.className);
+          label.textContent = m ? m[1] : '';
+          var copy = document.createElement('button');
+          copy.type = 'button';
+          copy.innerHTML = CANVAS_ICON_COPY + 'Copy';
+          var copyTimer = null;
+          copy.addEventListener('click', function () {
+            parent.postMessage({ type: 'canvas-copy-code', index: n }, '*');
+            copy.innerHTML = CANVAS_ICON_CHECK + 'Copied';
+            copy.className = '__cv-done';
+            clearTimeout(copyTimer);
+            copyTimer = setTimeout(function () {
+              copy.innerHTML = CANVAS_ICON_COPY + 'Copy';
+              copy.className = '';
+            }, 1400);
+          });
+          head.appendChild(label);
+          head.appendChild(copy);
+          pre.parentNode.insertBefore(box, pre);
+          box.appendChild(head);
+          box.appendChild(pre);
+          var lines = pre.textContent.replace(/\\n$/, '').split('\\n').length;
+          if (lines > CANVAS_CLAMP_LINES) {
+            box.className += ' __cv-clamped';
+            var more = document.createElement('button');
+            more.type = 'button';
+            more.className = '__cv-more';
+            more.textContent = 'Show all ' + lines + ' lines';
+            more.addEventListener('click', function () {
+              var clamped = box.classList.toggle('__cv-clamped');
+              more.textContent = clamped ? 'Show all ' + lines + ' lines' : 'Collapse';
+              canvasSendHeight();
+            });
+            box.appendChild(more);
+          }
+        });
       </script>
     `;
+    // Injected after the post's markup so it wins at equal specificity.
+    // The page colours are the card's surface and ink (.card in style.css);
+    // only html, body and the root wrapper are forced, so elements inside
+    // the post keep their own colours.
+    const postStyle = `<style>
+      html,body,#__canvas_root{background:#fff!important;background-color:#fff!important;color:#1a1a1a!important;}
+      .__cv-code{margin:4px 0 12px;border-radius:8px;background:#1e1f24;color:#e6e6e6;overflow:hidden;}
+      .__cv-head{display:flex;align-items:center;justify-content:space-between;height:30px;padding:0 4px 0 12px;font:12px ui-monospace,Menlo,Consolas,monospace;color:#9a9ca5;border-bottom:1px solid rgba(255,255,255,0.07);}
+      .__cv-head button{border:0;background:none;color:#9a9ca5;height:24px;padding:0 8px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;font:12px -apple-system,sans-serif;cursor:pointer;}
+      .__cv-head button:hover{background:rgba(255,255,255,0.08);color:#e6e6e6;}
+      .__cv-head button.__cv-done{color:#86efac;}
+      .__cv-code pre{margin:0;padding:10px 14px 12px;border:0;border-radius:0;box-sizing:border-box;background:#1e1f24;color:#e6e6e6;overflow-x:auto;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:2;}
+      .__cv-code pre code{background:none;padding:0;border:0;color:inherit;font:inherit;}
+      .__cv-code.__cv-clamped pre{max-height:calc(14 * 1.55em + 22px);overflow-y:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent);}
+      .__cv-more{display:block;width:100%;border:0;border-top:1px solid rgba(255,255,255,0.07);background:none;color:#9a9ca5;padding:6px;cursor:pointer;font:12px -apple-system,sans-serif;}
+      .__cv-more:hover{color:#e6e6e6;}
+      a[href^="#canvas-open-"]:focus-visible{outline:2px solid #2563eb;outline-offset:2px;border-radius:3px;}
+      .__cv-linkbar{position:fixed;z-index:10;display:flex;gap:2px;padding:3px;background:#1a1a1a;border-radius:7px;box-shadow:0 6px 16px rgba(0,0,0,0.2);}
+      .__cv-linkbar button{border:0;background:none;color:#fff;height:26px;padding:0 8px;border-radius:5px;font:12px -apple-system,sans-serif;white-space:nowrap;cursor:pointer;}
+      .__cv-linkbar button:hover,.__cv-linkbar button:focus-visible{background:rgba(255,255,255,0.14);}
+    </style>`;
     return (
       `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
@@ -1352,7 +1579,7 @@
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
       `#__canvas_root{overflow:hidden;}` +
       `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
-      `</head><body><div id="__canvas_root">${html}</div>${resizeScript}</body></html>`
+      `</head><body><div id="__canvas_root">${html}</div>${postStyle}${resizeScript}</body></html>`
     );
   }
 
@@ -1371,6 +1598,45 @@
     return null;
   }
 
+  // card.targets[index] for a message from a card iframe, or null when the
+  // sender is not one or the index names no target.
+  function targetForMessage(source, index) {
+    const card = cardForFrameSource(source);
+    if (!card) return null;
+    if (!Number.isInteger(index) || index < 0 || index >= card.targets.length) {
+      return null;
+    }
+    return card.targets[index];
+  }
+
+  // A path under the home directory reads as ~/…; macOS homes are /Users/<name>.
+  function displayTarget(target) {
+    return target.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+  }
+
+  // The iframe currently showing a link bar; the stream's scroll hides it.
+  let linkbarSource = null;
+
+  // The frame cannot always see the pointer leave it, so the parent does:
+  // a pointer over anything but that frame hides its bar.
+  document.addEventListener("mouseover", (event) => {
+    if (linkbarSource && event.target.contentWindow !== linkbarSource) {
+      hideLinkbar();
+    }
+  });
+
+  function hideLinkbar() {
+    if (!linkbarSource) return;
+    linkbarSource.postMessage({ type: "canvas-hide-linkbar" }, "*");
+    linkbarSource = null;
+  }
+
+  function postTargetKinds(frame, card) {
+    if (!frame.contentWindow) return;
+    const kinds = card.targets.map((t) => (/^https?:\/\//.test(t) ? "url" : "path"));
+    frame.contentWindow.postMessage({ type: "canvas-target-kinds", kinds }, "*");
+  }
+
   window.addEventListener("message", (event) => {
     const data = event.data;
     if (!data) return;
@@ -1379,29 +1645,63 @@
       const frames = cardsEl.querySelectorAll("iframe");
       for (const frame of frames) {
         if (frame.contentWindow === event.source) {
+          const cardEl = frame.closest(".card");
+          const wasAbove = cardIsAboveViewport(cardEl);
+          const before = frame.offsetHeight;
           frame.style.height = `${Math.max(20, data.height)}px`;
+          if (wasAbove) holdPlace(frame.offsetHeight - before);
           break;
         }
       }
       return;
     }
 
-    if (data.type === "canvas-open") {
-      // Only a real card iframe's contentWindow may trigger an open — never
+    if (data.type === "canvas-open" || data.type === "canvas-copy-target") {
+      // Only a real card iframe's contentWindow may name a target — never
       // the top window itself, and never an index a card iframe cannot
       // name a path for.
-      const card = cardForFrameSource(event.source);
-      if (!card) return;
-      const index = data.index;
-      if (!Number.isInteger(index) || index < 0 || index >= card.targets.length) {
+      const target = targetForMessage(event.source, data.index);
+      if (target === null) return;
+      if (data.type === "canvas-copy-target") {
+        navigator.clipboard
+          .writeText(target)
+          .then(() => toast(`Copied ${displayTarget(target)}`))
+          .catch(() => toast("Couldn't copy"));
         return;
       }
-      const path = card.targets[index];
       fetch("/api/open", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path: target }),
       }).catch(() => {});
+      return;
+    }
+
+    if (data.type === "canvas-linkbar") {
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      linkbarSource = data.open === true ? event.source : null;
+      return;
+    }
+
+    if (data.type === "canvas-copy-code") {
+      // Index-only, like canvas-open: the text comes from the parent's own
+      // parse of card.html, never from the message.
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      const index = data.index;
+      const doc = new DOMParser().parseFromString(card.html, "text/html");
+      // <noscript> content is live markup in this inert parse but plain text
+      // in the iframe, so its <pre> elements are not counted.
+      const pres = Array.from(doc.querySelectorAll("pre")).filter(
+        (pre) => !pre.closest("noscript")
+      );
+      if (!Number.isInteger(index) || index < 0 || index >= pres.length) {
+        return;
+      }
+      navigator.clipboard
+        .writeText(pres[index].textContent)
+        .catch(() => toast("Couldn't copy code"));
       return;
     }
 
@@ -1467,6 +1767,7 @@
     iframe.setAttribute("sandbox", "allow-scripts");
     iframe.srcdoc = buildIframeDoc(card.html);
     iframe.addEventListener("load", () => {
+      postTargetKinds(iframe, card);
       if (highlightQuery) postHighlight(iframe);
     });
     body.appendChild(iframe);
@@ -1523,11 +1824,125 @@
       cardsEl.appendChild(el);
     }
 
+    // Only a new post from a session the reader can see arrives; replacing
+    // a card, or a post from a hidden session, is silent.
+    const session = sessions.get(card.sessionId);
+    const arrives = !existing && !(session && isHidden(session));
+    if (arrives && !el.hidden) arrive(el, card);
+
     // A new card changes its session's count — refresh the chip row and
     // drawer without touching any other card, so a card for a
     // non-selected session updates its chip's count and leaves the visible
-    // stream alone.
-    refreshVisibility();
+    // stream alone. A session's first card brings its chip in with motion.
+    chipsMayArrive = arrives;
+    try {
+      refreshVisibility();
+    } finally {
+      chipsMayArrive = false;
+    }
+
+    if (arrives && !el.hidden) pulseChip(card.sessionId);
+    if (arrives && el.hidden) {
+      toast(`New post from ${sessionName(card.sessionId)} (filtered out)`, "Show", () => {
+        setQuery("");
+        selectSession(card.sessionId);
+        scrollToTop();
+      });
+    }
+  }
+
+  function cardIsAboveViewport(cardEl) {
+    if (!cardEl || cardEl.hidden) return false;
+    return cardEl.getBoundingClientRect().bottom <= streamEl.getBoundingClientRect().top;
+  }
+
+  // Adds a height change above the reader to scrollTop so what they are
+  // reading stays where it was.
+  function holdPlace(delta) {
+    if (!delta || returningToTop || streamEl.scrollTop <= SCROLLED_PX) return;
+    streamEl.scrollTop += delta;
+  }
+
+  function arrive(el, card) {
+    if (streamEl.scrollTop > SCROLLED_PX) {
+      const gap = parseFloat(getComputedStyle(el).marginBottom) || 0;
+      // A card dated before the reader's position lands below them: nothing
+      // to hold and nothing new above.
+      if (el.getBoundingClientRect().top >= streamEl.getBoundingClientRect().top) return;
+      if (!returningToTop) streamEl.scrollTop += el.offsetHeight + gap;
+      unseen.count++;
+      unseen.sessionIds.add(card.sessionId);
+    } else if (animating()) {
+      el.style.setProperty("--arrive-height", `${el.offsetHeight}px`);
+      el.classList.add("arriving");
+    }
+    if (animating()) el.classList.add("ring");
+    // Each class comes off when its own animation ends; the timer covers a
+    // card the filter hides mid-animation, which never fires animationend.
+    el.addEventListener("animationend", (e) => {
+      if (e.animationName === "card-slide") el.classList.remove("arriving");
+      if (e.animationName === "card-ring") el.classList.remove("ring");
+    });
+    setTimeout(() => el.classList.remove("arriving", "ring"), 1900);
+  }
+
+  function pulseChip(sessionId) {
+    if (!animating()) return;
+    const chip = chipsEl.querySelector(`.chip[data-session-id="${CSS.escape(sessionId)}"]`);
+    if (!chip || chip.hasAttribute("data-arriving")) return;
+    chip.classList.add("pulse");
+    chip.addEventListener("animationend", () => chip.classList.remove("pulse"), { once: true });
+    setTimeout(() => chip.classList.remove("pulse"), 1900);
+  }
+
+  function scrollToTop() {
+    returningToTop = streamEl.scrollTop > SCROLLED_PX;
+    streamEl.scrollTo({ top: 0, behavior: reducedMotion.matches ? "auto" : "smooth" });
+    clearUnseen();
+  }
+
+  function clearUnseen() {
+    unseen.count = 0;
+    unseen.sessionIds.clear();
+    renderPill();
+  }
+
+  // "↑", up to four dots in the colours of the sessions with unseen posts,
+  // and the count.
+  function renderPill() {
+    newPillEl.hidden = unseen.count === 0;
+    newPillEl.dataset.count = String(unseen.count);
+    if (unseen.count === 0) return;
+    const dots = document.createElement("span");
+    dots.className = "pill-dots";
+    for (const id of Array.from(unseen.sessionIds).slice(-4)) {
+      const s = sessions.get(id);
+      if (!s) continue;
+      const dot = document.createElement("span");
+      dot.className = "session-dot";
+      dot.style.setProperty("--session-colour", sessionColour(s));
+      dots.appendChild(dot);
+    }
+    const n = unseen.count;
+    newPillEl.replaceChildren("↑", dots, `${n} new post${n === 1 ? "" : "s"}`);
+  }
+
+  newPillEl.addEventListener("click", scrollToTop);
+  toTopEl.appendChild(buildIcon("arrow-up"));
+  toTopEl.addEventListener("click", scrollToTop);
+
+  streamEl.addEventListener("scroll", () => {
+    hideLinkbar();
+    const y = streamEl.scrollTop;
+    toTopEl.hidden = y <= TO_TOP_PX;
+    if (y < SCROLLED_PX) {
+      returningToTop = false;
+      if (unseen.count > 0) clearUnseen();
+    }
+  });
+  // The reader taking the wheel or a finger back ends a smooth scroll to top.
+  for (const type of ["wheel", "touchstart"]) {
+    streamEl.addEventListener(type, () => (returningToTop = false), { passive: true });
   }
 
   // A session's name and repo can change (e.g. re-registration); patch just

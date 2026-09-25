@@ -24,11 +24,13 @@
   }
 
   const archiveEnded = document.getElementById("archive-ended");
+  const animate = document.getElementById("animate");
   const colourButtons = Array.from(document.querySelectorAll("[data-color-by]"));
 
   function render() {
     const stored = readStored();
     archiveEnded.checked = typeof stored.hideEnded === "boolean" ? stored.hideEnded : true;
+    animate.checked = typeof stored.animate === "boolean" ? stored.animate : true;
     const colorBy = stored.colorBy === "session" ? "session" : "repo";
     for (const btn of colourButtons) {
       btn.setAttribute("aria-pressed", btn.dataset.colorBy === colorBy ? "true" : "false");
@@ -41,6 +43,12 @@
       // Off, every ended session is visible anyway; clearing shown means
       // turning it back on archives all of them again, not a remembered few.
       if (!archiveEnded.checked) stored.shown = [];
+    });
+  });
+
+  animate.addEventListener("change", () => {
+    change((stored) => {
+      stored.animate = animate.checked;
     });
   });
 
