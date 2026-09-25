@@ -5,7 +5,7 @@ pub mod store;
 pub mod viewer;
 
 use axum::routing::{delete, get, post};
-use axum::Router;
+use axum::{middleware, Router};
 use state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
@@ -22,5 +22,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
         .route("/api/open", post(routes::open_path))
         .route("/*path", get(viewer::asset))
+        .layer(middleware::from_fn(routes::require_loopback_host))
         .with_state(state)
 }

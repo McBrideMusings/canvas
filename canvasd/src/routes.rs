@@ -3,8 +3,10 @@ use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
+use axum::http::uri::Authority;
 use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -28,6 +30,34 @@ fn cwd_basename(cwd: &str) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.to_string())
+}
+
+/// Router-wide layer: answer only requests addressed to `127.0.0.1` or
+/// `localhost`, at any port.
+///
+/// The daemon binds loopback only, but that alone doesn't keep browser pages
+/// out: a DNS-rebinding page on an attacker's domain re-resolves that domain
+/// to 127.0.0.1, which makes it same-origin with the daemon in the browser's
+/// eyes. Its requests still carry the attacker's name in `Host`, so rejecting
+/// every other `Host` (or none) shuts it out of every route at once.
+pub async fn require_loopback_host(request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        // `Authority` accepts and drops userinfo (`evil@127.0.0.1`), which a
+        // `Host` header never legitimately carries.
+        .filter(|v| !v.contains('@'))
+        .and_then(|v| v.parse::<Authority>().ok());
+    match host {
+        Some(authority)
+            if authority.host() == "127.0.0.1"
+                || authority.host().eq_ignore_ascii_case("localhost") =>
+        {
+            next.run(request).await
+        }
+        _ => StatusCode::MISDIRECTED_REQUEST.into_response(),
+    }
 }
 
 /// Same-origin check for the delete endpoints.

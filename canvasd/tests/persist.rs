@@ -16,7 +16,10 @@ fn temp_dir() -> PathBuf {
 }
 
 async fn send(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> Vec<u8> {
-    let mut req = Request::builder().method(method).uri(uri);
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "127.0.0.1:8229");
     let body = match body {
         Some(b) => {
             req = req.header("content-type", "application/json");
