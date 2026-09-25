@@ -3,6 +3,20 @@
 
 use pulldown_cmark::{html as md_html, Options, Parser};
 
+/// Default styling for Markdown and text posts, prepended as a `<style>`
+/// block before the converted body so a post's own raw `<style>` comes later
+/// in the document and wins at equal specificity. Plain element selectors
+/// only — no ids, no `!important`.
+const DEFAULT_STYLE: &str = "<style>\
+body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }\
+table { border-collapse: collapse; }\
+th, td { border: 1px solid #ccc; padding: 4px 8px; }\
+th { font-weight: 600; background: #f0f0f0; }\
+code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }\
+code { background: #f0f0f0; padding: 0.1em 0.3em; }\
+pre { background: #f0f0f0; padding: 8px; overflow-x: auto; }\
+</style>";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Markdown,
@@ -42,11 +56,17 @@ impl Format {
 /// strikethrough enabled; raw HTML embedded in the Markdown source passes
 /// through unchanged, so `echo '<p>done</p>' | canvas post` still renders as
 /// HTML. Plain text becomes an HTML-escaped `<pre>` block. HTML passes
-/// through as-is.
+/// through as-is — untouched, with no style injected.
+///
+/// Markdown and Text output is prefixed with `DEFAULT_STYLE`, a small
+/// stylesheet covering tables, code/pre blocks and body font. Any `<style>`
+/// of the post's own — raw HTML in Markdown source, or literal text —
+/// lands later in the returned string and so wins the cascade at equal
+/// specificity.
 pub fn convert(input: &str, format: Format) -> String {
     match format {
         Format::Html => input.to_string(),
-        Format::Text => format!("<pre>{}</pre>", escape_html(input)),
+        Format::Text => format!("{}<pre>{}</pre>", DEFAULT_STYLE, escape_html(input)),
         Format::Markdown => {
             let mut options = Options::empty();
             options.insert(Options::ENABLE_TABLES);
@@ -54,7 +74,7 @@ pub fn convert(input: &str, format: Format) -> String {
             let parser = Parser::new_ext(input, options);
             let mut out = String::new();
             md_html::push_html(&mut out, parser);
-            out
+            format!("{}{}", DEFAULT_STYLE, out)
         }
     }
 }
@@ -105,6 +125,18 @@ mod tests {
     }
 
     #[test]
+    fn markdown_output_starts_with_default_style_and_own_style_comes_after() {
+        let out = convert(
+            "# hi\n\n<style>h1 { color: red; }</style>",
+            Format::Markdown,
+        );
+        assert!(out.starts_with(DEFAULT_STYLE));
+        let default_pos = out.find(DEFAULT_STYLE).unwrap();
+        let own_pos = out.find("h1 { color: red; }").unwrap();
+        assert!(own_pos > default_pos);
+    }
+
+    #[test]
     fn markdown_tables_and_strikethrough_are_enabled() {
         let out = convert("~~gone~~", Format::Markdown);
         assert!(out.contains("<del>gone</del>"));
@@ -122,7 +154,13 @@ mod tests {
     #[test]
     fn text_becomes_escaped_pre() {
         let out = convert("<b>not bold</b> & stuff", Format::Text);
-        assert_eq!(out, "<pre>&lt;b&gt;not bold&lt;/b&gt; &amp; stuff</pre>");
+        assert_eq!(
+            out,
+            format!(
+                "{}<pre>&lt;b&gt;not bold&lt;/b&gt; &amp; stuff</pre>",
+                DEFAULT_STYLE
+            )
+        );
     }
 
     #[test]
