@@ -36,11 +36,12 @@ styles or a `<style>` block, no external stylesheet.
 
 ### Local paths and links
 
-An `<img src="/abs/path">` pointing at a file that exists renders inline in
-the card. An `<a href="/abs/path">` to an existing local file, or to any
-`http://`/`https://` URL, becomes clickable and opens on click. An absolute
-local path that doesn't exist is left as plain text and `canvas post` warns
-about it on stderr — the post still lands.
+An image at an absolute path that exists — `![](/abs/shot.png)` in Markdown
+or `<img src="/abs/shot.png">` in HTML — renders inline in the card. A link
+to an existing local file or to any `http://`/`https://` URL —
+`[plan](/abs/plan.md)` or `<a href="…">` — opens on click. An absolute local
+path that doesn't exist is left unchanged (a broken image or a dead link) and
+`canvas post` warns about it on stderr — the post still lands.
 
 ### Sandbox limits
 
