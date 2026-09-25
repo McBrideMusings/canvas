@@ -101,6 +101,23 @@
         svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
         break;
       }
+      case "gear":
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "3" }));
+        svg.appendChild(
+          svgEl("path", {
+            d: "M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2",
+          })
+        );
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "7" }));
+        break;
+      case "eye-off":
+        svg.appendChild(svgEl("path", { d: "M3 3l18 18" }));
+        svg.appendChild(
+          svgEl("path", {
+            d: "M10.6 6.2A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-2.6 3.2M6.3 7.9C4.2 9.5 3 12 3 12s4 6 9 6a8.6 8.6 0 0 0 3.4-.7",
+          })
+        );
+        break;
       case "chevron-left":
         svg.appendChild(svgEl("path", { d: "M15 5l-7 7 7 7" }));
         break;
@@ -114,12 +131,13 @@
   }
 
   // `text`, when given, follows the icon as the button's visible label (a
-  // menu item); icon-only buttons leave it out and rely on aria-label.
+  // menu item); icon-only buttons leave it out and rely on aria-label. A
+  // text-only button (Settings' Delete) passes a null icon.
   function setButtonIcon(button, iconName, text) {
     while (button.firstChild) {
       button.removeChild(button.firstChild);
     }
-    button.appendChild(buildIcon(iconName));
+    if (iconName) button.appendChild(buildIcon(iconName));
     if (text !== undefined) {
       const label = document.createElement("span");
       label.className = "menu-item-label";
@@ -173,6 +191,99 @@
     applySidebarHidden();
     saveSidebarHidden(sidebarHidden);
   });
+
+  // Viewer preferences, one JSON object in one key. A missing or malformed
+  // field takes its default. Like the sidebar key, storage that throws only
+  // costs persistence: prefs keeps working in memory for the page's life.
+  const PREFS_KEY = "canvas.viewer";
+
+  function loadPrefs() {
+    let stored = {};
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      if (parsed && typeof parsed === "object") stored = parsed;
+    } catch (e) {}
+    const ids = (v) =>
+      Array.isArray(v) ? v.filter((id) => typeof id === "string") : [];
+    return {
+      hideEnded: typeof stored.hideEnded === "boolean" ? stored.hideEnded : true,
+      animate: typeof stored.animate === "boolean" ? stored.animate : true,
+      colorBy: stored.colorBy === "session" ? "session" : "repo",
+      shown: ids(stored.shown),
+      hidden: ids(stored.hidden),
+    };
+  }
+
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch (e) {}
+  }
+
+  const prefs = loadPrefs();
+
+  // The one rule for a hidden session. The stream filter, the sidebar, the
+  // Settings list and the gear's badge all ask it.
+  function isHidden(session) {
+    if (prefs.hidden.includes(session.id)) return true;
+    return !!session.endedAt && prefs.hideEnded && !prefs.shown.includes(session.id);
+  }
+
+  function hiddenSessions() {
+    return Array.from(sessions.values()).filter(isHidden);
+  }
+
+  // Ids of sessions canvasd no longer knows would otherwise sit in storage
+  // for good.
+  function prunePrefs() {
+    prefs.shown = prefs.shown.filter((id) => sessions.has(id));
+    prefs.hidden = prefs.hidden.filter((id) => sessions.has(id));
+    savePrefs();
+  }
+
+  // A hidden session can't stay selected: its cards would all be filtered
+  // out behind a filter the sidebar no longer shows.
+  function refreshVisibility() {
+    const selected = selectedSessionId && sessions.get(selectedSessionId);
+    if (selected && isHidden(selected)) selectedSessionId = null;
+    renderSidebar();
+    applyFilter();
+    renderSettings();
+  }
+
+  function setPrefsAndRefresh(change) {
+    change();
+    savePrefs();
+    refreshVisibility();
+  }
+
+  function hideSession(id) {
+    const name = sessionName(id);
+    setPrefsAndRefresh(() => {
+      if (!prefs.hidden.includes(id)) prefs.hidden.push(id);
+    });
+    toast(`Hid ${name}`, "Undo", () =>
+      setPrefsAndRefresh(() => {
+        prefs.hidden = prefs.hidden.filter((h) => h !== id);
+      })
+    );
+  }
+
+  function showSession(id) {
+    setPrefsAndRefresh(() => {
+      prefs.hidden = prefs.hidden.filter((h) => h !== id);
+      if (!prefs.shown.includes(id)) prefs.shown.push(id);
+    });
+  }
+
+  function setHideEnded(on) {
+    setPrefsAndRefresh(() => {
+      prefs.hideEnded = on;
+      // Off, every ended session is visible anyway; clearing shown means
+      // turning it back on hides all of them again, not a remembered few.
+      if (!on) prefs.shown = [];
+    });
+  }
 
   // Only Canvas.app's WKWebView injects window.__TAURI__ (withGlobalTauri in
   // tauri.conf.json); a plain browser tab never sees it, which is how the
@@ -251,34 +362,14 @@
 
   // Rebuilding every row from scratch on each render drops keyboard focus,
   // since the previously focused button is removed from the document. Note
-  // which button (by session id, or the sentinel below for "All", plus which
-  // of the two buttons in the row) had focus beforehand so it can be
-  // restored to its replacement afterward.
+  // which row (by session id, or the sentinel below for "All") had focus
+  // beforehand so it can be restored to its replacement afterward.
   const ALL_ROW_KEY = "__all__";
-
-  function focusKeyFor(el) {
-    return `${el.dataset.sessionId ?? ALL_ROW_KEY}::${el.dataset.role}`;
-  }
 
   function renderSidebar() {
     const active = document.activeElement;
     const focusedKey =
-      active && sidebarEl.contains(active) ? focusKeyFor(active) : null;
-
-    // A rebuild is about to detach every row, including any button an armed
-    // confirm is pointing at — clear it first so the state machine never
-    // holds a reference to a node that is no longer in the document, then
-    // re-arm the rebuilt button for the same session with the time it had
-    // left, so a card arriving mid-confirm doesn't cancel the clear.
-    let rearm = null;
-    if (pendingConfirm && sidebarEl.contains(pendingConfirm.button)) {
-      rearm = {
-        sessionId: pendingConfirm.button.dataset.sessionId,
-        opts: pendingConfirm.opts,
-        ms: pendingConfirm.deadline - Date.now(),
-      };
-      clearPendingConfirm();
-    }
+      active && sidebarEl.contains(active) ? active.dataset.sessionId : null;
 
     sidebarEl.innerHTML = "";
 
@@ -287,33 +378,19 @@
     );
 
     for (const s of sessions.values()) {
+      if (isHidden(s)) continue;
       sidebarEl.appendChild(
         buildSidebarRow(s.id, s.name, s, selectedSessionId === s.id, focusedKey)
       );
     }
-
-    if (rearm && rearm.ms > 0) {
-      const btn = sidebarEl.querySelector(
-        `.sidebar-row-delete[data-session-id="${CSS.escape(rearm.sessionId)}"]`
-      );
-      if (btn) armConfirm(btn, rearm.opts, rearm.ms);
-    }
   }
 
-  // A row is a container holding the select button and (for a real session,
-  // not "All") a trash button beside it — never nested inside the select
-  // button, since the select button is itself a real <button> (needed for
-  // keyboard reachability) and buttons cannot nest.
   function buildSidebarRow(sessionId, name, session, selected, focusedKey) {
-    const wrap = document.createElement("div");
-    wrap.className = "sidebar-row-wrap";
-
     const row = document.createElement("button");
     row.type = "button";
     row.className = "sidebar-row" + (selected ? " selected" : "");
     row.setAttribute("aria-pressed", selected ? "true" : "false");
     row.dataset.sessionId = sessionId;
-    row.dataset.role = "select";
 
     if (session) {
       const nameEl = document.createElement("div");
@@ -352,32 +429,163 @@
     }
 
     row.addEventListener("click", () => selectSession(session ? session.id : null));
-    wrap.appendChild(row);
-    if (focusedKey === focusKeyFor(row)) row.focus();
+    if (focusedKey === sessionId) row.focus();
+    return row;
+  }
 
-    if (session) {
-      const delBtn = document.createElement("button");
-      delBtn.type = "button";
-      delBtn.className = "icon-btn sidebar-row-delete";
-      delBtn.dataset.sessionId = sessionId;
-      delBtn.dataset.role = "delete";
-      delBtn.setAttribute("aria-label", "Clear session");
-      delBtn.appendChild(buildIcon("trash"));
-      delBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        armConfirm(delBtn, {
-          idleLabel: "Clear session",
-          idleIcon: "trash",
-          confirmLabel: "Confirm clear",
-          confirmIcon: "check",
-          onConfirm: () => clearSession(session.id),
-        });
-      });
-      wrap.appendChild(delBtn);
-      if (focusedKey === focusKeyFor(delBtn)) delBtn.focus();
+  // The Settings popover hangs under the gear. Its contents are rebuilt on
+  // every change while it is open; the popover element itself stays, so an
+  // outside-click test against it survives the rebuild.
+  const settingsToggleEl = document.getElementById("settings-toggle");
+  const settingsBadgeEl = document.createElement("span");
+  const settingsEl = document.getElementById("settings");
+  settingsBadgeEl.className = "badge";
+  settingsToggleEl.append(buildIcon("gear"), settingsBadgeEl);
+
+  function openSettings() {
+    settingsEl.hidden = false;
+    settingsToggleEl.setAttribute("aria-expanded", "true");
+    renderSettings();
+  }
+
+  function closeSettings({ refocus = false } = {}) {
+    if (settingsEl.hidden) return;
+    if (pendingConfirm && settingsEl.contains(pendingConfirm.button)) {
+      clearPendingConfirm();
+    }
+    settingsEl.hidden = true;
+    settingsToggleEl.setAttribute("aria-expanded", "false");
+    if (refocus) settingsToggleEl.focus();
+  }
+
+  settingsToggleEl.addEventListener("click", () => {
+    if (settingsEl.hidden) openSettings();
+    else closeSettings();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!clickIsInside(e, settingsEl) && !clickIsInside(e, settingsToggleEl)) {
+      closeSettings();
+    }
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !settingsEl.hidden) closeSettings({ refocus: true });
+  });
+
+  // A click inside a card's iframe never reaches this document; focus
+  // moving into that iframe is the sign. Switching apps also blurs the
+  // window but leaves activeElement outside any iframe, so Settings stays.
+  window.addEventListener("blur", () => {
+    if (document.activeElement instanceof HTMLIFrameElement) closeSettings();
+  });
+
+  function settingsHeading(text) {
+    const h = document.createElement("h3");
+    h.className = "settings-heading";
+    h.textContent = text;
+    return h;
+  }
+
+  function textButton(text, className, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.textContent = text;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function buildHiddenRow(session) {
+    const row = document.createElement("div");
+    row.className = "hidden-row";
+    row.dataset.sessionId = session.id;
+
+    const dot = document.createElement("span");
+    dot.className = "session-dot";
+
+    const text = document.createElement("div");
+    text.className = "hidden-row-text";
+    const name = document.createElement("div");
+    name.className = "hidden-row-name";
+    name.textContent = session.name;
+    const meta = document.createElement("small");
+    const count = sessionCardCount(session.id);
+    const parts = [`${count} post${count === 1 ? "" : "s"}`];
+    if (session.repo) parts.unshift(session.repo);
+    if (session.endedAt) parts.push(`ended ${relativeTime(session.endedAt)}`);
+    meta.textContent = parts.join(" · ");
+    text.append(name, meta);
+
+    const show = textButton("Show", "btn", () => {
+      showSession(session.id);
+      toast(`Showing ${session.name}`);
+    });
+    const del = textButton("Delete", "btn danger", () =>
+      armConfirm(del, {
+        idleLabel: "Delete",
+        idleIcon: null,
+        confirmLabel: "Confirm delete",
+        confirmIcon: null,
+        withText: true,
+        onConfirm: () => deleteSession(session.id),
+      })
+    );
+    del.setAttribute("aria-label", "Delete");
+
+    row.append(dot, text, show, del);
+    return row;
+  }
+
+  function renderSettings() {
+    const hiddenCount = hiddenSessions().length;
+    settingsBadgeEl.textContent = String(hiddenCount);
+    settingsBadgeEl.hidden = hiddenCount === 0;
+    if (settingsEl.hidden) return;
+
+    // Same as a card re-render: a rebuild detaches an armed Delete, so clear
+    // it and re-arm its replacement with the time it had left, so a post
+    // arriving mid-confirm doesn't cancel the delete.
+    let rearm = null;
+    if (pendingConfirm && settingsEl.contains(pendingConfirm.button)) {
+      rearm = {
+        sessionId: pendingConfirm.button.closest(".hidden-row").dataset.sessionId,
+        opts: pendingConfirm.opts,
+        ms: pendingConfirm.deadline - Date.now(),
+      };
+      clearPendingConfirm();
     }
 
-    return wrap;
+    settingsEl.replaceChildren();
+    settingsEl.appendChild(settingsHeading("Sessions"));
+
+    const hideEndedRow = document.createElement("label");
+    hideEndedRow.className = "settings-row";
+    const label = document.createElement("span");
+    label.className = "settings-row-text";
+    const note = document.createElement("small");
+    note.textContent = "Their posts stay saved; show them again below.";
+    label.append("Hide sessions when they end", note);
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.className = "switch";
+    toggle.setAttribute("role", "switch");
+    toggle.checked = prefs.hideEnded;
+    toggle.addEventListener("change", () => setHideEnded(toggle.checked));
+    hideEndedRow.append(label, toggle);
+    settingsEl.appendChild(hideEndedRow);
+
+    settingsEl.appendChild(settingsHeading(`Hidden (${hiddenCount})`));
+    for (const s of hiddenSessions()) {
+      settingsEl.appendChild(buildHiddenRow(s));
+    }
+
+    if (rearm && rearm.ms > 0) {
+      const row = settingsEl.querySelector(
+        `.hidden-row[data-session-id="${CSS.escape(rearm.sessionId)}"]`
+      );
+      if (row) armConfirm(row.querySelector(".btn.danger"), rearm.opts, rearm.ms);
+    }
   }
 
   // One button may be armed to "confirm" at a time. A second click on the
@@ -560,6 +768,12 @@
         showOnlySession(card.sessionId)
       )
     );
+    menu.appendChild(
+      buildMenuItem("eye-off", "Hide this session", () => {
+        closeMenu();
+        hideSession(card.sessionId);
+      })
+    );
     const divider = document.createElement("div");
     divider.className = "menu-divider";
     divider.setAttribute("role", "separator");
@@ -617,7 +831,7 @@
     fetch(`/api/cards/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
   }
 
-  function clearSession(id) {
+  function deleteSession(id) {
     fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
   }
 
@@ -631,13 +845,13 @@
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
     closeMenuIfDetached();
-    applyFilter();
-    renderSidebar();
+    refreshVisibility();
   }
 
   function removeSession(id) {
     if (!sessions.has(id)) return;
     if (lightbox && lightbox.card.sessionId === id) closeLightbox();
+    const name = sessionName(id);
     sessions.delete(id);
     for (const [cardId, c] of Array.from(cards.entries())) {
       if (c.sessionId !== id) continue;
@@ -647,11 +861,14 @@
     }
     closeMenuIfDetached();
     if (selectedSessionId === id) selectedSessionId = null;
-    renderSidebar();
-    applyFilter();
+    prunePrefs();
+    refreshVisibility();
+    toast(`Deleted ${name} and its posts`);
   }
 
   function cardMatchesFilter(sessionId) {
+    const session = sessions.get(sessionId);
+    if (session && isHidden(session)) return false;
     return selectedSessionId === null || sessionId === selectedSessionId;
   }
 
@@ -667,14 +884,40 @@
     updateEmptyState(visible);
   }
 
-  // The empty-state message differs depending on whether there are no
-  // posts at all, or just none matching the current sidebar filter.
+  // The empty-state message differs depending on whether every session is
+  // hidden, there are no posts at all, or just none matching the current
+  // sidebar filter.
   function updateEmptyState(visible) {
     emptyStateEl.hidden = visible > 0;
-    emptyStateEl.textContent =
-      cards.size === 0
-        ? "No posts yet. Canvas shows what your Claude sessions post as they work."
-        : "No cards yet for this session.";
+    if (visible > 0) return;
+    const sessionList = Array.from(sessions.values());
+    if (sessionList.length > 0 && sessionList.every(isHidden)) {
+      // "show ended sessions" only helps when the ended rule hid one of
+      // them; sessions hidden by hand come back one at a time in Settings.
+      const endedHidden = sessionList.some((s) => !prefs.hidden.includes(s.id));
+      if (endedHidden) {
+        emptyStateEl.replaceChildren(
+          "No open sessions. Posts from sessions that ended are kept — ",
+          textButton("show ended sessions", "link-btn", () => setHideEnded(false)),
+          "."
+        );
+      } else {
+        emptyStateEl.replaceChildren(
+          "All sessions are hidden. ",
+          // Stopped here, or the page-wide outside-click handler sees a
+          // click outside the popover it just opened and closes it again.
+          textButton("Open Settings", "link-btn", (e) => {
+            e.stopPropagation();
+            openSettings();
+          })
+        );
+      }
+    } else {
+      emptyStateEl.textContent =
+        cards.size === 0
+          ? "No posts yet. Canvas shows what your Claude sessions post as they work."
+          : "No cards yet for this session.";
+    }
   }
 
   // A srcdoc iframe (sandbox="allow-scripts", no allow-same-origin) has an
@@ -885,14 +1128,13 @@
   // Full rebuild — used for the initial load and for resyncing after an SSE
   // reconnect, where cards may have changed without the browser seeing it.
   function bootstrapRender() {
-    renderSidebar();
     closeMenu();
     const sorted = sortedCards();
     cardsEl.innerHTML = "";
     for (const card of sorted) {
       cardsEl.appendChild(renderCard(card));
     }
-    applyFilter();
+    refreshVisibility();
   }
 
   // Insert or replace only the one card that changed, leaving every other
@@ -924,12 +1166,11 @@
       cardsEl.appendChild(el);
     }
 
-    applyFilter();
-
-    // A new card changes its session's count — refresh the sidebar without
-    // touching the stream, so a card for a non-selected session updates its
-    // row's count and leaves the visible stream alone.
-    renderSidebar();
+    // A new card changes its session's count — refresh the sidebar and
+    // Settings without touching any other card, so a card for a
+    // non-selected session updates its row's count and leaves the visible
+    // stream alone.
+    refreshVisibility();
   }
 
   // A session's name and repo can change (e.g. re-registration); patch just
@@ -1008,6 +1249,7 @@
     for (const s of data.sessions) sessions.set(s.id, s);
     cards.clear();
     for (const c of data.cards) cards.set(c.id, c);
+    prunePrefs();
     bootstrapRender();
   }
 
@@ -1033,9 +1275,18 @@
 
     source.addEventListener("session-upserted", (event) => {
       const session = JSON.parse(event.data);
+      const before = sessions.get(session.id);
       sessions.set(session.id, session);
-      renderSidebar();
+      refreshVisibility();
       patchSessionNames(session.id);
+      // Only the upsert that first sets endedAt on a session this viewer was
+      // showing announces the hide; a reload finds it hidden silently.
+      const endedJustNow = before && !before.endedAt && session.endedAt;
+      if (endedJustNow && !isHidden(before) && isHidden(session)) {
+        toast(`${session.name} ended — its posts are hidden`, "Keep showing", () =>
+          showSession(session.id)
+        );
+      }
     });
 
     source.addEventListener("card-upserted", (event) => {
