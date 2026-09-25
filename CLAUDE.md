@@ -42,8 +42,13 @@ beside the terminal all day.
   `~/.local/bin/canvas hook …`, `guidance.md` holds the guidance text compiled
   into the binary with `include_str!` and printed by both `canvas hook
   session-start` and `canvas guidance`, and `skills/canvas/` is the skill
-  agents load to know how to post. `admin deploy` installs the `canvas`
-  binary there.
+  agents load to know how to post. Claude Code runs a cached copy of
+  `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a
+  local `directory` marketplace (never a git remote — the repo is private) and
+  installs or updates `canvas@canvas` from it. `admin deploy canvas` installs
+  the `canvas` binary and then runs `canvas install`, so the binary and the
+  plugin always come from the same commit. Bump `plugin/.claude-plugin/plugin.json`'s
+  `version` when `plugin/` changes, or `claude plugin update` keeps the old copy.
 
 ## Rules
 
