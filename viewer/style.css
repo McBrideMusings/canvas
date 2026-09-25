@@ -61,6 +61,103 @@ body {
   flex: 1;
 }
 
+/* The search field sits left in the bar, after the traffic-light inset, and
+   grows to 560px. Its top offset matches .titlebar-btn so both centre on the
+   traffic lights. The "N of M" count sits just outside the field. */
+.search {
+  flex: 1 1 auto;
+  max-width: 560px;
+  min-width: 0;
+  height: 28px;
+  margin-top: 1.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.search-field {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 8px;
+  border: 1px solid #d6d3c8;
+  border-radius: 7px;
+  background: #fff;
+  color: #888;
+  cursor: text;
+}
+
+.search-field:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.search-icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font: inherit;
+  color: #1a1a1a;
+}
+
+.search-input::placeholder {
+  color: #999;
+}
+
+.search-hint {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid #d6d3c8;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  color: #888;
+}
+
+.search-clear {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.search-clear[hidden],
+.search-hint[hidden],
+.search-count[hidden] {
+  display: none;
+}
+
+.search-count {
+  flex: none;
+  font-size: 12px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* align-items: flex-start on .titlebar plus this top offset, rather than
    vertically centering in the full 52px bar, lines every button's centre
    up with the traffic lights' fixed position near the top of the window —
