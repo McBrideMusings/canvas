@@ -22,8 +22,16 @@ _Avoid_: turn card, post (for the rendered card)
 HTML, Markdown or plain text an agent sends with `canvas post`. Each post becomes one card.
 _Avoid_: explicit post, surface
 
+**Chip**:
+One session's button in the row under the title bar: its agent icon on a tile in the session colour, its name, its repo and its card count. Clicking it shows only that session's cards.
+_Avoid_: tab, pill, sidebar row
+
+**Session colour**:
+The colour a session's chip tile, card header tile and arrival ring share. Handed out in order of first appearance, per repo by default or per session in Settings.
+_Avoid_: hue, accent
+
 **Stream**:
-Every card from the selected sessions, newest first. "All" sessions is the default selection.
+Every card that matches the selected chip and the search and belongs to no hidden session, newest first. All is the default chip.
 _Avoid_: timeline, feed
 
 ### Architecture

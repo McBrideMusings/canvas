@@ -6,8 +6,8 @@ description: Post a self-contained HTML, Markdown or text card to Canvas, the li
 # Canvas
 
 Canvas is a stream of cards, one per `canvas post` call, shown in a viewer
-that sits open beside the terminal. Each session gets its own column of
-cards. Nothing creates a card automatically — a card exists only because a
+that sits open beside the terminal. Cards from every session share one
+stream, newest first; a chip per session filters it. Nothing creates a card automatically — a card exists only because a
 post created it.
 
 ## How to post
@@ -49,8 +49,9 @@ stderr — the post still lands.
 
 ### Size and layout
 
-The viewer sets a card's width — about 800px of content at the default
-window size, more in a wider window. The height is yours. Aim for about one
+The viewer sets a card's width — 846px of content at the default window
+size, which is also the most it gets; only a narrower window gives less. The
+height is yours. Aim for about one
 screen, roughly 600px tall, so the user can take the card in without
 scrolling past it.
 

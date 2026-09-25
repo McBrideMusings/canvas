@@ -8,15 +8,13 @@
   const streamEl = document.getElementById("stream");
   const cardsEl = document.getElementById("cards");
   const emptyStateEl = document.getElementById("empty-state");
-  const sidebarEl = document.getElementById("sidebar");
+  const chipsEl = document.getElementById("chips");
   const bannerEl = document.getElementById("disconnected-banner");
   const overlayEl = document.getElementById("image-overlay");
   const overlayImgEl = document.getElementById("image-overlay-img");
   const overlayPrevEl = document.getElementById("image-overlay-prev");
   const overlayNextEl = document.getElementById("image-overlay-next");
   const overlayCountEl = document.getElementById("image-overlay-count");
-  const layoutEl = document.querySelector(".layout");
-  const sidebarToggleEl = document.getElementById("sidebar-toggle");
   const titlebarEl = document.getElementById("titlebar");
   const toastsEl = document.getElementById("toasts");
 
@@ -82,11 +80,18 @@
         svg.appendChild(svgEl("path", { d: "M10 11v6" }));
         svg.appendChild(svgEl("path", { d: "M14 11v6" }));
         break;
-      case "sidebar":
+      case "x":
+        svg.appendChild(svgEl("path", { d: "M7 7l10 10M17 7L7 17" }));
+        break;
+      // The agent tile's mark: an eight-ray burst, drawn heavier than the
+      // other glyphs because it sits small and white on a coloured tile.
+      case "claude":
+        svg.setAttribute("stroke-width", "2.7");
         svg.appendChild(
-          svgEl("rect", { x: "3", y: "4", width: "18", height: "16", rx: "3" })
+          svgEl("path", {
+            d: "M12 3v18M3 12h18M5.7 5.7l12.6 12.6M18.3 5.7L5.7 18.3",
+          })
         );
-        svg.appendChild(svgEl("line", { x1: "9", y1: "4", x2: "9", y2: "20" }));
         break;
       // A thumbtack drawn upright — round head, flat collar, tapering body
       // to a point — then tilted 45° like SF Symbols' "pin". The group
@@ -154,47 +159,10 @@
     titlebarEl.classList.add("has-traffic-lights");
   }
 
-  const SIDEBAR_HIDDEN_KEY = "canvas.sidebarHidden";
-
-  // localStorage can throw (private browsing, blocked site data) — the
-  // toggle still has to work within the page's own lifetime even then.
-  function loadSidebarHidden() {
-    try {
-      return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === "1";
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function saveSidebarHidden(hidden) {
-    try {
-      localStorage.setItem(SIDEBAR_HIDDEN_KEY, hidden ? "1" : "0");
-    } catch (e) {}
-  }
-
-  let sidebarHidden = loadSidebarHidden();
-
-  function applySidebarHidden() {
-    layoutEl.classList.toggle("sidebar-hidden", sidebarHidden);
-    sidebarToggleEl.setAttribute("aria-expanded", sidebarHidden ? "false" : "true");
-    sidebarToggleEl.setAttribute(
-      "aria-label",
-      sidebarHidden ? "Show sessions" : "Hide sessions"
-    );
-  }
-
-  sidebarToggleEl.appendChild(buildIcon("sidebar"));
-  applySidebarHidden();
-
-  sidebarToggleEl.addEventListener("click", () => {
-    sidebarHidden = !sidebarHidden;
-    applySidebarHidden();
-    saveSidebarHidden(sidebarHidden);
-  });
-
   // Viewer preferences, one JSON object in one key. A missing or malformed
-  // field takes its default. Like the sidebar key, storage that throws only
-  // costs persistence: prefs keeps working in memory for the page's life.
+  // field takes its default. localStorage can throw (private browsing,
+  // blocked site data); that only costs persistence: prefs keeps working in
+  // memory for the page's life.
   const PREFS_KEY = "canvas.viewer";
 
   function loadPrefs() {
@@ -222,7 +190,7 @@
 
   const prefs = loadPrefs();
 
-  // The one rule for a hidden session. The stream filter, the sidebar, the
+  // The one rule for a hidden session. The stream filter, the chip row, the
   // Settings list and the gear's badge all ask it.
   function isHidden(session) {
     if (prefs.hidden.includes(session.id)) return true;
@@ -241,12 +209,49 @@
     savePrefs();
   }
 
+  // Session colours come from this fixed palette in the order their keys
+  // first appear — the repo (or cwd, with no repo) by default, the session
+  // id when Colour sessions by is Session. Never hashed, so two keys share a
+  // colour only once more than ten are in play.
+  const PALETTE = [
+    "#c2410c", "#0f766e", "#7c3aed", "#be185d", "#1d4ed8",
+    "#4d7c0f", "#b45309", "#0e7490", "#9f1239", "#4338ca",
+  ];
+  let colours = new Map(); // key -> palette entry
+
+  function sessionColour(session) {
+    const key =
+      prefs.colorBy === "session" ? session.id : session.repo || session.cwd;
+    if (!colours.has(key)) colours.set(key, PALETTE[colours.size % PALETTE.length]);
+    return colours.get(key);
+  }
+
+  function paintCardColours() {
+    for (const el of cardsEl.children) {
+      const s = sessions.get(el.dataset.sessionId);
+      if (s) el.style.setProperty("--session-colour", sessionColour(s));
+    }
+  }
+
+  // Switching the key hands colours out again from the first palette entry,
+  // in the order sessions first appeared. The chips and Settings repaint in
+  // the refreshVisibility that follows.
+  function setColorBy(value) {
+    if (prefs.colorBy === value) return;
+    setPrefsAndRefresh(() => {
+      prefs.colorBy = value;
+      colours = new Map();
+      for (const s of sessions.values()) sessionColour(s);
+      paintCardColours();
+    });
+  }
+
   // A hidden session can't stay selected: its cards would all be filtered
-  // out behind a filter the sidebar no longer shows.
+  // out behind a filter the chip row no longer shows.
   function refreshVisibility() {
     const selected = selectedSessionId && sessions.get(selectedSessionId);
     if (selected && isHidden(selected)) selectedSessionId = null;
-    renderSidebar();
+    renderChips();
     applyFilter();
     renderSettings();
   }
@@ -354,83 +359,104 @@
     return n;
   }
 
+  // The chip's repo text: the name half of `owner/repo`, or with no repo the
+  // last segment of the session's directory, marked local.
+  function repoShort(session) {
+    if (session.repo) return session.repo.slice(session.repo.indexOf("/") + 1);
+    const dir = (session.cwd || "").replace(/\/+$/, "");
+    return `${dir.slice(dir.lastIndexOf("/") + 1)} (local)`;
+  }
+
+  // The agent icon on a tile in the session colour, which the tile reads
+  // from --session-colour on its chip or card.
+  function buildAgentTile() {
+    const tile = document.createElement("span");
+    tile.className = "agent-tile";
+    tile.title = "Claude Code";
+    tile.appendChild(buildIcon("claude"));
+    return tile;
+  }
+
   function selectSession(id) {
     selectedSessionId = id;
-    renderSidebar();
+    renderChips();
     applyFilter();
+    const pressed = chipsEl.querySelector('.chip[aria-pressed="true"]');
+    if (pressed) pressed.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
-  // Rebuilding every row from scratch on each render drops keyboard focus,
-  // since the previously focused button is removed from the document. Note
-  // which row (by session id, or the sentinel below for "All") had focus
-  // beforehand so it can be restored to its replacement afterward.
-  const ALL_ROW_KEY = "__all__";
+  // Visible sessions, most recent post first; a session with no posts
+  // counts from when it started.
+  function chipSessions() {
+    const latest = new Map();
+    for (const c of cards.values()) {
+      const at = new Date(c.at).getTime();
+      if (!(latest.get(c.sessionId) >= at)) latest.set(c.sessionId, at);
+    }
+    const lastActive = (s) => latest.get(s.id) ?? new Date(s.startedAt).getTime();
+    return Array.from(sessions.values())
+      .filter((s) => !isHidden(s))
+      .sort((a, b) => lastActive(b) - lastActive(a));
+  }
 
-  function renderSidebar() {
+  // Rebuilding every chip on each render drops keyboard focus, since the
+  // focused button leaves the document. Note which chip (by session id, ""
+  // for All) had it so its replacement can take it back.
+  function renderChips() {
     const active = document.activeElement;
     const focusedKey =
-      active && sidebarEl.contains(active) ? active.dataset.sessionId : null;
+      active && chipsEl.contains(active) ? active.dataset.sessionId : null;
 
-    sidebarEl.innerHTML = "";
+    const visible = chipSessions();
+    let total = 0;
+    for (const s of visible) total += sessionCardCount(s.id);
 
-    sidebarEl.appendChild(
-      buildSidebarRow(ALL_ROW_KEY, "All", null, selectedSessionId === null, focusedKey)
-    );
+    const all = buildChip("", selectedSessionId === null);
+    all.classList.add("chip-all");
+    all.append("All", chipCount(total));
+    all.addEventListener("click", () => selectSession(null));
 
-    for (const s of sessions.values()) {
-      if (isHidden(s)) continue;
-      sidebarEl.appendChild(
-        buildSidebarRow(s.id, s.name, s, selectedSessionId === s.id, focusedKey)
-      );
+    const chips = [all];
+    for (const s of visible) {
+      const selected = selectedSessionId === s.id;
+      const chip = buildChip(s.id, selected);
+      chip.style.setProperty("--session-colour", sessionColour(s));
+      chip.title = s.repo ? `${s.name} · ${s.repo}` : s.name;
+      const name = document.createElement("span");
+      name.className = "chip-name";
+      name.textContent = s.name;
+      const repo = document.createElement("span");
+      repo.className = "chip-repo";
+      repo.textContent = repoShort(s);
+      const x = document.createElement("span");
+      x.className = "chip-x";
+      x.appendChild(buildIcon("x"));
+      chip.append(buildAgentTile(), name, repo, chipCount(sessionCardCount(s.id)), x);
+      chip.addEventListener("click", () => selectSession(selected ? null : s.id));
+      chips.push(chip);
+    }
+
+    chipsEl.replaceChildren(...chips);
+    if (focusedKey !== null) {
+      const again = chips.find((c) => c.dataset.sessionId === focusedKey);
+      if (again) again.focus();
     }
   }
 
-  function buildSidebarRow(sessionId, name, session, selected, focusedKey) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "sidebar-row" + (selected ? " selected" : "");
-    row.setAttribute("aria-pressed", selected ? "true" : "false");
-    row.dataset.sessionId = sessionId;
+  function buildChip(sessionId, selected) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.dataset.sessionId = sessionId;
+    chip.setAttribute("aria-pressed", selected ? "true" : "false");
+    return chip;
+  }
 
-    if (session) {
-      const nameEl = document.createElement("div");
-      nameEl.className = "sidebar-row-name";
-      nameEl.textContent = name;
-      row.appendChild(nameEl);
-
-      if (session.repo) {
-        const repoEl = document.createElement("div");
-        repoEl.className = "sidebar-row-repo";
-        // Break after the slash, not mid-name: the sidebar is too narrow
-        // for most `owner/repo` pairs on one line.
-        const slash = session.repo.indexOf("/") + 1;
-        repoEl.append(
-          session.repo.slice(0, slash),
-          document.createElement("wbr"),
-          session.repo.slice(slash)
-        );
-        row.appendChild(repoEl);
-      }
-
-      const meta = document.createElement("div");
-      meta.className = "sidebar-row-meta";
-      const status = document.createElement("span");
-      status.className = "sidebar-row-status";
-      status.textContent = session.endedAt ? "ended" : "active";
-      const count = sessionCardCount(session.id);
-      const countSpan = document.createElement("span");
-      countSpan.className = "sidebar-row-count";
-      countSpan.textContent = ` · ${count} card${count === 1 ? "" : "s"}`;
-      meta.appendChild(status);
-      meta.appendChild(countSpan);
-      row.appendChild(meta);
-    } else {
-      row.textContent = name;
-    }
-
-    row.addEventListener("click", () => selectSession(session ? session.id : null));
-    if (focusedKey === sessionId) row.focus();
-    return row;
+  function chipCount(n) {
+    const count = document.createElement("span");
+    count.className = "chip-count";
+    count.textContent = String(n);
+    return count;
   }
 
   // The Settings popover hangs under the gear. Its contents are rebuilt on
@@ -503,6 +529,7 @@
 
     const dot = document.createElement("span");
     dot.className = "session-dot";
+    dot.style.setProperty("--session-colour", sessionColour(session));
 
     const text = document.createElement("div");
     text.className = "hidden-row-text";
@@ -555,6 +582,9 @@
       };
       clearPendingConfirm();
     }
+    // A Repo | Session button rebuilt under the keyboard gets focus back.
+    const focusedColorBy =
+      settingsEl.contains(document.activeElement) && document.activeElement.dataset.colorBy;
 
     settingsEl.replaceChildren();
     settingsEl.appendChild(settingsHeading("Sessions"));
@@ -575,6 +605,25 @@
     hideEndedRow.append(label, toggle);
     settingsEl.appendChild(hideEndedRow);
 
+    settingsEl.appendChild(settingsHeading("Stream"));
+    const colourRow = document.createElement("div");
+    colourRow.className = "settings-row static";
+    const colourLabel = document.createElement("span");
+    colourLabel.className = "settings-row-text";
+    colourLabel.textContent = "Colour sessions by";
+    const seg = document.createElement("span");
+    seg.className = "seg";
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "Colour sessions by");
+    for (const [value, text] of [["repo", "Repo"], ["session", "Session"]]) {
+      const btn = textButton(text, "seg-btn", () => setColorBy(value));
+      btn.dataset.colorBy = value;
+      btn.setAttribute("aria-pressed", prefs.colorBy === value ? "true" : "false");
+      seg.appendChild(btn);
+    }
+    colourRow.append(colourLabel, seg);
+    settingsEl.appendChild(colourRow);
+
     settingsEl.appendChild(settingsHeading(`Hidden (${hiddenCount})`));
     for (const s of hiddenSessions()) {
       settingsEl.appendChild(buildHiddenRow(s));
@@ -585,6 +634,9 @@
         `.hidden-row[data-session-id="${CSS.escape(rearm.sessionId)}"]`
       );
       if (row) armConfirm(row.querySelector(".btn.danger"), rearm.opts, rearm.ms);
+    }
+    if (focusedColorBy) {
+      settingsEl.querySelector(`[data-color-by="${focusedColorBy}"]`).focus();
     }
   }
 
@@ -881,12 +933,12 @@
       el.hidden = !matches;
       if (matches) visible++;
     }
+    streamEl.dataset.filterSession = selectedSessionId || "";
     updateEmptyState(visible);
   }
 
   // The empty-state message differs depending on whether every session is
-  // hidden, there are no posts at all, or just none matching the current
-  // sidebar filter.
+  // hidden, the selected chip has no posts, or there are no posts at all.
   function updateEmptyState(visible) {
     emptyStateEl.hidden = visible > 0;
     if (visible > 0) return;
@@ -912,11 +964,14 @@
           })
         );
       }
+    } else if (selectedSessionId !== null) {
+      emptyStateEl.replaceChildren(
+        "No posts from this session yet. ",
+        textButton("Show all", "link-btn", () => selectSession(null))
+      );
     } else {
       emptyStateEl.textContent =
-        cards.size === 0
-          ? "No posts yet. Canvas shows what your Claude sessions post as they work."
-          : "No cards yet for this session.";
+        "No posts yet. Canvas shows what your Claude sessions post as they work.";
     }
   }
 
@@ -1074,9 +1129,12 @@
     el.dataset.cardId = card.id;
     el.dataset.sessionId = card.sessionId;
     el.dataset.at = card.at;
+    const session = sessions.get(card.sessionId);
+    if (session) el.style.setProperty("--session-colour", sessionColour(session));
 
     const header = document.createElement("div");
     header.className = "card-header";
+    header.appendChild(buildAgentTile());
     const headerInfo = document.createElement("div");
     headerInfo.className = "card-header-info";
     const nameSpan = document.createElement("span");
@@ -1166,19 +1224,24 @@
       cardsEl.appendChild(el);
     }
 
-    // A new card changes its session's count — refresh the sidebar and
+    // A new card changes its session's count — refresh the chip row and
     // Settings without touching any other card, so a card for a
-    // non-selected session updates its row's count and leaves the visible
+    // non-selected session updates its chip's count and leaves the visible
     // stream alone.
     refreshVisibility();
   }
 
   // A session's name and repo can change (e.g. re-registration); patch just
-  // the header text of that session's existing cards instead of rebuilding them.
+  // the header text and colour of that session's existing cards instead of
+  // rebuilding them. A new repo is a new colour key.
   function patchSessionNames(sessionId) {
     const name = sessionName(sessionId);
     const repo = sessionRepo(sessionId);
     const card = `.card[data-session-id="${CSS.escape(sessionId)}"]`;
+    const colour = sessionColour(sessions.get(sessionId));
+    for (const el of cardsEl.querySelectorAll(card)) {
+      el.style.setProperty("--session-colour", colour);
+    }
     for (const el of cardsEl.querySelectorAll(`${card} .session-name`)) {
       el.textContent = name;
     }
@@ -1246,7 +1309,13 @@
     const res = await fetch("/api/state");
     const data = await res.json();
     sessions.clear();
-    for (const s of data.sessions) sessions.set(s.id, s);
+    // canvasd lists sessions in no fixed order; oldest first makes "first
+    // appearance" — and so each session's colour — the same on every load.
+    data.sessions.sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt));
+    for (const s of data.sessions) {
+      sessions.set(s.id, s);
+      sessionColour(s);
+    }
     cards.clear();
     for (const c of data.cards) cards.set(c.id, c);
     prunePrefs();
@@ -1277,6 +1346,7 @@
       const session = JSON.parse(event.data);
       const before = sessions.get(session.id);
       sessions.set(session.id, session);
+      sessionColour(session);
       refreshVisibility();
       patchSessionNames(session.id);
       // Only the upsert that first sets endedAt on a session this viewer was
