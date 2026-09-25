@@ -276,7 +276,9 @@
   // out behind a filter the chip row no longer shows.
   function refreshVisibility() {
     const selected = selectedSessionId && sessions.get(selectedSessionId);
-    if (selected && isHidden(selected)) selectedSessionId = null;
+    if (selected && (isHidden(selected) || sessionCardCount(selected.id) === 0)) {
+      selectedSessionId = null;
+    }
     renderChips();
     applyFilter();
     renderSettings();
@@ -412,19 +414,25 @@
     if (pressed) pressed.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
-  // Visible sessions, most recent post first; a session with no posts
-  // counts from when it started.
+  // Visible sessions that have posted, most recent post first.
   function chipSessions() {
     const latest = new Map();
     for (const c of cards.values()) {
       const at = new Date(c.at).getTime();
       if (!(latest.get(c.sessionId) >= at)) latest.set(c.sessionId, at);
     }
-    const lastActive = (s) => latest.get(s.id) ?? new Date(s.startedAt).getTime();
     return Array.from(sessions.values())
-      .filter((s) => !isHidden(s))
-      .sort((a, b) => lastActive(b) - lastActive(a));
+      .filter((s) => !isHidden(s) && latest.has(s.id))
+      .sort((a, b) => latest.get(b.id) - latest.get(a.id));
   }
+
+  // Ids of the chips in the last render, so the next one can tell which are
+  // new; whether a chip new to this render enters with motion (true only
+  // while a live card-upserted is being applied); and the chips still
+  // mid-slide, which every render rebuilds and so must mark again.
+  let renderedChipIds = new Set();
+  let chipsMayArrive = false;
+  const arrivingChipIds = new Set();
 
   // Rebuilding every chip on each render drops keyboard focus, since the
   // focused button leaves the document. Note which chip (by session id, ""
@@ -448,6 +456,10 @@
       const selected = selectedSessionId === s.id;
       const chip = buildChip(s.id, selected);
       chip.style.setProperty("--session-colour", sessionColour(s));
+      if (chipsMayArrive && animating() && !renderedChipIds.has(s.id)) {
+        startChipArrival(s.id);
+      }
+      if (arrivingChipIds.has(s.id)) chip.dataset.arriving = "";
       chip.title = s.repo ? `${s.name} · ${s.repo}` : s.name;
       const name = document.createElement("span");
       name.className = "chip-name";
@@ -464,10 +476,22 @@
     }
 
     chipsEl.replaceChildren(...chips);
+    renderedChipIds = new Set(visible.map((s) => s.id));
     if (focusedKey !== null) {
       const again = chips.find((c) => c.dataset.sessionId === focusedKey);
       if (again) again.focus();
     }
+  }
+
+  // A chip carries data-arriving for the 300ms slide. The timer, not
+  // animationend, ends it, since a re-render replaces the chip element.
+  function startChipArrival(sessionId) {
+    arrivingChipIds.add(sessionId);
+    setTimeout(() => {
+      arrivingChipIds.delete(sessionId);
+      const chip = chipsEl.querySelector(`.chip[data-session-id="${CSS.escape(sessionId)}"]`);
+      if (chip) chip.removeAttribute("data-arriving");
+    }, 300);
   }
 
   function buildChip(sessionId, selected) {
@@ -1552,8 +1576,13 @@
     // A new card changes its session's count — refresh the chip row and
     // Settings without touching any other card, so a card for a
     // non-selected session updates its chip's count and leaves the visible
-    // stream alone.
-    refreshVisibility();
+    // stream alone. A session's first card brings its chip in with motion.
+    chipsMayArrive = arrives;
+    try {
+      refreshVisibility();
+    } finally {
+      chipsMayArrive = false;
+    }
 
     if (arrives && !el.hidden) pulseChip(card.sessionId);
     if (arrives && el.hidden) {
@@ -1603,7 +1632,7 @@
   function pulseChip(sessionId) {
     if (!animating()) return;
     const chip = chipsEl.querySelector(`.chip[data-session-id="${CSS.escape(sessionId)}"]`);
-    if (!chip) return;
+    if (!chip || chip.hasAttribute("data-arriving")) return;
     chip.classList.add("pulse");
     chip.addEventListener("animationend", () => chip.classList.remove("pulse"), { once: true });
     setTimeout(() => chip.classList.remove("pulse"), 1900);
