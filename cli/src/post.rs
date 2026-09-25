@@ -12,6 +12,52 @@ use crate::client;
 use crate::format::{self, Format};
 use crate::scan;
 
+/// The parsed `canvas post` arguments: the positional path (or `-`/absent
+/// for stdin) and an explicit `--format md|text|html`, when given.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PostArgs<'a> {
+    pub arg: Option<&'a str>,
+    pub format_flag: Option<&'a str>,
+}
+
+/// A malformed `canvas post` argument list. Carries no detail: the caller
+/// always responds by printing the usage line and exiting 2.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UsageError;
+
+/// Parses the arguments to `canvas post` (everything after `post` itself).
+/// `--format <value>` may appear before or after the single positional
+/// path/`-`. Returns `Err` on a usage error: `--format` with no following
+/// value, `--format` given twice, or a second positional argument. Does not
+/// validate the format value itself — `resolve_format` does that.
+pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
+    let mut arg: Option<&str> = None;
+    let mut format_flag: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--format" => {
+                if format_flag.is_some() {
+                    return Err(UsageError);
+                }
+                match rest.get(i + 1) {
+                    Some(v) => {
+                        format_flag = Some(v.as_str());
+                        i += 2;
+                    }
+                    None => return Err(UsageError),
+                }
+            }
+            other if arg.is_none() => {
+                arg = Some(other);
+                i += 1;
+            }
+            _ => return Err(UsageError),
+        }
+    }
+    Ok(PostArgs { arg, format_flag })
+}
+
 /// `arg` is the file path (or `-`/absent for stdin); `format_flag` is an
 /// explicit `--format md|text|html`, when given.
 pub fn run(arg: Option<&str>, format_flag: Option<&str>) -> Result<(), String> {
@@ -137,5 +183,63 @@ mod tests {
         assert!(validate("").is_err());
         assert!(validate("   \n\t").is_err());
         assert!(validate("<p>ok</p>").is_ok());
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn one_positional_with_no_flag() {
+        let rest = args(&["file.md"]);
+        let parsed = parse_args(&rest).unwrap();
+        assert_eq!(
+            parsed,
+            PostArgs {
+                arg: Some("file.md"),
+                format_flag: None,
+            }
+        );
+    }
+
+    #[test]
+    fn format_before_positional() {
+        let rest = args(&["--format", "html", "file.md"]);
+        let parsed = parse_args(&rest).unwrap();
+        assert_eq!(
+            parsed,
+            PostArgs {
+                arg: Some("file.md"),
+                format_flag: Some("html"),
+            }
+        );
+    }
+
+    #[test]
+    fn format_after_positional() {
+        let rest = args(&["file.md", "--format", "html"]);
+        let parsed = parse_args(&rest).unwrap();
+        assert_eq!(
+            parsed,
+            PostArgs {
+                arg: Some("file.md"),
+                format_flag: Some("html"),
+            }
+        );
+    }
+
+    #[test]
+    fn format_missing_its_value_is_an_error() {
+        assert!(parse_args(&args(&["file.md", "--format"])).is_err());
+    }
+
+    #[test]
+    fn duplicate_format_is_an_error() {
+        assert!(parse_args(&args(&["--format", "md", "--format", "html", "x.md"])).is_err());
+    }
+
+    #[test]
+    fn a_second_positional_is_an_error() {
+        assert!(parse_args(&args(&["a.md", "b.md"])).is_err());
     }
 }

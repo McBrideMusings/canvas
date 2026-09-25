@@ -38,37 +38,14 @@ fn main() {
             // that needs to see whether it worked, so failures are loud:
             // one line on stderr, non-zero exit.
             let rest = &args[2..];
-            let mut arg: Option<&str> = None;
-            let mut format_flag: Option<&str> = None;
-            let mut i = 0;
-            let mut usage_error = false;
-            while i < rest.len() {
-                match rest[i].as_str() {
-                    "--format" => match rest.get(i + 1) {
-                        Some(v) => {
-                            format_flag = Some(v.as_str());
-                            i += 2;
-                        }
-                        None => {
-                            usage_error = true;
-                            break;
-                        }
-                    },
-                    other if arg.is_none() => {
-                        arg = Some(other);
-                        i += 1;
-                    }
-                    _ => {
-                        usage_error = true;
-                        break;
-                    }
+            let parsed = match canvas::post::parse_args(rest) {
+                Ok(parsed) => parsed,
+                Err(canvas::post::UsageError) => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
                 }
-            }
-            if usage_error {
-                eprintln!("{USAGE}");
-                std::process::exit(2);
-            }
-            if let Err(e) = canvas::post::run(arg, format_flag) {
+            };
+            if let Err(e) = canvas::post::run(parsed.arg, parsed.format_flag) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
