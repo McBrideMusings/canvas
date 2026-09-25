@@ -1198,7 +1198,7 @@
           var q = query.toLowerCase();
           var walker = document.createTreeWalker(canvasRoot, NodeFilter.SHOW_TEXT, {
             acceptNode: function (n) {
-              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea, .__cv-head, .__cv-more')
+              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea, .__cv-head, .__cv-more, .__cv-linkbar')
                 ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
             }
           });
@@ -1244,6 +1244,96 @@
           var n = parseInt(el.getAttribute('href').slice('#canvas-open-'.length), 10);
           if (Number.isNaN(n)) return;
           parent.postMessage({ type: 'canvas-open', index: n }, '*');
+        });
+
+        // Hovering or focusing such a link shows a bar with Open and Copy.
+        // The parent says which kind each index is (kinds only, never the
+        // targets), so the bar can word its buttons.
+        var canvasKinds = [];
+        var canvasBar = null, canvasBarTimer = null, canvasBarLink = null;
+        function canvasReportBar(open) {
+          parent.postMessage({ type: 'canvas-linkbar', open: open }, '*');
+        }
+        function canvasHideBar() {
+          clearTimeout(canvasBarTimer);
+          if (!canvasBar) return;
+          canvasBar.remove();
+          canvasBar = null;
+          canvasBarLink = null;
+          canvasReportBar(false);
+        }
+        function canvasHideSoon() {
+          clearTimeout(canvasBarTimer);
+          canvasBarTimer = setTimeout(canvasHideBar, 250);
+        }
+        function canvasLinkIndex(a) {
+          return parseInt(a.getAttribute('href').slice('#canvas-open-'.length), 10);
+        }
+        function canvasShowBar(a) {
+          var n = canvasLinkIndex(a);
+          var kind = canvasKinds[n];
+          if (Number.isNaN(n) || (kind !== 'path' && kind !== 'url')) return;
+          if (canvasBarLink === a) { clearTimeout(canvasBarTimer); return; }
+          canvasHideBar();
+          var bar = document.createElement('div');
+          bar.className = '__cv-linkbar';
+          [['open', kind === 'url' ? 'Open in browser' : 'Open'],
+           ['copy', kind === 'url' ? 'Copy link' : 'Copy path']].forEach(function (b) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = b[1];
+            btn.addEventListener('click', function () {
+              parent.postMessage({ type: b[0] === 'open' ? 'canvas-open' : 'canvas-copy-target', index: n }, '*');
+              canvasHideBar();
+            });
+            bar.appendChild(btn);
+          });
+          bar.addEventListener('mouseenter', function () { clearTimeout(canvasBarTimer); });
+          bar.addEventListener('mouseleave', canvasHideSoon);
+          bar.addEventListener('focusout', function (e) {
+            if (e.relatedTarget && (bar.contains(e.relatedTarget) || e.relatedTarget === a)) return;
+            canvasHideSoon();
+          });
+          // Right after the link in tab order, so Tab from the link reaches
+          // the buttons; fixed, so it takes no space in the post's layout.
+          a.parentNode.insertBefore(bar, a.nextSibling);
+          var r = a.getBoundingClientRect();
+          var top = r.top - bar.offsetHeight - 6;
+          if (top < 2) top = r.bottom + 6;
+          bar.style.left = Math.max(4, Math.min(r.left, window.innerWidth - bar.offsetWidth - 4)) + 'px';
+          bar.style.top = top + 'px';
+          canvasBar = bar;
+          canvasBarLink = a;
+          canvasReportBar(true);
+        }
+        function canvasBarLinkOf(e) {
+          return e.target.closest && e.target.closest('a[href^="#canvas-open-"]');
+        }
+        document.addEventListener('mouseover', function (e) {
+          var a = canvasBarLinkOf(e);
+          if (a) canvasShowBar(a);
+        });
+        document.addEventListener('mouseout', function (e) {
+          if (canvasBarLinkOf(e)) canvasHideSoon();
+        });
+        document.addEventListener('focusin', function (e) {
+          var a = canvasBarLinkOf(e);
+          if (a) canvasShowBar(a);
+        });
+        document.addEventListener('focusout', function (e) {
+          if (!canvasBarLinkOf(e)) return;
+          // Focus moving into the bar keeps it; anywhere else hides it.
+          var next = e.relatedTarget;
+          if (next && canvasBar && canvasBar.contains(next)) return;
+          canvasHideSoon();
+        });
+        window.addEventListener('scroll', canvasHideBar, true);
+        window.addEventListener('message', function (e) {
+          if (e.source !== parent) return;
+          var d = e.data;
+          if (!d) return;
+          if (d.type === 'canvas-target-kinds' && Array.isArray(d.kinds)) canvasKinds = d.kinds;
+          if (d.type === 'canvas-hide-linkbar') canvasHideBar();
         });
 
         // A card image — its src absolutized above to
@@ -1327,6 +1417,10 @@
       .__cv-code.__cv-clamped pre{max-height:calc(14 * 1.55em + 22px);overflow-y:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent);}
       .__cv-more{display:block;width:100%;border:0;border-top:1px solid rgba(255,255,255,0.07);background:none;color:#9a9ca5;padding:6px;cursor:pointer;font:12px -apple-system,sans-serif;}
       .__cv-more:hover{color:#e6e6e6;}
+      a[href^="#canvas-open-"]:focus-visible{outline:2px solid #2563eb;outline-offset:2px;border-radius:3px;}
+      .__cv-linkbar{position:fixed;z-index:10;display:flex;gap:2px;padding:3px;background:#1a1a1a;border-radius:7px;box-shadow:0 6px 16px rgba(0,0,0,0.2);}
+      .__cv-linkbar button{border:0;background:none;color:#fff;height:26px;padding:0 8px;border-radius:5px;font:12px -apple-system,sans-serif;white-space:nowrap;cursor:pointer;}
+      .__cv-linkbar button:hover,.__cv-linkbar button:focus-visible{background:rgba(255,255,255,0.14);}
     </style>`;
     return (
       `<!doctype html><html><head><meta charset="utf-8">` +
@@ -1355,6 +1449,45 @@
     return null;
   }
 
+  // card.targets[index] for a message from a card iframe, or null when the
+  // sender is not one or the index names no target.
+  function targetForMessage(source, index) {
+    const card = cardForFrameSource(source);
+    if (!card) return null;
+    if (!Number.isInteger(index) || index < 0 || index >= card.targets.length) {
+      return null;
+    }
+    return card.targets[index];
+  }
+
+  // A path under the home directory reads as ~/…; macOS homes are /Users/<name>.
+  function displayTarget(target) {
+    return target.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+  }
+
+  // The iframe currently showing a link bar; the stream's scroll hides it.
+  let linkbarSource = null;
+
+  // The frame cannot always see the pointer leave it, so the parent does:
+  // a pointer over anything but that frame hides its bar.
+  document.addEventListener("mouseover", (event) => {
+    if (linkbarSource && event.target.contentWindow !== linkbarSource) {
+      hideLinkbar();
+    }
+  });
+
+  function hideLinkbar() {
+    if (!linkbarSource) return;
+    linkbarSource.postMessage({ type: "canvas-hide-linkbar" }, "*");
+    linkbarSource = null;
+  }
+
+  function postTargetKinds(frame, card) {
+    if (!frame.contentWindow) return;
+    const kinds = card.targets.map((t) => (/^https?:\/\//.test(t) ? "url" : "path"));
+    frame.contentWindow.postMessage({ type: "canvas-target-kinds", kinds }, "*");
+  }
+
   window.addEventListener("message", (event) => {
     const data = event.data;
     if (!data) return;
@@ -1374,22 +1507,31 @@
       return;
     }
 
-    if (data.type === "canvas-open") {
-      // Only a real card iframe's contentWindow may trigger an open — never
+    if (data.type === "canvas-open" || data.type === "canvas-copy-target") {
+      // Only a real card iframe's contentWindow may name a target — never
       // the top window itself, and never an index a card iframe cannot
       // name a path for.
-      const card = cardForFrameSource(event.source);
-      if (!card) return;
-      const index = data.index;
-      if (!Number.isInteger(index) || index < 0 || index >= card.targets.length) {
+      const target = targetForMessage(event.source, data.index);
+      if (target === null) return;
+      if (data.type === "canvas-copy-target") {
+        navigator.clipboard
+          .writeText(target)
+          .then(() => toast(`Copied ${displayTarget(target)}`))
+          .catch(() => toast("Couldn't copy"));
         return;
       }
-      const path = card.targets[index];
       fetch("/api/open", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path: target }),
       }).catch(() => {});
+      return;
+    }
+
+    if (data.type === "canvas-linkbar") {
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      linkbarSource = data.open === true ? event.source : null;
       return;
     }
 
@@ -1476,6 +1618,7 @@
     iframe.setAttribute("sandbox", "allow-scripts");
     iframe.srcdoc = buildIframeDoc(card.html);
     iframe.addEventListener("load", () => {
+      postTargetKinds(iframe, card);
       if (highlightQuery) postHighlight(iframe);
     });
     body.appendChild(iframe);
@@ -1635,6 +1778,7 @@
   toTopEl.addEventListener("click", scrollToTop);
 
   streamEl.addEventListener("scroll", () => {
+    hideLinkbar();
     const y = streamEl.scrollTop;
     toTopEl.hidden = y <= TO_TOP_PX;
     if (y < SCROLLED_PX) {
