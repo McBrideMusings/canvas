@@ -23,19 +23,27 @@ beside the terminal all day.
   `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
   override), and runs as a launchd agent (`com.piercemakes.canvasd`).
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
-  stdin and registers or ends a session. `canvas post <file|->` reads the
-  session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in every Bash
-  tool shell) and creates a new card from HTML read from a file or stdin,
-  creating the session if the daemon doesn't already know it (e.g. after a
-  daemon restart) — and unlike a hook it fails loudly — one line on stderr,
-  non-zero exit — on any error, including when `CLAUDE_CODE_SESSION_ID` isn't
-  set. On success it prints one JSON line to stdout:
-  `{"card_id": "...", "images": [...], "targets": [...]}`. Hook dispatch
-  never starts a tokio runtime; only `canvas daemon` does.
+  stdin and registers or ends a session; on a successful `session-start` it
+  also prints the guidance block to stdout (Claude Code adds SessionStart
+  stdout to the session's context) — nothing is printed if canvasd is down.
+  `canvas guidance` prints that same block unconditionally, for a person or
+  agent to read on demand. `canvas post <file|-> [--format md|text|html]`
+  reads the session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in
+  every Bash tool shell) and creates a new card from Markdown, text or HTML
+  read from a file or stdin — format picked by `--format`, else the file
+  extension, else Markdown — creating the session if the daemon doesn't
+  already know it (e.g. after a daemon restart) — and unlike a hook it fails
+  loudly — one line on stderr, non-zero exit — on any error, including when
+  `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
+  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`. Hook
+  dispatch never starts a tokio runtime; only `canvas daemon` does.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart and SessionEnd to
-  `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents load
-  to know how to post. `admin deploy` installs the `canvas` binary there.
+  `~/.local/bin/canvas hook …`, `guidance.md` holds the guidance text compiled
+  into the binary with `include_str!` and printed by both `canvas hook
+  session-start` and `canvas guidance`, and `skills/canvas/` is the skill
+  agents load to know how to post. `admin deploy` installs the `canvas`
+  binary there.
 
 ## Rules
 
