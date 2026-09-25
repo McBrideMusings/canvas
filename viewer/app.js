@@ -859,6 +859,18 @@
       items[(at + step + items.length) % items.length].focus();
     });
 
+    // Items have tabIndex -1, so Tab leaves the menu. Chrome reports a null
+    // relatedTarget for that Tab, so read where focus landed once it has.
+    // Window blur keeps activeElement inside the menu, so the menu stays.
+    menu.addEventListener("focusout", () => {
+      setTimeout(() => {
+        if (!openMenu || openMenu.menu !== menu) return;
+        const active = document.activeElement;
+        if (active === document.body || menu.contains(active) || active === button) return;
+        closeMenu();
+      }, 0);
+    });
+
     header.appendChild(menu);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
