@@ -6,7 +6,7 @@ fn main() {
   // page's own invoke("canvas_url") starts failing with "Command not found".
   tauri_build::try_build(
     tauri_build::Attributes::new().app_manifest(
-      tauri_build::AppManifest::new().commands(&["canvas_url", "set_pinned", "get_pinned"]),
+      tauri_build::AppManifest::new().commands(&["canvas_url", "set_pinned", "get_pinned", "open_settings"]),
     ),
   )
   .expect("failed to run tauri-build");
