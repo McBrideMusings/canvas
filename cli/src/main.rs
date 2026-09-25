@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] | canvas guidance | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] | canvas guidance | canvas install [repo] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -10,6 +10,12 @@ fn main() {
         }
         Some("guidance") => {
             print!("{}", canvas::guidance::TEXT);
+        }
+        Some("install") => {
+            if let Err(e) = canvas::install::run(args.get(2).map(String::as_str)) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
         Some("hook") => {
             let event = match args.get(2) {
