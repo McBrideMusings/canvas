@@ -8,4 +8,4 @@ Canvas (http://127.0.0.1:8229) is the rich-media side of this chat. It isn't a r
 
 Skip it for one-line status updates, and for anything that would just repeat the chat text with no richer form.
 
-Size a card on purpose. The viewer sets the width (about 800px at the default window size); you set the height. Aim for about one screen, roughly 600px tall. Arrange the post however conveys it best, and go taller or shorter when the content calls for it, as a choice rather than by accident. Clicking any image opens it full size in a lightbox, so screenshots can sit smaller in the card (`<img src="/abs/shot.png" width="360">`, or side by side for a before/after).
+Size a card on purpose. The viewer sets the width (846px of content at the default window size, and never wider); you set the height. Aim for about one screen, roughly 600px tall. Arrange the post however conveys it best, and go taller or shorter when the content calls for it, as a choice rather than by accident. Clicking any image opens it full size in a lightbox, so screenshots can sit smaller in the card (`<img src="/abs/shot.png" width="360">`, or side by side for a before/after).

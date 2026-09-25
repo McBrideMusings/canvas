@@ -31,7 +31,7 @@ body {
 }
 
 /* Unified toolbar (Finder/Notes-style): spans the full window width above
-   both the sidebar and the card column, and doubles as the window's title
+   the chip row and the card column, and doubles as the window's title
    bar (tauri.conf.json sets titleBarStyle "Overlay" + hiddenTitle). It is
    a drag region — data-tauri-drag-region lives on this element, never on
    the buttons inside it, so dragging the bar moves the window while the
@@ -45,7 +45,6 @@ body {
   gap: 4px;
   padding: 0 10px;
   background: #f4f3ef;
-  border-bottom: 1px solid #e2e0d8;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -72,74 +71,135 @@ body {
   margin-top: 1.5px;
 }
 
-.layout {
+/* The chip row: one line under the title bar that scrolls sideways with no
+   scrollbar, fading out at the right edge so a cut-off chip reads as more. */
+.chips {
+  flex: none;
   display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.sidebar {
-  width: 200px;
-  flex: 0 0 200px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 40px 10px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
   background: #f4f3ef;
-  border-right: 1px solid #e2e0d8;
-  padding: 16px 0;
-  overflow-y: auto;
+  border-bottom: 1px solid #e2e0d8;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-.sidebar-row {
-  display: block;
-  width: 100%;
-  margin: 0;
-  padding: 8px 20px;
+.chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  flex: none;
+  max-width: 260px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 8px;
+  border: 1px solid #e2e0d8;
+  border-radius: 14px;
+  background: #fff;
+  color: #1a1a1a;
+  font: inherit;
   cursor: pointer;
-  color: #444;
-  background: none;
-  border: none;
   appearance: none;
   -webkit-appearance: none;
-  font: inherit;
-  text-align: left;
+  transition: background-color 120ms, border-color 120ms;
 }
 
-.sidebar-row.selected {
-  font-weight: 600;
-  color: #111;
-  background: #ece9e0;
+.chip:hover {
+  border-color: color-mix(in srgb, var(--session-colour, #888) 55%, #e2e0d8);
+  background: color-mix(in srgb, var(--session-colour, #888) 7%, #fff);
 }
 
-.sidebar-row:hover {
-  background: #ece9e0;
-}
-
-.sidebar-row:focus-visible {
+.chip:focus-visible {
   outline: 2px solid #2563eb;
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 
-.sidebar-row-name {
-  font-weight: 600;
-  color: #111;
+.chip.chip-all {
+  padding: 0 12px;
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--session-colour, #1a1a1a);
+  border-color: var(--session-colour, #1a1a1a);
+  color: #fff;
+}
+
+.chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sidebar-row-repo {
-  font-size: 12px;
-  color: #666;
-  margin-top: 1px;
-  overflow-wrap: anywhere;
-}
-
-.sidebar-row-meta {
+.chip-repo,
+.chip-count {
   font-size: 12px;
   color: #888;
-  margin-top: 2px;
+  white-space: nowrap;
 }
 
-/* One shared style for every icon button in the app: sidebar toggle,
-   Settings gear, pin and the card ⋯ menu button — 28px,
+.chip-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Capped so a long repo or directory never pushes the chip past its
+   max-width or squeezes the name to nothing. */
+.chip-repo {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip[aria-pressed="true"] .chip-repo,
+.chip[aria-pressed="true"] .chip-count {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.chip-x {
+  display: none;
+  margin-right: -4px;
+}
+
+.chip-x svg {
+  width: 13px;
+  height: 13px;
+}
+
+.chip[aria-pressed="true"] .chip-x {
+  display: inline-flex;
+}
+
+/* The agent icon, white on the session colour. */
+.agent-tile {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--session-colour, #888);
+  color: #fff;
+}
+
+.agent-tile svg {
+  width: 12px;
+  height: 12px;
+}
+
+.chip[aria-pressed="true"] .agent-tile {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* One shared style for every icon button in the app: Settings gear, pin
+   and the card ⋯ menu button — 28px,
    borderless, rounded light-grey hover (NSToolbar look). Per-button
    behaviour (confirming/copied tint) layers on top as a class delta rather
    than a separate button style. */
@@ -238,6 +298,46 @@ body {
   background: #f4f3ef;
 }
 
+/* A row whose control is its own buttons, not the whole row. */
+.settings-row.static {
+  cursor: default;
+}
+
+.settings-row.static:hover {
+  background: none;
+}
+
+.seg {
+  flex: none;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: #ece9e0;
+}
+
+.seg-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: #444;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.seg-btn[aria-pressed="true"] {
+  background: #fff;
+  color: #1a1a1a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.seg-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
 .settings-row-text {
   flex: 1;
 }
@@ -310,13 +410,12 @@ body {
   white-space: nowrap;
 }
 
-/* Grey until sessions get their own colours. */
 .session-dot {
   flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--session-color, #999);
+  background: var(--session-colour, #999);
 }
 
 .btn {
@@ -370,21 +469,23 @@ body {
   color: #16a34a;
 }
 
-.layout.sidebar-hidden .sidebar {
-  display: none;
-}
-
 .stream {
   flex: 1;
-  min-width: 0;
-  padding: 24px;
+  min-height: 0;
+  padding: 20px 24px;
   overflow-y: auto;
+}
+
+/* Cards and the empty state share one centred column. */
+#cards,
+.empty-state {
+  max-width: 880px;
+  margin: 0 auto;
 }
 
 .empty-state {
   color: #666;
-  padding: 40px 8px;
-  max-width: 480px;
+  padding: 40px 0;
   line-height: 1.5;
 }
 
@@ -408,7 +509,19 @@ body {
   gap: 8px;
 }
 
+.card-header .agent-tile {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.card-header .agent-tile svg {
+  width: 14px;
+  height: 14px;
+}
+
 .card-header-info {
+  flex: 1;
   min-width: 0;
 }
 

@@ -17,8 +17,8 @@ beside the terminal all day.
   restarting daemon never leaves the window on a dead error page. Its own
   Cargo workspace, outside the root one. It holds no state; quitting it loses
   nothing.
-- `viewer/` — plain `index.html` + JS, no build step. Sidebar of sessions
-  ("All" by default), stream of cards, one per post.
+- `viewer/` — plain `index.html` + JS, no build step. A row of session chips
+  under the title bar ("All" by default), stream of cards, one per post.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
   `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
   override), and runs as a launchd agent (`com.piercemakes.canvasd`).
