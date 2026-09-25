@@ -11,7 +11,7 @@ One main Claude Code conversation on this Mac, from SessionStart to SessionEnd. 
 _Avoid_: agent, conversation
 
 **Card**:
-One post from one session, shown in the stream. Local image paths in it render inline; local file paths and links in it open on click.
+One post from one session, shown in the stream. Images in it render where the post puts them and open full size in a lightbox on click; local file paths and URLs written as links open on click.
 _Avoid_: turn card, post (for the rendered card)
 
 **Post**:
