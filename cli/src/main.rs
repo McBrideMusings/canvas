@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] | canvas guidance | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -7,6 +7,9 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("daemon") => {
             canvas::daemon::run();
+        }
+        Some("guidance") => {
+            print!("{}", canvas::guidance::TEXT);
         }
         Some("hook") => {
             let event = match args.get(2) {
@@ -19,7 +22,9 @@ fn main() {
             // A hook must never slow or break a Claude session: every
             // failure — bad stdin, canvasd unreachable, an unrecognised
             // event — is swallowed and the process exits 0 silently.
-            let _ = canvas::hook::run(event);
+            if let Ok(Some(guidance)) = canvas::hook::run(event) {
+                print!("{guidance}");
+            }
             std::process::exit(0);
         }
         Some("post") => {
