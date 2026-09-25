@@ -302,6 +302,8 @@
   }
 
   function setPrefsAndRefresh(change) {
+    // Take in what the Settings window wrote first, so saving doesn't drop it.
+    syncPrefsFromStorage();
     change();
     savePrefs();
     refreshVisibility();
@@ -732,7 +734,8 @@
             "Delete all",
             "Confirm delete all",
             () => {
-              for (const s of archivedList) deleteSession(s.id);
+              // The archive as it is at the second click, not at render time.
+              for (const s of archivedSessions()) deleteSession(s.id);
             }
           )
         : null;
@@ -786,6 +789,7 @@
     clearPendingConfirm();
     setButtonIcon(button, confirmIcon, withText ? confirmLabel : undefined);
     button.setAttribute("aria-label", confirmLabel);
+    if (button.title) button.title = confirmLabel;
     button.classList.add("confirming");
     const timeoutId = setTimeout(clearPendingConfirm, ms);
     pendingConfirm = {
@@ -796,6 +800,7 @@
       revert() {
         setButtonIcon(button, idleIcon, withText ? idleLabel : undefined);
         button.setAttribute("aria-label", idleLabel);
+        if (button.title) button.title = idleLabel;
         button.classList.remove("confirming");
       },
     };
