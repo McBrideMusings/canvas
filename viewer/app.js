@@ -875,9 +875,14 @@
     if (e.key === "Escape" && openMenu) closeMenu({ refocus: true });
   });
 
-  // A click inside a card's iframe never reaches this document; the window
-  // losing focus to it is the only sign, so treat that as an outside click.
-  window.addEventListener("blur", () => closeMenu());
+  // A click inside a card's iframe never reaches this document; focus
+  // moving into that iframe is the sign, so treat that as an outside click.
+  // Switching apps also blurs the window but leaves activeElement outside
+  // any card iframe, so the menu stays.
+  window.addEventListener("blur", () => {
+    const active = document.activeElement;
+    if (active instanceof HTMLIFrameElement && cardsEl.contains(active)) closeMenu();
+  });
 
   function deleteCard(id) {
     fetch(`/api/cards/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
