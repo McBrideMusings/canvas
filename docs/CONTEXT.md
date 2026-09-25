@@ -1,6 +1,6 @@
 # Canvas
 
-One live stream of links, file paths, images and HTML posts from every Claude Code session on this Mac.
+One live stream of posts from every Claude Code session on this Mac.
 
 ## Language
 
@@ -10,16 +10,16 @@ One live stream of links, file paths, images and HTML posts from every Claude Co
 One main Claude Code conversation on this Mac, from SessionStart to SessionEnd. It is active until it ends; ended sessions stay listed while their cards remain.
 _Avoid_: agent, conversation
 
-**Turn card**:
-Everything one turn of one session produced: explicit posts, images, links and file paths, shown as one card. A turn that produced none of these has no card.
-_Avoid_: post (for the whole card), snippet
+**Card**:
+One post from one session, shown in the stream. Local image paths in it render inline; local file paths and links in it open on click.
+_Avoid_: turn card, post (for the rendered card)
 
-**Explicit post**:
-HTML an agent sends on purpose with `canvas post`. It joins its session's current turn card.
-_Avoid_: surface
+**Post**:
+HTML, Markdown or plain text an agent sends with `canvas post`. Each post becomes one card.
+_Avoid_: explicit post, surface
 
 **Stream**:
-Every turn card from the selected sessions, newest first. "All" sessions is the default selection.
+Every card from the selected sessions, newest first. "All" sessions is the default selection.
 _Avoid_: timeline, feed
 
 ### Architecture
