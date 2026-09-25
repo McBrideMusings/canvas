@@ -10,9 +10,7 @@ use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use canvas_core::{
-    OpenRequest, PostRequest, Session, StateResponse, TurnCard, TurnRequest, UpsertSessionRequest,
-};
+use canvas_core::{Card, OpenRequest, PostRequest, Session, StateResponse, UpsertSessionRequest};
 use futures::stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
@@ -138,9 +136,9 @@ pub async fn upsert_session(
 
 /// Creates `session_id` with `name` set from `cwd`'s basename when the
 /// daemon doesn't already know it — the pid → session lookup this used to
-/// depend on is gone, so `/api/turns` and `/api/posts` can arrive for a
-/// session that never got a `SessionStart` (e.g. the daemon restarted after
-/// the session began). Returns the new session so the caller can publish a
+/// depend on is gone, so `/api/posts` can arrive for a session that never
+/// got a `SessionStart` (e.g. the daemon restarted after the session
+/// began). Returns the new session so the caller can publish a
 /// `SessionUpserted` event; returns `None` when the session already existed,
 /// since nothing about it changed. `repo` comes from
 /// [`repo_if_unknown`], resolved before the caller took the lock.
@@ -197,64 +195,8 @@ pub async fn end_session(
     }
 }
 
-pub async fn post_turn(
-    State(state): State<AppState>,
-    Json(req): Json<TurnRequest>,
-) -> impl IntoResponse {
-    let all_empty = req.links.is_empty() && req.paths.is_empty() && req.images.is_empty();
-
-    // One lock hold for both writes, so a concurrent DELETE of the session
-    // can't land between creating it and adding its card.
-    let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
-    let card = {
-        let mut inner = state.inner.write().await;
-        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
-        let card = match inner.open_card_index(&req.session_id) {
-            Some(idx) => {
-                let card = &mut inner.cards[idx];
-                card.links.extend(req.links);
-                card.paths.extend(req.paths);
-                card.images.extend(req.images);
-                card.open = false;
-                card.at = now();
-                Some(card.clone())
-            }
-            None => {
-                if all_empty {
-                    None
-                } else {
-                    let card = TurnCard {
-                        id: Uuid::new_v4().to_string(),
-                        session_id: req.session_id.clone(),
-                        at: now(),
-                        html: Vec::new(),
-                        links: req.links,
-                        paths: req.paths,
-                        images: req.images,
-                        open: false,
-                    };
-                    inner.push_card(card.clone());
-                    Some(card)
-                }
-            }
-        };
-        // Published under the lock, so the persisted log records changes in
-        // the order they were applied.
-        if let Some(session) = created_session {
-            state.publish(CanvasEvent::SessionUpserted(session));
-        }
-        if let Some(card) = &card {
-            state.publish(CanvasEvent::CardUpserted(card.clone()));
-        }
-        card
-    };
-
-    match card {
-        Some(card) => (StatusCode::OK, Json(Some(card))).into_response(),
-        None => (StatusCode::OK, Json(Option::<TurnCard>::None)).into_response(),
-    }
-}
-
+/// Every post creates its own card — no open/closed lifecycle, no merging
+/// into a prior card from the same session.
 pub async fn post_explicit(
     State(state): State<AppState>,
     Json(req): Json<PostRequest>,
@@ -265,28 +207,15 @@ pub async fn post_explicit(
     let card = {
         let mut inner = state.inner.write().await;
         let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
-        let card = match inner.open_card_index(&req.session_id) {
-            Some(idx) => {
-                let card = &mut inner.cards[idx];
-                card.html.push(req.html.clone());
-                card.at = now();
-                card.clone()
-            }
-            None => {
-                let card = TurnCard {
-                    id: Uuid::new_v4().to_string(),
-                    session_id: req.session_id.clone(),
-                    at: now(),
-                    html: vec![req.html.clone()],
-                    links: Vec::new(),
-                    paths: Vec::new(),
-                    images: Vec::new(),
-                    open: true,
-                };
-                inner.push_card(card.clone());
-                card
-            }
+        let card = Card {
+            id: Uuid::new_v4().to_string(),
+            session_id: req.session_id.clone(),
+            at: now(),
+            html: req.html.clone(),
+            images: req.images,
+            targets: req.targets,
         };
+        inner.push_card(card.clone());
         // Published under the lock, so the persisted log records changes in
         // the order they were applied.
         if let Some(session) = created_session {
@@ -354,7 +283,7 @@ pub async fn delete_session(
 pub async fn get_state(State(state): State<AppState>) -> impl IntoResponse {
     let inner = state.inner.read().await;
     let sessions: Vec<Session> = inner.sessions.values().cloned().collect();
-    let cards: Vec<TurnCard> = inner.cards.iter().cloned().collect();
+    let cards: Vec<Card> = inner.cards.iter().cloned().collect();
     Json(StateResponse { sessions, cards })
 }
 

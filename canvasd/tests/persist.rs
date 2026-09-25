@@ -57,16 +57,15 @@ async fn restart_rebuilds_the_same_state() {
     send(&app, "POST", "/api/sessions", Some(json!({"session_id": "s1", "cwd": "/a/one"}))).await;
     send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>x</p>"}))).await;
     send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>y</p>"}))).await;
-    send(&app, "POST", "/api/turns", Some(json!({"session_id": "s1", "cwd": "/a/one", "links": ["https://e.com"]}))).await;
-    send(&app, "POST", "/api/turns", Some(json!({"session_id": "s2", "cwd": "/a/two", "paths": ["/tmp/f"]}))).await;
+    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s2", "cwd": "/a/two", "html": "<p>z</p>"}))).await;
     send(&app, "POST", "/api/sessions/s2/end", None).await;
     let before = state_of(&app).await;
-    assert_eq!(before["cards"].as_array().unwrap().len(), 2);
+    assert_eq!(before["cards"].as_array().unwrap().len(), 3);
 
     let app = restart(state, &dir).await;
     assert_eq!(state_of(&app).await, before);
-    // Compaction: 2 sessions + 2 cards, down from one line per change.
-    assert_eq!(line_count(&dir), 4);
+    // Compaction: 2 sessions + 3 cards, down from one line per change.
+    assert_eq!(line_count(&dir), 5);
 }
 
 #[tokio::test]
@@ -75,7 +74,7 @@ async fn deletions_stay_deleted_after_restart() {
     let state = AppState::open(&dir);
     let app = build_router(state.clone());
     for s in ["keep", "gone"] {
-        send(&app, "POST", "/api/turns", Some(json!({"session_id": s, "cwd": "/a", "links": ["https://e.com"]}))).await;
+        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
     }
     send(&app, "POST", "/api/posts", Some(json!({"session_id": "third", "cwd": "/a", "html": "h"}))).await;
     let all: StateResponse = serde_json::from_slice(&send(&app, "GET", "/api/state", None).await).unwrap();
@@ -98,7 +97,7 @@ async fn entries_older_than_24_hours_are_dropped() {
     let old = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
     let new = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
     let session = |id: &str, at: &str| json!({"op": "session_upserted", "data": {"id": id, "cwd": "/a", "name": "a", "startedAt": at}});
-    let card = |id: &str, sid: &str, at: &str| json!({"op": "card_upserted", "data": {"id": id, "sessionId": sid, "at": at, "html": [], "links": ["https://e.com"], "paths": [], "images": [], "open": false}});
+    let card = |id: &str, sid: &str, at: &str| json!({"op": "card_upserted", "data": {"id": id, "sessionId": sid, "at": at, "html": "<p>x</p>", "images": [], "targets": []}});
     let lines = [
         session("old", &old),
         card("c-old", "old", &old),
@@ -121,7 +120,7 @@ async fn torn_last_line_is_skipped() {
     let dir = temp_dir();
     let state = AppState::open(&dir);
     let app = build_router(state.clone());
-    send(&app, "POST", "/api/turns", Some(json!({"session_id": "s1", "cwd": "/a", "links": ["https://e.com"]}))).await;
+    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a", "html": "<p>x</p>"}))).await;
     let before = state_of(&app).await;
     state.flush_store();
     let mut file = std::fs::OpenOptions::new().append(true).open(dir.join("stream.jsonl")).unwrap();

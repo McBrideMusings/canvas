@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use canvas_core::{Session, TurnCard};
+use canvas_core::{Card, Session};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
@@ -15,7 +15,7 @@ pub const CARD_RING_CAPACITY: usize = 500;
 #[serde(tag = "op", content = "data", rename_all = "snake_case")]
 pub enum CanvasEvent {
     SessionUpserted(Session),
-    CardUpserted(TurnCard),
+    CardUpserted(Card),
     CardRemoved(String),
     SessionRemoved(String),
 }
@@ -24,7 +24,7 @@ pub enum CanvasEvent {
 pub struct Inner {
     pub sessions: HashMap<String, Session>,
     /// Front = newest.
-    pub cards: VecDeque<TurnCard>,
+    pub cards: VecDeque<Card>,
 }
 
 #[derive(Clone)]
@@ -115,17 +115,10 @@ impl Inner {
     }
 
     /// Push a new card at the front, evicting the oldest if the ring is full.
-    pub fn push_card(&mut self, card: TurnCard) {
+    pub fn push_card(&mut self, card: Card) {
         self.cards.push_front(card);
         while self.cards.len() > CARD_RING_CAPACITY {
             self.cards.pop_back();
         }
-    }
-
-    /// Find the open card for a session, if any.
-    pub fn open_card_index(&self, session_id: &str) -> Option<usize> {
-        self.cards
-            .iter()
-            .position(|c| c.session_id == session_id && c.open)
     }
 }
