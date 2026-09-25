@@ -1353,7 +1353,11 @@
       if (!card) return;
       const index = data.index;
       const doc = new DOMParser().parseFromString(card.html, "text/html");
-      const pres = doc.querySelectorAll("pre");
+      // <noscript> content is live markup in this inert parse but plain text
+      // in the iframe, so its <pre> elements are not counted.
+      const pres = Array.from(doc.querySelectorAll("pre")).filter(
+        (pre) => !pre.closest("noscript")
+      );
       if (!Number.isInteger(index) || index < 0 || index >= pres.length) {
         return;
       }
