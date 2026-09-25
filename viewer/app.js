@@ -1155,7 +1155,7 @@
           var q = query.toLowerCase();
           var walker = document.createTreeWalker(canvasRoot, NodeFilter.SHOW_TEXT, {
             acceptNode: function (n) {
-              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea')
+              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea, .__cv-head, .__cv-more')
                 ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
             }
           });
@@ -1214,8 +1214,77 @@
           if (!m) return;
           parent.postMessage({ type: 'canvas-image', index: parseInt(m[1], 10) }, '*');
         });
+
+        // Code blocks: each <pre> gets a header (language, Copy) and, past
+        // 14 lines, a clamp with a Show all / Collapse bar. The index n is
+        // the block's position among the post's <pre> elements, taken before
+        // any wrapping. Copy sends only n; the parent reads the text from
+        // its own parse of card.html.
+        var CANVAS_CLAMP_LINES = 14;
+        var CANVAS_ICON_COPY = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>';
+        var CANVAS_ICON_CHECK = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.8"/></svg>';
+        Array.prototype.slice.call(canvasRoot.querySelectorAll('pre')).forEach(function (pre, n) {
+          var box = document.createElement('div');
+          box.className = '__cv-code';
+          var head = document.createElement('div');
+          head.className = '__cv-head';
+          var label = document.createElement('span');
+          var code = pre.querySelector('code');
+          var m = code && /(?:^|\\s)language-(\\S+)/.exec(code.className);
+          label.textContent = m ? m[1] : '';
+          var copy = document.createElement('button');
+          copy.type = 'button';
+          copy.innerHTML = CANVAS_ICON_COPY + 'Copy';
+          var copyTimer = null;
+          copy.addEventListener('click', function () {
+            parent.postMessage({ type: 'canvas-copy-code', index: n }, '*');
+            copy.innerHTML = CANVAS_ICON_CHECK + 'Copied';
+            copy.className = '__cv-done';
+            clearTimeout(copyTimer);
+            copyTimer = setTimeout(function () {
+              copy.innerHTML = CANVAS_ICON_COPY + 'Copy';
+              copy.className = '';
+            }, 1400);
+          });
+          head.appendChild(label);
+          head.appendChild(copy);
+          pre.parentNode.insertBefore(box, pre);
+          box.appendChild(head);
+          box.appendChild(pre);
+          var lines = pre.textContent.replace(/\\n$/, '').split('\\n').length;
+          if (lines > CANVAS_CLAMP_LINES) {
+            box.className += ' __cv-clamped';
+            var more = document.createElement('button');
+            more.type = 'button';
+            more.className = '__cv-more';
+            more.textContent = 'Show all ' + lines + ' lines';
+            more.addEventListener('click', function () {
+              var clamped = box.classList.toggle('__cv-clamped');
+              more.textContent = clamped ? 'Show all ' + lines + ' lines' : 'Collapse';
+              canvasSendHeight();
+            });
+            box.appendChild(more);
+          }
+        });
       </script>
     `;
+    // Injected after the post's markup so it wins at equal specificity.
+    // The page colours are the card's surface and ink (.card in style.css);
+    // only html, body and the root wrapper are forced, so elements inside
+    // the post keep their own colours.
+    const postStyle = `<style>
+      html,body,#__canvas_root{background:#fff!important;background-color:#fff!important;color:#1a1a1a!important;}
+      .__cv-code{margin:4px 0 12px;border-radius:8px;background:#1e1f24;color:#e6e6e6;overflow:hidden;}
+      .__cv-head{display:flex;align-items:center;justify-content:space-between;height:30px;padding:0 4px 0 12px;font:12px ui-monospace,Menlo,Consolas,monospace;color:#9a9ca5;border-bottom:1px solid rgba(255,255,255,0.07);}
+      .__cv-head button{border:0;background:none;color:#9a9ca5;height:24px;padding:0 8px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;font:12px -apple-system,sans-serif;cursor:pointer;}
+      .__cv-head button:hover{background:rgba(255,255,255,0.08);color:#e6e6e6;}
+      .__cv-head button.__cv-done{color:#86efac;}
+      .__cv-code pre{margin:0;padding:10px 14px 12px;border:0;border-radius:0;box-sizing:border-box;background:#1e1f24;color:#e6e6e6;overflow-x:auto;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:2;}
+      .__cv-code pre code{background:none;padding:0;border:0;color:inherit;font:inherit;}
+      .__cv-code.__cv-clamped pre{max-height:calc(14 * 1.55em + 22px);overflow-y:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent);}
+      .__cv-more{display:block;width:100%;border:0;border-top:1px solid rgba(255,255,255,0.07);background:none;color:#9a9ca5;padding:6px;cursor:pointer;font:12px -apple-system,sans-serif;}
+      .__cv-more:hover{color:#e6e6e6;}
+    </style>`;
     return (
       `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
@@ -1224,7 +1293,7 @@
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
       `#__canvas_root{overflow:hidden;}` +
       `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
-      `</head><body><div id="__canvas_root">${html}</div>${resizeScript}</body></html>`
+      `</head><body><div id="__canvas_root">${html}</div>${postStyle}${resizeScript}</body></html>`
     );
   }
 
@@ -1274,6 +1343,27 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path }),
       }).catch(() => {});
+      return;
+    }
+
+    if (data.type === "canvas-copy-code") {
+      // Index-only, like canvas-open: the text comes from the parent's own
+      // parse of card.html, never from the message.
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      const index = data.index;
+      const doc = new DOMParser().parseFromString(card.html, "text/html");
+      // <noscript> content is live markup in this inert parse but plain text
+      // in the iframe, so its <pre> elements are not counted.
+      const pres = Array.from(doc.querySelectorAll("pre")).filter(
+        (pre) => !pre.closest("noscript")
+      );
+      if (!Number.isInteger(index) || index < 0 || index >= pres.length) {
+        return;
+      }
+      navigator.clipboard
+        .writeText(pres[index].textContent)
+        .catch(() => toast("Couldn't copy code"));
       return;
     }
 

@@ -14,7 +14,6 @@ th, td { border: 1px solid #ccc; padding: 4px 8px; }\
 th { font-weight: 600; background: #f0f0f0; }\
 code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }\
 code { background: #f0f0f0; padding: 0.1em 0.3em; }\
-pre { background: #f0f0f0; padding: 8px; overflow-x: auto; }\
 </style>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +160,12 @@ mod tests {
                 DEFAULT_STYLE
             )
         );
+    }
+
+    #[test]
+    fn default_style_leaves_pre_and_block_code_looks_to_the_viewer() {
+        assert!(!DEFAULT_STYLE.contains("pre { background"));
+        assert!(DEFAULT_STYLE.contains("code { background: #f0f0f0"));
     }
 
     #[test]
