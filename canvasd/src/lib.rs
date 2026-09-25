@@ -14,6 +14,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sessions", post(routes::upsert_session))
         .route("/api/sessions/:id/end", post(routes::end_session))
         .route("/api/sessions/:id", delete(routes::delete_session))
+        .route("/api/sessions/:id/cards", delete(routes::clear_session_cards))
         .route("/api/posts", post(routes::post_explicit))
         .route("/api/state", get(routes::get_state))
         .route("/api/cards/:id", delete(routes::delete_card))

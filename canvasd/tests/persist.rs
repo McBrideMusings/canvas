@@ -92,6 +92,25 @@ async fn deletions_stay_deleted_after_restart() {
 }
 
 #[tokio::test]
+async fn cleared_cards_stay_cleared_after_restart() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir);
+    let app = build_router(state.clone());
+    for s in ["cleared", "other"] {
+        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
+        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>y</p>"}))).await;
+    }
+    send(&app, "DELETE", "/api/sessions/cleared/cards", None).await;
+    let before = state_of(&app).await;
+    assert_eq!(before["cards"].as_array().unwrap().len(), 2);
+
+    let app = restart(state, &dir).await;
+    let after = state_of(&app).await;
+    assert_eq!(after, before);
+    assert_eq!(after["sessions"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn entries_older_than_24_hours_are_dropped() {
     let dir = temp_dir();
     let old = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();

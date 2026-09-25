@@ -295,8 +295,8 @@ body {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* One shared style for every icon button in the app: Settings gear, pin
-   and the card ⋯ menu button — 28px,
+/* One shared style for every icon button in the app: drawer toggle, gear,
+   pin, the drawer's row buttons and the card ⋯ menu button — 28px,
    borderless, rounded light-grey hover (NSToolbar look). Per-button
    behaviour (confirming/copied tint) layers on top as a class delta rather
    than a separate button style. */
@@ -335,12 +335,12 @@ body {
   color: #2563eb;
 }
 
-#settings-toggle[aria-expanded="true"] {
+#drawer-toggle[aria-expanded="true"] {
   background: #dbe6fd;
   color: #2563eb;
 }
 
-/* The gear's hidden-session count, pinned to its top-right corner. */
+/* The drawer toggle's archived-session count, pinned to its top-right corner. */
 .badge {
   position: absolute;
   top: 0;
@@ -357,156 +357,6 @@ body {
   text-align: center;
 }
 
-/* Settings: hangs under the gear at the bar's right edge, on the card
-   surface. */
-.settings {
-  position: absolute;
-  top: calc(100% - 4px);
-  right: 10px;
-  z-index: 30;
-  width: 340px;
-  max-height: calc(100vh - 70px);
-  overflow-y: auto;
-  padding: 6px 0 8px;
-  background: #fff;
-  border: 1px solid #e2e0d8;
-  border-radius: 8px;
-  box-shadow: 0 16px 40px rgba(20, 18, 12, 0.16), 0 2px 6px rgba(20, 18, 12, 0.06);
-}
-
-.settings-heading {
-  margin: 10px 14px 4px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #888;
-}
-
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  cursor: pointer;
-}
-
-.settings-row:hover {
-  background: #f4f3ef;
-}
-
-/* A row whose control is its own buttons, not the whole row. */
-.settings-row.static {
-  cursor: default;
-}
-
-.settings-row.static:hover {
-  background: none;
-}
-
-.seg {
-  flex: none;
-  display: inline-flex;
-  padding: 2px;
-  border-radius: 7px;
-  background: #ece9e0;
-}
-
-.seg-btn {
-  height: 24px;
-  padding: 0 10px;
-  border: none;
-  border-radius: 5px;
-  background: none;
-  color: #444;
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.seg-btn[aria-pressed="true"] {
-  background: #fff;
-  color: #1a1a1a;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-
-.seg-btn:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
-}
-
-.settings-row-text {
-  flex: 1;
-}
-
-.settings-row-text small,
-.hidden-row-text small {
-  display: block;
-  font-size: 12px;
-  color: #888;
-}
-
-/* The switch takes the system accent where the engine knows AccentColor,
-   the viewer's blue elsewhere. */
-.switch {
-  appearance: none;
-  -webkit-appearance: none;
-  position: relative;
-  flex: none;
-  width: 32px;
-  height: 19px;
-  margin: 0;
-  border-radius: 10px;
-  background: #cfccc3;
-  cursor: pointer;
-  transition: background-color 150ms;
-}
-
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 150ms ease-out;
-}
-
-.switch:checked {
-  background: #2563eb;
-  background: AccentColor;
-}
-
-.switch:checked::after {
-  transform: translateX(13px);
-}
-
-.switch:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 2px;
-}
-
-.hidden-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px 5px 14px;
-}
-
-.hidden-row-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.hidden-row-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .session-dot {
   flex: none;
   width: 8px;
@@ -515,36 +365,112 @@ body {
   background: var(--session-colour, #999);
 }
 
-.btn {
-  flex: none;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid #e2e0d8;
-  border-radius: 6px;
+/* The Sessions drawer: slides in from the right edge, under the title bar
+   and over the stream. Closed, it is off-screen and inert. */
+.drawer {
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 360px;
+  max-width: 100vw;
+  display: flex;
+  flex-direction: column;
   background: #fff;
-  color: #1a1a1a;
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
+  border-left: 1px solid #e2e0d8;
+  box-shadow: -12px 0 32px rgba(20, 18, 12, 0.12);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 180ms ease-out, visibility 0s 180ms;
 }
 
-.btn:hover {
-  background: #ece9e0;
+.drawer.open {
+  transform: none;
+  visibility: visible;
+  transition: transform 180ms ease-out;
 }
 
-.btn:focus-visible {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer.open {
+    transition: none;
+  }
 }
 
-.btn.danger {
-  color: #b91c1c;
+.drawer-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 6px 16px;
 }
 
-.btn.danger.confirming {
-  background: #fee2e2;
-  border-color: #fca5a5;
+.drawer-title {
+  margin: 0;
+  font-size: 15px;
   font-weight: 600;
+}
+
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+.drawer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  margin: 12px 10px 2px 16px;
+}
+
+.drawer-heading h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+.drawer-empty {
+  padding: 4px 16px;
+  color: #888;
+  font-size: 13px;
+}
+
+.drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 16px;
+}
+
+.drawer-row:hover {
+  background: #f4f3ef;
+}
+
+.drawer-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.drawer-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-row-text small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #888;
 }
 
 .link-btn {
@@ -555,6 +481,10 @@ body {
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+.icon-btn.danger {
+  color: #b91c1c;
 }
 
 .icon-btn.confirming {

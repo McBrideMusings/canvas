@@ -1,7 +1,7 @@
 use tauri::image::Image;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
@@ -53,10 +53,55 @@ fn get_pinned(app: tauri::AppHandle) -> bool {
     read_pinned_state(&app)
 }
 
+// Builds the Settings window on canvasd's own /settings.html, or brings the
+// one already open to the front. Closing it only hides it (on_window_event
+// below), so a later call shows the same window again. The gear in the viewer
+// and the app menu's ⌘, item both come here.
+fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.unminimize();
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let url: tauri::Url = format!("{}/settings.html", canvas_url().trim_end_matches('/'))
+        .parse()
+        .map_err(|e: <tauri::Url as std::str::FromStr>::Err| e.to_string())?;
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(url))
+        .title("Settings")
+        .inner_size(520.0, 300.0)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// canvasd's page invokes this from the gear; see capabilities/remote-pin.json.
+// Async so the window is built off the main thread's command dispatch.
+#[tauri::command]
+async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_window(&app)
+}
+
+// The default macOS menu with "Settings…" (⌘,) added under the app menu's
+// About item.
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::default(app)?;
+    let settings_item = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        app_menu.insert(&settings_item, 1)?;
+    }
+    Ok(menu)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![canvas_url, set_pinned, get_pinned])
+        .invoke_handler(tauri::generate_handler![canvas_url, set_pinned, get_pinned, open_settings])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -74,6 +119,8 @@ pub fn run() {
                     let _ = window.set_always_on_top(true);
                 }
             }
+
+            app.set_menu(build_app_menu(app.handle())?)?;
 
             let show_item = MenuItemBuilder::with_id("show", "Show/Hide Canvas").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
@@ -99,6 +146,11 @@ pub fn run() {
                 .build(app)?;
 
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "settings" {
+                let _ = show_settings_window(app);
+            }
         })
         .on_window_event(|window, event| {
             // Closing the window hides it instead of quitting the app or

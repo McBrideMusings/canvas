@@ -36,13 +36,18 @@
     <div class="titlebar-spacer"></div>
     <button
       type="button"
+      id="drawer-toggle"
+      class="icon-btn titlebar-btn"
+      aria-controls="drawer"
+      aria-expanded="false"
+      aria-label="Sessions"
+    ></button>
+    <button
+      type="button"
       id="settings-toggle"
       class="icon-btn titlebar-btn"
-      aria-haspopup="dialog"
-      aria-expanded="false"
       aria-label="Settings"
     ></button>
-    <div id="settings" class="settings" role="dialog" aria-label="Settings" hidden></div>
     <button
       type="button"
       id="pin-toggle"
@@ -52,6 +57,18 @@
       hidden
     ></button>
   </div>
+  <aside id="drawer" class="drawer" role="dialog" aria-label="Sessions" inert>
+    <div class="drawer-header">
+      <h2 class="drawer-title">Sessions</h2>
+      <button
+        type="button"
+        id="drawer-close"
+        class="icon-btn"
+        aria-label="Close sessions"
+      ></button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
   <nav id="chips" class="chips" role="toolbar" aria-label="Filter by session"></nav>
   <div class="pill-anchor"><button type="button" id="new-pill" class="new-pill" hidden></button></div>
   <main class="stream" id="stream" data-filter-session="">

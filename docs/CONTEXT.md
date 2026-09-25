@@ -7,12 +7,16 @@ One live stream of posts from every Claude Code session on this Mac.
 ### Domain
 
 **Session**:
-One main Claude Code conversation on this Mac, from SessionStart to SessionEnd. It is active until it ends. An ended session is hidden by default; its cards are kept and come back with Show in Settings.
+One main Claude Code conversation on this Mac, from SessionStart to SessionEnd. It is active until it ends. An ended session is archived by default; its cards are kept and come back with Show in the Sessions drawer.
 _Avoid_: agent, conversation
 
-**Hidden session**:
-A session whose chip and cards the viewer leaves out, because it ended while Hide sessions when they end is on, or because someone chose Hide this session. Settings lists it with Show and Delete. Hiding is per viewer and changes nothing in canvasd.
-_Avoid_: archived, closed
+**Archived session**:
+A session whose chip and cards the viewer leaves out, because it ended while Archive sessions when they end is on, or because someone chose Archive this session. The Sessions drawer lists it under Archived with Show and Delete. Archiving is per viewer and changes nothing in canvasd.
+_Avoid_: hidden, closed
+
+**Sessions drawer**:
+The panel that slides in from the right edge and lists every session under Active and Archived. Active rows can have their posts cleared or be archived; archived rows can be shown again or deleted, one at a time or all at once.
+_Avoid_: sidebar, session list
 
 **Card**:
 One post from one session, shown in the stream. Images in it render where the post puts them and open full size in a lightbox on click; local file paths and URLs written as links open on click.
@@ -31,7 +35,7 @@ The colour a session's chip tile, card header tile and arrival ring share. Hande
 _Avoid_: hue, accent
 
 **Stream**:
-Every card that matches the selected chip and the search and belongs to no hidden session, newest first. All is the default chip.
+Every card that matches the selected chip and the search and belongs to no archived session, newest first. All is the default chip.
 _Avoid_: timeline, feed
 
 ### Architecture

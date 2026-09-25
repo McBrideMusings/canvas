@@ -110,23 +110,36 @@
         svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
         break;
       }
+      // A toothed cog: eight trapezoid teeth around a hub.
       case "gear":
+        svg.appendChild(
+          svgEl("path", {
+            d: "M10.4 4.8L10.9 2.5L13.1 2.5L13.6 4.8L16.0 5.8L17.9 4.5L19.5 6.1L18.2 8.0L19.2 10.4L21.5 10.9L21.5 13.1L19.2 13.6L18.2 16.0L19.5 17.9L17.9 19.5L16.0 18.2L13.6 19.2L13.1 21.5L10.9 21.5L10.4 19.2L8.0 18.2L6.1 19.5L4.5 17.9L5.8 16.0L4.8 13.6L2.5 13.1L2.5 10.9L4.8 10.4L5.8 8.0L4.5 6.1L6.1 4.5L8.0 5.8z",
+          })
+        );
         svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "3" }));
+        break;
+      // A window with its sidebar on the right.
+      case "sidebar-right":
+        svg.appendChild(
+          svgEl("rect", { x: "3", y: "4.5", width: "18", height: "15", rx: "2.5" })
+        );
+        svg.appendChild(svgEl("path", { d: "M15 4.5v15" }));
+        break;
+      case "archive":
+      case "unarchive":
+        svg.appendChild(svgEl("path", { d: "M3 4.5h18V8H3z" }));
+        svg.appendChild(svgEl("path", { d: "M5 8v10.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V8" }));
         svg.appendChild(
           svgEl("path", {
-            d: "M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2",
-          })
-        );
-        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "7" }));
-        break;
-      case "eye-off":
-        svg.appendChild(svgEl("path", { d: "M3 3l18 18" }));
-        svg.appendChild(
-          svgEl("path", {
-            d: "M10.6 6.2A9.8 9.8 0 0 1 12 6c5 0 9 6 9 6a15 15 0 0 1-2.6 3.2M6.3 7.9C4.2 9.5 3 12 3 12s4 6 9 6a8.6 8.6 0 0 0 3.4-.7",
+            d: name === "archive" ? "M10 12h4" : "M12 17v-5.5M9.5 14l2.5-2.5 2.5 2.5",
           })
         );
         break;
+      // A circled ×: empties a session of its posts, keeps the session.
+      case "clear":
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "9" }));
+        svg.appendChild(svgEl("path", { d: "M9 9l6 6M15 9l-6 6" }));
       case "arrow-up":
         svg.appendChild(svgEl("path", { d: "M12 19V5M5.5 11.5L12 5l6.5 6.5" }));
         break;
@@ -143,8 +156,7 @@
   }
 
   // `text`, when given, follows the icon as the button's visible label (a
-  // menu item); icon-only buttons leave it out and rely on aria-label. A
-  // text-only button (Settings' Delete) passes a null icon.
+  // menu item); icon-only buttons leave it out and rely on aria-label.
   function setButtonIcon(button, iconName, text) {
     while (button.firstChild) {
       button.removeChild(button.firstChild);
@@ -189,13 +201,45 @@
     };
   }
 
+  const prefs = loadPrefs();
+
+  // What this window last wrote or read, so a stored value that differs is
+  // known to come from the Settings window.
+  let lastStoredPrefs = null;
+
+  function readStoredPrefs() {
+    try {
+      return localStorage.getItem(PREFS_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function savePrefs() {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
     } catch (e) {}
+    lastStoredPrefs = readStoredPrefs();
   }
 
-  const prefs = loadPrefs();
+  // The Settings window writes the same key from its own document. The
+  // `storage` event announces it; window focus covers a webview that doesn't
+  // deliver the event across windows.
+  function syncPrefsFromStorage() {
+    const stored = readStoredPrefs();
+    if (stored === lastStoredPrefs) return;
+    lastStoredPrefs = stored;
+    const colorBy = prefs.colorBy;
+    Object.assign(prefs, loadPrefs());
+    if (prefs.colorBy !== colorBy) recolourSessions();
+    refreshVisibility();
+  }
+
+  window.addEventListener("storage", (e) => {
+    if (e.key === PREFS_KEY || e.key === null) syncPrefsFromStorage();
+  });
+  window.addEventListener("focus", syncPrefsFromStorage);
+  lastStoredPrefs = readStoredPrefs();
 
   // Arrival. WKWebView has no CSS scroll anchoring, so a reader scrolled
   // down more than SCROLLED_PX keeps their place by hand: the height of a
@@ -216,14 +260,14 @@
     return prefs.animate && !reducedMotion.matches;
   }
 
-  // The one rule for a hidden session. The stream filter, the chip row, the
-  // Settings list and the gear's badge all ask it.
+  // The one rule for an archived session. The stream filter, the chip row,
+  // the Sessions drawer and its toggle's badge all ask it.
   function isHidden(session) {
     if (prefs.hidden.includes(session.id)) return true;
     return !!session.endedAt && prefs.hideEnded && !prefs.shown.includes(session.id);
   }
 
-  function hiddenSessions() {
+  function archivedSessions() {
     return Array.from(sessions.values()).filter(isHidden);
   }
 
@@ -260,19 +304,15 @@
   }
 
   // Switching the key hands colours out again from the first palette entry,
-  // in the order sessions first appeared. The chips and Settings repaint in
+  // in the order sessions first appeared. The chips and drawer repaint in
   // the refreshVisibility that follows.
-  function setColorBy(value) {
-    if (prefs.colorBy === value) return;
-    setPrefsAndRefresh(() => {
-      prefs.colorBy = value;
-      colours = new Map();
-      for (const s of sessions.values()) sessionColour(s);
-      paintCardColours();
-    });
+  function recolourSessions() {
+    colours = new Map();
+    for (const s of sessions.values()) sessionColour(s);
+    paintCardColours();
   }
 
-  // A hidden session can't stay selected: its cards would all be filtered
+  // An archived session can't stay selected: its cards would all be filtered
   // out behind a filter the chip row no longer shows.
   function refreshVisibility() {
     const selected = selectedSessionId && sessions.get(selectedSessionId);
@@ -281,22 +321,24 @@
     }
     renderChips();
     applyFilter();
-    renderSettings();
+    renderDrawer();
     renderPill();
   }
 
   function setPrefsAndRefresh(change) {
+    // Take in what the Settings window wrote first, so saving doesn't drop it.
+    syncPrefsFromStorage();
     change();
     savePrefs();
     refreshVisibility();
   }
 
-  function hideSession(id) {
+  function archiveSession(id) {
     const name = sessionName(id);
     setPrefsAndRefresh(() => {
       if (!prefs.hidden.includes(id)) prefs.hidden.push(id);
     });
-    toast(`Hid ${name}`, "Undo", () =>
+    toast(`Archived ${name}`, "Undo", () =>
       setPrefsAndRefresh(() => {
         prefs.hidden = prefs.hidden.filter((h) => h !== id);
       })
@@ -314,7 +356,7 @@
     setPrefsAndRefresh(() => {
       prefs.hideEnded = on;
       // Off, every ended session is visible anyway; clearing shown means
-      // turning it back on hides all of them again, not a remembered few.
+      // turning it back on archives all of them again, not a remembered few.
       if (!on) prefs.shown = [];
     });
   }
@@ -414,16 +456,25 @@
     if (pressed) pressed.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
-  // Visible sessions that have posted, most recent post first.
-  function chipSessions() {
+  // Most recent post first; a session with no posts counts from when it
+  // started.
+  function byRecency(list) {
     const latest = new Map();
     for (const c of cards.values()) {
       const at = new Date(c.at).getTime();
       if (!(latest.get(c.sessionId) >= at)) latest.set(c.sessionId, at);
     }
-    return Array.from(sessions.values())
-      .filter((s) => !isHidden(s) && latest.has(s.id))
-      .sort((a, b) => latest.get(b.id) - latest.get(a.id));
+    const lastActive = (s) => latest.get(s.id) ?? new Date(s.startedAt).getTime();
+    return list.sort((a, b) => lastActive(b) - lastActive(a));
+  }
+
+  // Visible sessions that have posted, most recent post first.
+  function chipSessions() {
+    const posted = new Set();
+    for (const c of cards.values()) posted.add(c.sessionId);
+    return byRecency(
+      Array.from(sessions.values()).filter((s) => !isHidden(s) && posted.has(s.id))
+    );
   }
 
   // Ids of the chips in the last render, so the next one can tell which are
@@ -510,58 +561,252 @@
     return count;
   }
 
-  // The Settings popover hangs under the gear. Its contents are rebuilt on
-  // every change while it is open; the popover element itself stays, so an
-  // outside-click test against it survives the rebuild.
-  const settingsToggleEl = document.getElementById("settings-toggle");
-  const settingsBadgeEl = document.createElement("span");
-  const settingsEl = document.getElementById("settings");
-  settingsBadgeEl.className = "badge";
-  settingsToggleEl.append(buildIcon("gear"), settingsBadgeEl);
+  // The Sessions drawer slides in from the right edge under the title bar and
+  // lists every session, ACTIVE then ARCHIVED. Its header stays put; the body
+  // is rebuilt on every change while the drawer is open.
+  const drawerToggleEl = document.getElementById("drawer-toggle");
+  const drawerBadgeEl = document.createElement("span");
+  const drawerEl = document.getElementById("drawer");
+  const drawerCloseEl = document.getElementById("drawer-close");
+  const drawerBodyEl = document.getElementById("drawer-body");
+  drawerBadgeEl.className = "badge";
+  drawerToggleEl.append(buildIcon("sidebar-right"), drawerBadgeEl);
+  drawerCloseEl.appendChild(buildIcon("x"));
 
-  function openSettings() {
-    settingsEl.hidden = false;
-    settingsToggleEl.setAttribute("aria-expanded", "true");
-    renderSettings();
+  const settingsToggleEl = document.getElementById("settings-toggle");
+  settingsToggleEl.appendChild(buildIcon("gear"));
+
+  // Canvas.app opens the Settings window through its own command; a browser
+  // tab gets a popup window on the same page, and reopening it focuses the
+  // one already there.
+  settingsToggleEl.addEventListener("click", () => {
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke("open_settings").catch(() => {});
+    } else {
+      window.open("/settings.html", "canvas-settings", "popup,width=560,height=340");
+    }
+  });
+
+  function drawerIsOpen() {
+    return drawerEl.classList.contains("open");
   }
 
-  function closeSettings({ refocus = false } = {}) {
-    if (settingsEl.hidden) return;
-    if (pendingConfirm && settingsEl.contains(pendingConfirm.button)) {
+  function openDrawer() {
+    drawerEl.classList.add("open");
+    drawerEl.inert = false;
+    drawerToggleEl.setAttribute("aria-expanded", "true");
+    renderDrawer();
+    drawerCloseEl.focus();
+  }
+
+  function closeDrawer({ refocus = false } = {}) {
+    if (!drawerIsOpen()) return;
+    if (pendingConfirm && drawerEl.contains(pendingConfirm.button)) {
       clearPendingConfirm();
     }
-    settingsEl.hidden = true;
-    settingsToggleEl.setAttribute("aria-expanded", "false");
-    if (refocus) settingsToggleEl.focus();
+    drawerEl.classList.remove("open");
+    drawerEl.inert = true;
+    drawerToggleEl.setAttribute("aria-expanded", "false");
+    if (refocus) drawerToggleEl.focus();
   }
 
-  settingsToggleEl.addEventListener("click", () => {
-    if (settingsEl.hidden) openSettings();
-    else closeSettings();
+  drawerToggleEl.addEventListener("click", () => {
+    if (drawerIsOpen()) closeDrawer();
+    else openDrawer();
   });
+  drawerCloseEl.addEventListener("click", () => closeDrawer({ refocus: true }));
 
+  // A click on a toast (Undo, Keep showing) belongs to the drawer's own
+  // actions, so it doesn't close the drawer.
   document.addEventListener("click", (e) => {
-    if (!clickIsInside(e, settingsEl) && !clickIsInside(e, settingsToggleEl)) {
-      closeSettings();
+    if (
+      !clickIsInside(e, drawerEl) &&
+      !clickIsInside(e, drawerToggleEl) &&
+      !clickIsInside(e, toastsEl)
+    ) {
+      closeDrawer();
     }
   });
 
+  // The first Escape only reverts an armed confirm (its own handler below);
+  // the drawer stays until the next one.
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !settingsEl.hidden) closeSettings({ refocus: true });
+    if (e.key !== "Escape" || !drawerIsOpen() || lightbox) return;
+    if (pendingConfirm && drawerEl.contains(pendingConfirm.button)) return;
+    closeDrawer({ refocus: true });
   });
 
   // A click inside a card's iframe never reaches this document; focus
   // moving into that iframe is the sign. Switching apps also blurs the
-  // window but leaves activeElement outside any iframe, so Settings stays.
+  // window but leaves activeElement outside any iframe, so the drawer stays.
   window.addEventListener("blur", () => {
-    if (document.activeElement instanceof HTMLIFrameElement) closeSettings();
+    if (document.activeElement instanceof HTMLIFrameElement) closeDrawer();
   });
 
-  function settingsHeading(text) {
+  // Icon-only, fixed-size button. `key` names it across a rebuild so an armed
+  // confirm and keyboard focus can find their replacement.
+  function drawerButton(key, icon, label, onClick, danger) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = danger ? "icon-btn danger" : "icon-btn";
+    btn.dataset.key = key;
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+    btn.appendChild(buildIcon(icon));
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // Two clicks: the first swaps the icon for a check, the second runs it.
+  function confirmButton(key, icon, label, confirmLabel, onConfirm) {
+    const btn = drawerButton(
+      key,
+      icon,
+      label,
+      () =>
+        armConfirm(btn, {
+          idleLabel: label,
+          idleIcon: icon,
+          confirmLabel,
+          confirmIcon: "check",
+          onConfirm,
+        }),
+      true
+    );
+    return btn;
+  }
+
+  function buildSessionRow(session, section) {
+    const row = document.createElement("div");
+    row.className = "drawer-row";
+    row.dataset.sessionId = session.id;
+    row.dataset.section = section;
+
+    const dot = document.createElement("span");
+    dot.className = "session-dot";
+    dot.style.setProperty("--session-colour", sessionColour(session));
+
+    const text = document.createElement("div");
+    text.className = "drawer-row-text";
+    const name = document.createElement("div");
+    name.className = "drawer-row-name";
+    name.textContent = session.name;
+    const meta = document.createElement("small");
+    const count = sessionCardCount(session.id);
+    const parts = [`${count} post${count === 1 ? "" : "s"}`];
+    if (session.repo) parts.unshift(session.repo);
+    if (section === "archived" && session.endedAt) {
+      parts.push(`ended ${relativeTime(session.endedAt)}`);
+    }
+    meta.textContent = parts.join(" · ");
+    text.append(name, meta);
+    row.append(dot, text);
+
+    if (section === "active") {
+      row.append(
+        confirmButton(
+          `clear:${session.id}`,
+          "clear",
+          "Clear posts",
+          "Confirm clear posts",
+          () => clearSessionPosts(session.id)
+        ),
+        drawerButton(`archive:${session.id}`, "archive", "Archive", () =>
+          archiveSession(session.id)
+        )
+      );
+    } else {
+      row.append(
+        drawerButton(`show:${session.id}`, "unarchive", "Show", () => {
+          showSession(session.id);
+          toast(`Showing ${session.name}`);
+        }),
+        confirmButton(
+          `delete:${session.id}`,
+          "trash",
+          "Delete",
+          "Confirm delete",
+          () => deleteSession(session.id)
+        )
+      );
+    }
+    return row;
+  }
+
+  function drawerSection(section, title, list, action) {
+    const el = document.createElement("section");
+    el.className = "drawer-section";
+    el.dataset.section = section;
+    const head = document.createElement("div");
+    head.className = "drawer-heading";
     const h = document.createElement("h3");
-    h.className = "settings-heading";
-    h.textContent = text;
-    return h;
+    h.textContent = `${title} (${list.length})`;
+    head.appendChild(h);
+    if (action) head.appendChild(action);
+    el.appendChild(head);
+    if (list.length === 0) {
+      const none = document.createElement("div");
+      none.className = "drawer-empty";
+      none.textContent = `No ${section} sessions`;
+      el.appendChild(none);
+    }
+    for (const s of list) el.appendChild(buildSessionRow(s, section));
+    return el;
+  }
+
+  function renderDrawer() {
+    const archived = archivedSessions();
+    drawerBadgeEl.textContent = String(archived.length);
+    drawerBadgeEl.hidden = archived.length === 0;
+    if (!drawerIsOpen()) return;
+
+    // A rebuild detaches an armed button, so clear it and re-arm its
+    // replacement with the time it had left; a post arriving mid-confirm
+    // doesn't cancel it.
+    let rearm = null;
+    if (pendingConfirm && drawerBodyEl.contains(pendingConfirm.button)) {
+      rearm = {
+        key: pendingConfirm.button.dataset.key,
+        opts: pendingConfirm.opts,
+        ms: pendingConfirm.deadline - Date.now(),
+      };
+      clearPendingConfirm();
+    }
+    const active = document.activeElement;
+    const focusedKey =
+      active && drawerBodyEl.contains(active) ? active.dataset.key : null;
+    const scrollTop = drawerBodyEl.scrollTop;
+
+    const activeList = byRecency(Array.from(sessions.values()).filter((x) => !isHidden(x)));
+    const archivedList = byRecency(archived);
+    const deleteAll =
+      archivedList.length > 0
+        ? confirmButton(
+            "delete-all",
+            "trash",
+            "Delete all",
+            "Confirm delete all",
+            () => {
+              // The archive as it is at the second click, not at render time.
+              for (const s of archivedSessions()) deleteSession(s.id);
+            }
+          )
+        : null;
+    drawerBodyEl.replaceChildren(
+      drawerSection("active", "Active", activeList),
+      drawerSection("archived", "Archived", archivedList, deleteAll)
+    );
+    drawerBodyEl.scrollTop = scrollTop;
+
+    const byKey = (key) => drawerBodyEl.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    if (rearm && rearm.ms > 0) {
+      const btn = byKey(rearm.key);
+      if (btn) armConfirm(btn, rearm.opts, rearm.ms);
+    }
+    if (focusedKey) {
+      const btn = byKey(focusedKey);
+      if (btn) btn.focus();
+    }
   }
 
   function textButton(text, className, onClick) {
@@ -571,144 +816,6 @@
     btn.textContent = text;
     btn.addEventListener("click", onClick);
     return btn;
-  }
-
-  function buildHiddenRow(session) {
-    const row = document.createElement("div");
-    row.className = "hidden-row";
-    row.dataset.sessionId = session.id;
-
-    const dot = document.createElement("span");
-    dot.className = "session-dot";
-    dot.style.setProperty("--session-colour", sessionColour(session));
-
-    const text = document.createElement("div");
-    text.className = "hidden-row-text";
-    const name = document.createElement("div");
-    name.className = "hidden-row-name";
-    name.textContent = session.name;
-    const meta = document.createElement("small");
-    const count = sessionCardCount(session.id);
-    const parts = [`${count} post${count === 1 ? "" : "s"}`];
-    if (session.repo) parts.unshift(session.repo);
-    if (session.endedAt) parts.push(`ended ${relativeTime(session.endedAt)}`);
-    meta.textContent = parts.join(" · ");
-    text.append(name, meta);
-
-    const show = textButton("Show", "btn", () => {
-      showSession(session.id);
-      toast(`Showing ${session.name}`);
-    });
-    const del = textButton("Delete", "btn danger", () =>
-      armConfirm(del, {
-        idleLabel: "Delete",
-        idleIcon: null,
-        confirmLabel: "Confirm delete",
-        confirmIcon: null,
-        withText: true,
-        onConfirm: () => deleteSession(session.id),
-      })
-    );
-    del.setAttribute("aria-label", "Delete");
-
-    row.append(dot, text, show, del);
-    return row;
-  }
-
-  function renderSettings() {
-    const hiddenCount = hiddenSessions().length;
-    settingsBadgeEl.textContent = String(hiddenCount);
-    settingsBadgeEl.hidden = hiddenCount === 0;
-    if (settingsEl.hidden) return;
-
-    // Same as a card re-render: a rebuild detaches an armed Delete, so clear
-    // it and re-arm its replacement with the time it had left, so a post
-    // arriving mid-confirm doesn't cancel the delete.
-    let rearm = null;
-    if (pendingConfirm && settingsEl.contains(pendingConfirm.button)) {
-      rearm = {
-        sessionId: pendingConfirm.button.closest(".hidden-row").dataset.sessionId,
-        opts: pendingConfirm.opts,
-        ms: pendingConfirm.deadline - Date.now(),
-      };
-      clearPendingConfirm();
-    }
-    // A Repo | Session button rebuilt under the keyboard gets focus back.
-    const focusedColorBy =
-      settingsEl.contains(document.activeElement) && document.activeElement.dataset.colorBy;
-
-    settingsEl.replaceChildren();
-    settingsEl.appendChild(settingsHeading("Sessions"));
-
-    const hideEndedRow = document.createElement("label");
-    hideEndedRow.className = "settings-row";
-    const label = document.createElement("span");
-    label.className = "settings-row-text";
-    const note = document.createElement("small");
-    note.textContent = "Their posts stay saved; show them again below.";
-    label.append("Hide sessions when they end", note);
-    const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.className = "switch";
-    toggle.setAttribute("role", "switch");
-    toggle.checked = prefs.hideEnded;
-    toggle.addEventListener("change", () => setHideEnded(toggle.checked));
-    hideEndedRow.append(label, toggle);
-    settingsEl.appendChild(hideEndedRow);
-
-    settingsEl.appendChild(settingsHeading("Stream"));
-
-    const animateRow = document.createElement("label");
-    animateRow.className = "settings-row";
-    const animateLabel = document.createElement("span");
-    animateLabel.className = "settings-row-text";
-    animateLabel.textContent = "Animate new posts";
-    const animateToggle = document.createElement("input");
-    animateToggle.type = "checkbox";
-    animateToggle.className = "switch";
-    animateToggle.setAttribute("role", "switch");
-    animateToggle.dataset.pref = "animate";
-    animateToggle.checked = prefs.animate;
-    animateToggle.addEventListener("change", () =>
-      setPrefsAndRefresh(() => {
-        prefs.animate = animateToggle.checked;
-      })
-    );
-    animateRow.append(animateLabel, animateToggle);
-    settingsEl.appendChild(animateRow);
-
-    const colourRow = document.createElement("div");
-    colourRow.className = "settings-row static";
-    const colourLabel = document.createElement("span");
-    colourLabel.className = "settings-row-text";
-    colourLabel.textContent = "Colour sessions by";
-    const seg = document.createElement("span");
-    seg.className = "seg";
-    seg.setAttribute("role", "group");
-    seg.setAttribute("aria-label", "Colour sessions by");
-    for (const [value, text] of [["repo", "Repo"], ["session", "Session"]]) {
-      const btn = textButton(text, "seg-btn", () => setColorBy(value));
-      btn.dataset.colorBy = value;
-      btn.setAttribute("aria-pressed", prefs.colorBy === value ? "true" : "false");
-      seg.appendChild(btn);
-    }
-    colourRow.append(colourLabel, seg);
-    settingsEl.appendChild(colourRow);
-
-    settingsEl.appendChild(settingsHeading(`Hidden (${hiddenCount})`));
-    for (const s of hiddenSessions()) {
-      settingsEl.appendChild(buildHiddenRow(s));
-    }
-
-    if (rearm && rearm.ms > 0) {
-      const row = settingsEl.querySelector(
-        `.hidden-row[data-session-id="${CSS.escape(rearm.sessionId)}"]`
-      );
-      if (row) armConfirm(row.querySelector(".btn.danger"), rearm.opts, rearm.ms);
-    }
-    if (focusedColorBy) {
-      settingsEl.querySelector(`[data-color-by="${focusedColorBy}"]`).focus();
-    }
   }
 
   // One button may be armed to "confirm" at a time. A second click on the
@@ -735,6 +842,7 @@
     clearPendingConfirm();
     setButtonIcon(button, confirmIcon, withText ? confirmLabel : undefined);
     button.setAttribute("aria-label", confirmLabel);
+    if (button.title) button.title = confirmLabel;
     button.classList.add("confirming");
     const timeoutId = setTimeout(clearPendingConfirm, ms);
     pendingConfirm = {
@@ -745,6 +853,7 @@
       revert() {
         setButtonIcon(button, idleIcon, withText ? idleLabel : undefined);
         button.setAttribute("aria-label", idleLabel);
+        if (button.title) button.title = idleLabel;
         button.classList.remove("confirming");
       },
     };
@@ -892,9 +1001,9 @@
       )
     );
     menu.appendChild(
-      buildMenuItem("eye-off", "Hide this session", () => {
+      buildMenuItem("archive", "Archive this session", () => {
         closeMenu();
-        hideSession(card.sessionId);
+        archiveSession(card.sessionId);
       })
     );
     const divider = document.createElement("div");
@@ -968,6 +1077,10 @@
 
   function deleteCard(id) {
     fetch(`/api/cards/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  function clearSessionPosts(id) {
+    fetch(`/api/sessions/${encodeURIComponent(id)}/cards`, { method: "DELETE" }).catch(() => {});
   }
 
   function deleteSession(id) {
@@ -1128,29 +1241,30 @@
   }
 
   // The empty-state message differs depending on whether every session is
-  // hidden, the selected chip has no posts, or there are no posts at all.
+  // archived, the selected chip has no posts, or there are no posts at all.
   function updateEmptyState(visible) {
     emptyStateEl.hidden = visible > 0;
     if (visible > 0) return;
     const sessionList = Array.from(sessions.values());
     if (sessionList.length > 0 && sessionList.every(isHidden)) {
-      // "show ended sessions" only helps when the ended rule hid one of
-      // them; sessions hidden by hand come back one at a time in Settings.
-      const endedHidden = sessionList.some((s) => !prefs.hidden.includes(s.id));
-      if (endedHidden) {
+      // "show ended sessions" only helps when the ended rule archived one
+      // of them; sessions archived by hand come back one at a time in the
+      // Sessions drawer.
+      const endedArchived = sessionList.some((s) => !prefs.hidden.includes(s.id));
+      if (endedArchived) {
         emptyStateEl.replaceChildren(
-          "No open sessions. Posts from sessions that ended are kept — ",
+          "No open sessions. Posts from sessions that ended are kept in the archive — ",
           textButton("show ended sessions", "link-btn", () => setHideEnded(false)),
           "."
         );
       } else {
         emptyStateEl.replaceChildren(
-          "All sessions are hidden. ",
+          "All sessions are archived. ",
           // Stopped here, or the page-wide outside-click handler sees a
-          // click outside the popover it just opened and closes it again.
-          textButton("Open Settings", "link-btn", (e) => {
+          // click outside the drawer it just opened and closes it again.
+          textButton("Open Sessions", "link-btn", (e) => {
             e.stopPropagation();
-            openSettings();
+            openDrawer();
           })
         );
       }
@@ -1717,7 +1831,7 @@
     if (arrives && !el.hidden) arrive(el, card);
 
     // A new card changes its session's count — refresh the chip row and
-    // Settings without touching any other card, so a card for a
+    // drawer without touching any other card, so a card for a
     // non-selected session updates its chip's count and leaves the visible
     // stream alone. A session's first card brings its chip in with motion.
     chipsMayArrive = arrives;
@@ -1951,10 +2065,10 @@
       refreshVisibility();
       patchSessionNames(session.id);
       // Only the upsert that first sets endedAt on a session this viewer was
-      // showing announces the hide; a reload finds it hidden silently.
+      // showing announces the archive; a reload finds it archived silently.
       const endedJustNow = before && !before.endedAt && session.endedAt;
       if (endedJustNow && !isHidden(before) && isHidden(session)) {
-        toast(`${session.name} ended — its posts are hidden`, "Keep showing", () =>
+        toast(`${session.name} ended — its posts are archived`, "Keep showing", () =>
           showSession(session.id)
         );
       }
