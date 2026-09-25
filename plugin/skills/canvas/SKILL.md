@@ -5,9 +5,10 @@ description: Post a self-contained HTML card to Canvas, the live stream of Claud
 
 # Canvas
 
-Canvas is a stream of cards, one per turn, shown in a viewer that sits open
-beside the terminal. Each session gets its own column of cards; a card can
-carry links, file paths, images, and posted HTML.
+Canvas is a stream of cards, one per `canvas post` call, shown in a viewer
+that sits open beside the terminal. Each session gets its own column of
+cards. Nothing creates a card automatically — a card exists only because a
+post created it.
 
 ## What to post
 
@@ -15,11 +16,6 @@ Post plans, designs, and structured explanations — anything a diagram, a
 layout, or formatted HTML would make clearer than a wall of chat text — as
 self-contained HTML at the end of the turn that produced them. A short answer
 or a one-line status update doesn't need a post.
-
-**Never post links, file paths, or images by hand.** The `Stop` hook already
-pulls those out of the turn's own text and tool calls and attaches them to
-the same card automatically. Posting a bare URL or path as HTML just
-duplicates what's about to appear anyway.
 
 ## How to post
 
