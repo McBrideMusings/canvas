@@ -48,13 +48,6 @@
       focusable: "false",
     });
     switch (name) {
-      case "open":
-        svg.appendChild(
-          svgEl("rect", { x: "3", y: "3", width: "18", height: "18", rx: "4" })
-        );
-        svg.appendChild(svgEl("path", { d: "M9 15L15 9" }));
-        svg.appendChild(svgEl("path", { d: "M11 9h4v4" }));
-        break;
       case "copy":
         svg.appendChild(
           svgEl("rect", { x: "8", y: "2", width: "13", height: "15", rx: "2" })
