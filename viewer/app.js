@@ -12,6 +12,9 @@
   const bannerEl = document.getElementById("disconnected-banner");
   const overlayEl = document.getElementById("image-overlay");
   const overlayImgEl = document.getElementById("image-overlay-img");
+  const overlayPrevEl = document.getElementById("image-overlay-prev");
+  const overlayNextEl = document.getElementById("image-overlay-next");
+  const overlayCountEl = document.getElementById("image-overlay-count");
   const layoutEl = document.querySelector(".layout");
   const sidebarToggleEl = document.getElementById("sidebar-toggle");
   const titlebarEl = document.getElementById("titlebar");
@@ -98,6 +101,12 @@
         svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
         break;
       }
+      case "chevron-left":
+        svg.appendChild(svgEl("path", { d: "M15 5l-7 7 7 7" }));
+        break;
+      case "chevron-right":
+        svg.appendChild(svgEl("path", { d: "M9 5l7 7-7 7" }));
+        break;
       default:
         throw new Error(`buildIcon: unknown icon name "${name}"`);
     }
@@ -425,6 +434,7 @@
   // (including the one that clicked Confirm) stays in sync the same way.
   function removeCard(id) {
     if (!cards.has(id)) return;
+    if (lightbox && lightbox.card.id === id) closeLightbox();
     cards.delete(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
@@ -434,6 +444,7 @@
 
   function removeSession(id) {
     if (!sessions.has(id)) return;
+    if (lightbox && lightbox.card.sessionId === id) closeLightbox();
     sessions.delete(id);
     for (const [cardId, c] of Array.from(cards.entries())) {
       if (c.sessionId !== id) continue;
@@ -533,6 +544,18 @@
           if (Number.isNaN(n)) return;
           parent.postMessage({ type: 'canvas-open', index: n }, '*');
         });
+
+        // A card image — its src absolutized above to
+        // '<origin>/api/cards/<id>/images/<n>' — opens in the viewer's
+        // lightbox. Like a link, it sends only the index n; an image inside a
+        // link belongs to the link.
+        document.addEventListener('click', function (e) {
+          var img = e.target.closest && e.target.closest('img');
+          if (!img || img.closest('a[href]')) return;
+          var m = /\\/api\\/cards\\/[^\\/]+\\/images\\/(\\d+)$/.exec(img.getAttribute('src') || '');
+          if (!m) return;
+          parent.postMessage({ type: 'canvas-image', index: parseInt(m[1], 10) }, '*');
+        });
       </script>
     `;
     return (
@@ -540,6 +563,7 @@
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
       `<style>html,body{margin:0;overflow:hidden;}` +
       `body{font-family:-apple-system,sans-serif;}` +
+      `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
       `#__canvas_root{overflow:hidden;}</style>` +
       `</head><body><div id="__canvas_root">${html}</div>${resizeScript}</body></html>`
     );
@@ -592,6 +616,18 @@
         body: JSON.stringify({ path }),
       }).catch(() => {});
       return;
+    }
+
+    if (data.type === "canvas-image") {
+      // Same rule as canvas-open: the card comes from the sending frame,
+      // never from the message, and the index must name one of its images.
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      const index = data.index;
+      if (!Number.isInteger(index) || index < 0 || index >= card.images.length) {
+        return;
+      }
+      openLightbox(card, index);
     }
   });
 
@@ -648,18 +684,6 @@
     iframe.setAttribute("sandbox", "allow-scripts");
     iframe.srcdoc = buildIframeDoc(card.html);
     body.appendChild(iframe);
-
-    for (const [index] of card.images.entries()) {
-      const img = document.createElement("img");
-      img.className = "card-image";
-      img.src = `/api/cards/${encodeURIComponent(card.id)}/images/${index}`;
-      img.alt = "";
-      img.addEventListener("click", () => {
-        overlayImgEl.src = img.src;
-        overlayEl.hidden = false;
-      });
-      body.appendChild(img);
-    }
 
     el.appendChild(body);
     return el;
@@ -738,15 +762,58 @@
     }
   }
 
-  overlayEl.addEventListener("click", () => {
+  // The lightbox shows one of a card's images full size; with more than one,
+  // the arrow buttons and keys step through that card's images in post order.
+  let lightbox = null; // { card, index } while open
+
+  function paintLightbox() {
+    const { card, index } = lightbox;
+    const count = card.images.length;
+    overlayImgEl.src = `/api/cards/${encodeURIComponent(card.id)}/images/${index}`;
+    overlayPrevEl.hidden = count < 2;
+    overlayNextEl.hidden = count < 2;
+    overlayCountEl.hidden = count < 2;
+    overlayCountEl.textContent = `${index + 1} of ${count}`;
+  }
+
+  function openLightbox(card, index) {
+    lightbox = { card, index };
+    paintLightbox();
+    overlayEl.hidden = false;
+    // The click that opened it happened inside the card's iframe, which
+    // still holds keyboard focus — pull it out here, or Escape and the arrow
+    // keys go to the post instead of this window's keydown handler.
+    overlayEl.focus();
+  }
+
+  function closeLightbox() {
+    lightbox = null;
     overlayEl.hidden = true;
     overlayImgEl.src = "";
+  }
+
+  function stepLightbox(delta) {
+    const count = lightbox.card.images.length;
+    lightbox.index = (lightbox.index + delta + count) % count;
+    paintLightbox();
+  }
+
+  overlayPrevEl.appendChild(buildIcon("chevron-left"));
+  overlayNextEl.appendChild(buildIcon("chevron-right"));
+  overlayPrevEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    stepLightbox(-1);
   });
+  overlayNextEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    stepLightbox(1);
+  });
+  overlayEl.addEventListener("click", closeLightbox);
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !overlayEl.hidden) {
-      overlayEl.hidden = true;
-      overlayImgEl.src = "";
-    }
+    if (!lightbox) return;
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft" && lightbox.card.images.length > 1) stepLightbox(-1);
+    else if (e.key === "ArrowRight" && lightbox.card.images.length > 1) stepLightbox(1);
   });
 
   async function loadState() {

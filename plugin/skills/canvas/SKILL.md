@@ -37,11 +37,37 @@ styles or a `<style>` block, no external stylesheet.
 ### Local paths and links
 
 An image at an absolute path that exists — `![](/abs/shot.png)` in Markdown
-or `<img src="/abs/shot.png">` in HTML — renders inline in the card. A link
-to an existing local file or to any `http://`/`https://` URL —
-`[plan](/abs/plan.md)` or `<a href="…">` — opens on click. An absolute local
-path that doesn't exist is left unchanged (a broken image or a dead link) and
-`canvas post` warns about it on stderr — the post still lands.
+or `<img src="/abs/shot.png">` in HTML — renders inline in the card, where
+you put it. Clicking it opens it full size in the viewer's lightbox, and the
+arrow keys step through the card's other images. A link to an existing local
+file or to any `http://`/`https://` URL — `[plan](/abs/plan.md)` or
+`<a href="…">` — opens on click; an image inside a link opens the link, not
+the lightbox. Only those two forms are picked up: a bare path in the text
+stays plain text. An absolute local path that doesn't exist is left
+unchanged (a broken image or a dead link) and `canvas post` warns about it on
+stderr — the post still lands.
+
+### Size and layout
+
+The viewer sets a card's width — about 800px of content at the default
+window size, more in a wider window. The height is yours. Aim for about one
+screen, roughly 600px tall, so the user can take the card in without
+scrolling past it.
+
+That target is a default, not a limit. Organise the post however conveys the
+information best, and make it taller or shorter when the content calls for
+it — a long diff review can run long, a one-number result can be a few lines.
+Decide the size on purpose rather than letting it fall out of the content.
+
+Because every image opens full size in the lightbox, an image doesn't need
+to fill the card to be readable:
+
+- Give a screenshot a display width — `<img src="/abs/shot.png" width="360">`
+  (raw HTML passes through Markdown too) — so a tall phone capture doesn't
+  push the card to several screens.
+- Put a before/after pair or a set of related shots side by side, e.g. in a
+  `<div style="display:flex;gap:8px">`, rather than stacking them.
+- Leave an image full width only when its detail is the point of the post.
 
 ### Sandbox limits
 

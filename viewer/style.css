@@ -258,14 +258,6 @@ body {
   margin-bottom: 8px;
 }
 
-.card-image {
-  max-width: 100%;
-  border-radius: 6px;
-  margin-bottom: 8px;
-  cursor: zoom-in;
-  display: block;
-}
-
 .row {
   display: flex;
   align-items: center;
@@ -315,11 +307,56 @@ body {
   justify-content: center;
   z-index: 50;
   cursor: zoom-out;
+  outline: none;
 }
 
 .image-overlay img {
-  max-width: 92vw;
-  max-height: 92vh;
+  max-width: 88vw;
+  max-height: 88vh;
+}
+
+.image-overlay-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-overlay-nav:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.image-overlay-nav:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.image-overlay-prev {
+  left: 20px;
+}
+
+.image-overlay-next {
+  right: 20px;
+}
+
+.image-overlay-count {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: #ddd;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 [hidden] {
