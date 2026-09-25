@@ -83,6 +83,10 @@
       case "x":
         svg.appendChild(svgEl("path", { d: "M7 7l10 10M17 7L7 17" }));
         break;
+      case "search":
+        svg.appendChild(svgEl("circle", { cx: "10.5", cy: "10.5", r: "6.5" }));
+        svg.appendChild(svgEl("path", { d: "M15.5 15.5L21 21" }));
+        break;
       // The agent tile's mark: an eight-ray burst, drawn heavier than the
       // other glyphs because it sits small and white on a coloured tile.
       case "claude":
@@ -894,6 +898,7 @@
     if (!cards.has(id)) return;
     if (lightbox && lightbox.card.id === id) closeLightbox();
     cards.delete(id);
+    postTextLower.delete(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
     closeMenuIfDetached();
@@ -908,6 +913,7 @@
     for (const [cardId, c] of Array.from(cards.entries())) {
       if (c.sessionId !== id) continue;
       cards.delete(cardId);
+      postTextLower.delete(cardId);
       const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
       if (el) el.remove();
     }
@@ -918,22 +924,123 @@
     toast(`Deleted ${name} and its posts`);
   }
 
-  function cardMatchesFilter(sessionId) {
-    const session = sessions.get(sessionId);
-    if (session && isHidden(session)) return false;
-    return selectedSessionId === null || sessionId === selectedSessionId;
+  // Search. `query` is the trimmed field text; a card matches when its
+  // lower-cased text, session name, repo or directory contains it. postText
+  // parses the whole post, so its result is kept per card id and dropped when
+  // the card is replaced or removed.
+  let query = "";
+  const searchInputEl = document.getElementById("search-input");
+  const searchEl = document.getElementById("search");
+  const searchCountEl = document.getElementById("search-count");
+  const searchHintEl = document.getElementById("search-hint");
+  const searchClearEl = document.getElementById("search-clear");
+  const postTextLower = new Map(); // card id -> lower-cased postText
+
+  document.getElementById("search-icon").appendChild(buildIcon("search"));
+  searchClearEl.appendChild(buildIcon("x"));
+
+  function cardTextLower(card) {
+    let text = postTextLower.get(card.id);
+    if (text === undefined) {
+      text = postText(card).toLowerCase();
+      postTextLower.set(card.id, text);
+    }
+    return text;
   }
+
+  function cardMatchesQuery(card) {
+    if (query === "") return true;
+    const q = query.toLowerCase();
+    const session = sessions.get(card.sessionId);
+    if (session) {
+      for (const field of [session.name, session.repo, session.cwd]) {
+        if (field && field.toLowerCase().includes(q)) return true;
+      }
+    }
+    return cardTextLower(card).includes(q);
+  }
+
+  function cardMatchesFilter(card) {
+    const session = sessions.get(card.sessionId);
+    if (session && isHidden(session)) return false;
+    if (selectedSessionId !== null && card.sessionId !== selectedSessionId) return false;
+    return cardMatchesQuery(card);
+  }
+
+  // Marks inside the posts follow the query once it is two characters long;
+  // anything shorter clears them. Each iframe is told only when this string
+  // changes, and once more as it loads.
+  let highlightQuery = "";
+
+  function postHighlight(frame) {
+    if (frame.contentWindow) {
+      frame.contentWindow.postMessage({ type: "canvas-highlight", query: highlightQuery }, "*");
+    }
+  }
+
+  function syncHighlight() {
+    const next = query.length >= 2 ? query : "";
+    if (next === highlightQuery) return;
+    highlightQuery = next;
+    for (const frame of cardsEl.querySelectorAll("iframe")) postHighlight(frame);
+  }
+
+  function setQuery(value) {
+    query = value.trim();
+    searchInputEl.value = value;
+    const hasText = value !== "";
+    searchHintEl.hidden = hasText;
+    searchClearEl.hidden = !hasText;
+    syncHighlight();
+    applyFilter();
+  }
+
+  function clearSearch() {
+    selectedSessionId = null;
+    setQuery("");
+    renderChips();
+  }
+
+  searchInputEl.addEventListener("input", () => setQuery(searchInputEl.value));
+  searchClearEl.addEventListener("click", () => {
+    setQuery("");
+    searchInputEl.focus();
+  });
+  searchInputEl.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (searchInputEl.value !== "") setQuery("");
+    else searchInputEl.blur();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable) {
+      return;
+    }
+    e.preventDefault();
+    searchInputEl.focus();
+    searchInputEl.select();
+  });
 
   // Hide/show existing card elements per the current filter without
   // touching any other card's DOM node (and any live iframe inside it).
   function applyFilter() {
     let visible = 0;
+    let fromVisibleSessions = 0;
     for (const el of cardsEl.children) {
-      const matches = cardMatchesFilter(el.dataset.sessionId);
+      const card = cards.get(el.dataset.cardId);
+      const matches = cardMatchesFilter(card);
       el.hidden = !matches;
       if (matches) visible++;
+      const session = sessions.get(card.sessionId);
+      if (!session || !isHidden(session)) fromVisibleSessions++;
     }
     streamEl.dataset.filterSession = selectedSessionId || "";
+    streamEl.dataset.query = query;
+    const filtering = selectedSessionId !== null || query !== "";
+    searchCountEl.hidden = !filtering;
+    searchCountEl.textContent = `${visible} of ${fromVisibleSessions}`;
+    searchEl.classList.toggle("filtering", filtering);
     updateEmptyState(visible);
   }
 
@@ -964,6 +1071,11 @@
           })
         );
       }
+    } else if (query !== "") {
+      emptyStateEl.replaceChildren(
+        `No posts match “${query}”. `,
+        textButton("Clear search", "link-btn", clearSearch)
+      );
     } else if (selectedSessionId !== null) {
       emptyStateEl.replaceChildren(
         "No posts from this session yet. ",
@@ -1024,6 +1136,55 @@
         } catch (e) {}
         setInterval(canvasSendHeight, 400);
 
+        // The parent's search query, marked in every text node. The old marks
+        // go first; an empty query leaves the post as it was.
+        function canvasHighlight(query) {
+          var marks = canvasRoot.querySelectorAll('mark[data-canvas-hit]');
+          for (var i = 0; i < marks.length; i++) {
+            var mark = marks[i];
+            var holder = mark.parentNode;
+            holder.replaceChild(document.createTextNode(mark.textContent), mark);
+            holder.normalize();
+          }
+          if (!query) return;
+          var q = query.toLowerCase();
+          var walker = document.createTreeWalker(canvasRoot, NodeFilter.SHOW_TEXT, {
+            acceptNode: function (n) {
+              return n.parentElement && n.parentElement.closest('script, style, noscript, template, textarea')
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+            }
+          });
+          var nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          nodes.forEach(function (node) {
+            var text = node.data;
+            var lower = text.toLowerCase();
+            var at = lower.indexOf(q);
+            if (at < 0) return;
+            var frag = document.createDocumentFragment();
+            var last = 0;
+            while (at >= 0) {
+              if (at > last) frag.appendChild(document.createTextNode(text.slice(last, at)));
+              var mark = document.createElement('mark');
+              mark.setAttribute('data-canvas-hit', '');
+              mark.textContent = text.slice(at, at + q.length);
+              frag.appendChild(mark);
+              last = at + q.length;
+              at = lower.indexOf(q, last);
+            }
+            if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+            node.parentNode.replaceChild(frag, node);
+          });
+        }
+        window.addEventListener('message', function (e) {
+          if (e.source !== parent) return;
+          var d = e.data;
+          if (d && d.type === 'canvas-highlight' && typeof d.query === 'string') {
+            canvasHighlight(d.query);
+            canvasSendHeight();
+          }
+        });
+
         // The scan step (canvas post) rewrites a local path or http(s) link
         // to '#canvas-open-<n>' and records the real target server-side, at
         // card.targets[n] — this iframe never learns or names a real path,
@@ -1056,7 +1217,8 @@
       `<style>html,body{margin:0;overflow:hidden;}` +
       `body{font-family:-apple-system,sans-serif;}` +
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
-      `#__canvas_root{overflow:hidden;}</style>` +
+      `#__canvas_root{overflow:hidden;}` +
+      `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
       `</head><body><div id="__canvas_root">${html}</div>${resizeScript}</body></html>`
     );
   }
@@ -1171,6 +1333,9 @@
     const iframe = document.createElement("iframe");
     iframe.setAttribute("sandbox", "allow-scripts");
     iframe.srcdoc = buildIframeDoc(card.html);
+    iframe.addEventListener("load", () => {
+      if (highlightQuery) postHighlight(iframe);
+    });
     body.appendChild(iframe);
 
     el.appendChild(body);
@@ -1200,6 +1365,7 @@
   // updated elsewhere never reloads this card's sandboxed HTML posts.
   function upsertCard(card) {
     cards.set(card.id, card);
+    postTextLower.delete(card.id);
 
     const existing = cardsEl.querySelector(
       `[data-card-id="${CSS.escape(card.id)}"]`
@@ -1213,7 +1379,7 @@
     }
 
     const el = renderCard(card);
-    el.hidden = !cardMatchesFilter(card.sessionId);
+    el.hidden = !cardMatchesFilter(card);
     const siblings = Array.from(cardsEl.children);
     const insertBefore = siblings.find(
       (child) => new Date(child.dataset.at) < new Date(card.at)
@@ -1317,6 +1483,7 @@
       sessionColour(s);
     }
     cards.clear();
+    postTextLower.clear();
     for (const c of data.cards) cards.set(c.id, c);
     prunePrefs();
     bootstrapRender();

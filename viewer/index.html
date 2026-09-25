@@ -9,6 +9,30 @@
 <body>
   <div id="disconnected-banner" class="banner" hidden>Reconnecting to canvasd…</div>
   <div class="titlebar" id="titlebar" data-tauri-drag-region>
+    <div class="search" id="search">
+      <label class="search-field">
+        <span class="search-icon" id="search-icon"></span>
+        <input
+          type="text"
+          id="search-input"
+          class="search-input"
+          placeholder="Search posts, sessions, repos"
+          aria-label="Search posts, sessions, repos"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+        />
+        <kbd class="search-hint" id="search-hint">/</kbd>
+        <button
+          type="button"
+          id="search-clear"
+          class="search-clear"
+          aria-label="Clear search"
+          hidden
+        ></button>
+      </label>
+      <span class="search-count" id="search-count" hidden></span>
+    </div>
     <div class="titlebar-spacer"></div>
     <button
       type="button"
