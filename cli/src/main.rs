@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -26,8 +26,38 @@ fn main() {
             // Unlike a hook, `canvas post` is run on purpose by an agent
             // that needs to see whether it worked, so failures are loud:
             // one line on stderr, non-zero exit.
-            let arg = args.get(2).map(String::as_str);
-            if let Err(e) = canvas::post::run(arg) {
+            let rest = &args[2..];
+            let mut arg: Option<&str> = None;
+            let mut format_flag: Option<&str> = None;
+            let mut i = 0;
+            let mut usage_error = false;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--format" => match rest.get(i + 1) {
+                        Some(v) => {
+                            format_flag = Some(v.as_str());
+                            i += 2;
+                        }
+                        None => {
+                            usage_error = true;
+                            break;
+                        }
+                    },
+                    other if arg.is_none() => {
+                        arg = Some(other);
+                        i += 1;
+                    }
+                    _ => {
+                        usage_error = true;
+                        break;
+                    }
+                }
+            }
+            if usage_error {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+            if let Err(e) = canvas::post::run(arg, format_flag) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

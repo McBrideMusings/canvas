@@ -195,6 +195,57 @@ pub async fn end_session(
     }
 }
 
+/// Replaces every `canvas-image:<n>` placeholder the CLI's scan step left in
+/// `html` with the image route for this card, now that the card's id is
+/// known. Only a placeholder that occupies a whole quoted attribute value —
+/// `="canvas-image:<n>"` or `='canvas-image:<n>'`, exactly the shape scan.rs
+/// writes — is rewritten, so ordinary prose that happens to contain the same
+/// literal text (e.g. a post discussing this very mechanism) is left alone.
+/// `n` is unbounded here (no check against how many images the post actually
+/// carries) — an out-of-range index just serves 404 at request time, same as
+/// any other missing image.
+fn resolve_image_placeholders(html: &str, card_id: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    loop {
+        match rest.find("canvas-image:") {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some(idx) => {
+                out.push_str(&rest[..idx]);
+                let after = &rest[idx + "canvas-image:".len()..];
+                let digits_len = after.bytes().take_while(|b| b.is_ascii_digit()).count();
+                let opening_quote = idx
+                    .checked_sub(1)
+                    .and_then(|i| rest.as_bytes().get(i))
+                    .copied()
+                    .filter(|&b| b == b'"' || b == b'\'');
+                let preceded_by_equals = idx
+                    .checked_sub(2)
+                    .and_then(|i| rest.as_bytes().get(i))
+                    .is_some_and(|&b| b == b'=');
+                let closing_quote_matches = opening_quote
+                    .is_some_and(|q| after.as_bytes().get(digits_len) == Some(&q));
+
+                if digits_len == 0 || !preceded_by_equals || !closing_quote_matches {
+                    // Not a genuine `="canvas-image:<n>"` attribute value —
+                    // copy the literal text through unchanged and keep
+                    // scanning past it.
+                    out.push_str("canvas-image:");
+                    rest = after;
+                    continue;
+                }
+                let n = &after[..digits_len];
+                out.push_str(&format!("/api/cards/{card_id}/images/{n}"));
+                rest = &after[digits_len..];
+            }
+        }
+    }
+    out
+}
+
 /// Every post creates its own card — no open/closed lifecycle, no merging
 /// into a prior card from the same session.
 pub async fn post_explicit(
@@ -207,11 +258,12 @@ pub async fn post_explicit(
     let card = {
         let mut inner = state.inner.write().await;
         let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
+        let id = Uuid::new_v4().to_string();
         let card = Card {
-            id: Uuid::new_v4().to_string(),
+            html: resolve_image_placeholders(&req.html, &id),
+            id,
             session_id: req.session_id.clone(),
             at: now(),
-            html: req.html.clone(),
             images: req.images,
             targets: req.targets,
         };

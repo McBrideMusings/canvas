@@ -116,7 +116,17 @@ fn git_checkout_with_origin(remote: &str) -> (std::path::PathBuf, std::path::Pat
     };
     git(&["init", "-q"]);
     git(&["remote", "add", "origin", remote]);
-    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
     git(&["worktree", "add", "-q", linked.to_str().unwrap()]);
     (main, linked)
 }
@@ -129,7 +139,10 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
     // SessionStart in the main checkout.
     let response = app
         .clone()
-        .oneshot(post("/api/sessions", json!({"session_id": "r1", "cwd": main})))
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": "r1", "cwd": main}),
+        ))
         .await
         .unwrap();
     let session: Session = json_body(response).await;
@@ -146,13 +159,24 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
 
     // Outside any git checkout.
     app.clone()
-        .oneshot(post("/api/sessions", json!({"session_id": "r3", "cwd": "/"})))
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": "r3", "cwd": "/"}),
+        ))
         .await
         .unwrap();
 
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
-    let repo = |id: &str| state.sessions.iter().find(|s| s.id == id).unwrap().repo.clone();
+    let repo = |id: &str| {
+        state
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .repo
+            .clone()
+    };
     assert_eq!(repo("r2").as_deref(), Some("octo/hello"));
     assert_eq!(repo("r3"), None);
 
@@ -307,11 +331,78 @@ async fn card_image_serves_the_cards_images_and_rejects_others() {
         async move { app.oneshot(get(&uri)).await.unwrap().status() }
     };
     let id = &card.id;
-    assert_eq!(status(format!("/api/cards/{id}/images/0")).await, StatusCode::OK);
-    assert_eq!(status(format!("/api/cards/{id}/images/1")).await, StatusCode::NOT_FOUND);
-    assert_eq!(status(format!("/api/cards/{id}/images/2")).await, StatusCode::NOT_FOUND);
-    assert_eq!(status(format!("/api/cards/{id}/images/3")).await, StatusCode::NOT_FOUND);
-    assert_eq!(status("/api/cards/unknown/images/0".to_string()).await, StatusCode::NOT_FOUND);
+    assert_eq!(
+        status(format!("/api/cards/{id}/images/0")).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(format!("/api/cards/{id}/images/1")).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        status(format!("/api/cards/{id}/images/2")).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        status(format!("/api/cards/{id}/images/3")).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        status("/api/cards/unknown/images/0".to_string()).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn image_placeholder_is_resolved_to_the_cards_image_route_and_serves() {
+    let app = app();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let png = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
+
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({
+                "session_id": "s1",
+                "cwd": "/tmp/proj",
+                "html": r#"<img src="canvas-image:0">"#,
+                "images": [png],
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let card: Card = json_body(response).await;
+    let expected_src = format!("/api/cards/{}/images/0", card.id);
+    assert!(card.html.contains(&expected_src), "{}", card.html);
+    assert!(!card.html.contains("canvas-image:0"));
+
+    let response = app.clone().oneshot(get(&expected_src)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(!bytes.is_empty());
+}
+
+/// Prose that merely mentions the placeholder's literal text — not inside a
+/// quoted attribute value — must survive untouched: the replacement is
+/// scoped to `="canvas-image:<n>"`/`='canvas-image:<n>'`, not a blind
+/// substring match anywhere in the html.
+#[tokio::test]
+async fn image_placeholder_text_outside_an_attribute_value_is_left_alone() {
+    let app = app();
+    let html = "<p>the placeholder looks like canvas-image:0 in prose</p>";
+
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": html}),
+        ))
+        .await
+        .unwrap();
+    let card: Card = json_body(response).await;
+    assert_eq!(card.html, html);
 }
 
 #[tokio::test]
@@ -645,7 +736,12 @@ async fn missing_host_is_refused() {
 
 #[tokio::test]
 async fn loopback_hosts_are_served_at_any_port() {
-    for host in ["127.0.0.1:8229", "localhost:8229", "localhost:9001", "localhost"] {
+    for host in [
+        "127.0.0.1:8229",
+        "localhost:8229",
+        "localhost:9001",
+        "localhost",
+    ] {
         let response = app()
             .oneshot(get_with_host("/api/state", host))
             .await

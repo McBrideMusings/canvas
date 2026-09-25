@@ -50,13 +50,19 @@ pub fn end_session(session_id: &str) -> Result<(), ureq::Error> {
 /// agent that ran it, so this returns a one-line, human-readable message on
 /// every failure instead of the raw `ureq::Error`, and returns the card the
 /// daemon created on success so the caller can report its id.
-pub fn post_explicit(session_id: &str, cwd: &str, html: String) -> Result<Card, String> {
+pub fn post_explicit(
+    session_id: &str,
+    cwd: &str,
+    html: String,
+    images: Vec<String>,
+    targets: Vec<String>,
+) -> Result<Card, String> {
     let body = PostRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
         html,
-        images: Vec::new(),
-        targets: Vec::new(),
+        images,
+        targets,
     };
     let result = post_json("/api/posts", body);
 

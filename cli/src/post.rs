@@ -9,13 +9,29 @@
 use std::io::Read;
 
 use crate::client;
+use crate::format::{self, Format};
+use crate::scan;
 
-pub fn run(arg: Option<&str>) -> Result<(), String> {
-    let html = read_html(arg, std::io::stdin())?;
-    validate(&html)?;
+/// `arg` is the file path (or `-`/absent for stdin); `format_flag` is an
+/// explicit `--format md|text|html`, when given.
+pub fn run(arg: Option<&str>, format_flag: Option<&str>) -> Result<(), String> {
+    let format = resolve_format(arg, format_flag)?;
+    let input = read_html(arg, std::io::stdin())?;
+    validate(&input)?;
+    let converted = format::convert(&input, format);
+    let scanned = scan::scan(&converted, |path| std::path::Path::new(path).exists());
+    for warning in &scanned.warnings {
+        eprintln!("{warning}");
+    }
     let session_id = session_id()?;
     let cwd = current_dir()?;
-    let card = client::post_explicit(&session_id, &cwd, html)?;
+    let card = client::post_explicit(
+        &session_id,
+        &cwd,
+        scanned.html,
+        scanned.images,
+        scanned.targets,
+    )?;
     println!(
         "{}",
         serde_json::json!({
@@ -25,6 +41,20 @@ pub fn run(arg: Option<&str>) -> Result<(), String> {
         })
     );
     Ok(())
+}
+
+/// `--format`, else the file extension, else Markdown (including for stdin
+/// and an unrecognised extension).
+fn resolve_format(arg: Option<&str>, format_flag: Option<&str>) -> Result<Format, String> {
+    if let Some(value) = format_flag {
+        return Format::parse(value)
+            .ok_or_else(|| format!("unknown --format {value:?} (expected md, text or html)"));
+    }
+    let from_ext = match arg {
+        Some(path) if path != "-" => Format::from_extension(path),
+        _ => None,
+    };
+    Ok(from_ext.unwrap_or(Format::Markdown))
 }
 
 /// Claude Code sets `CLAUDE_CODE_SESSION_ID` in every Bash tool shell, equal
@@ -85,8 +115,11 @@ mod tests {
 
     #[test]
     fn missing_file_argument_is_an_error() {
-        let err = read_html(Some("/definitely/does/not/exist.html"), Cursor::new(Vec::new()))
-            .unwrap_err();
+        let err = read_html(
+            Some("/definitely/does/not/exist.html"),
+            Cursor::new(Vec::new()),
+        )
+        .unwrap_err();
         assert!(err.contains("/definitely/does/not/exist.html"));
     }
 

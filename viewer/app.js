@@ -472,7 +472,27 @@
         : "No cards yet for this session.";
   }
 
+  // A srcdoc iframe (sandbox="allow-scripts", no allow-same-origin) has an
+  // opaque origin, so a relative `src="/api/cards/..."` inside it never
+  // resolves to the daemon at all — no request is even attempted, and the
+  // image shows as broken. canvasd only ever writes that one path shape
+  // into post HTML, so making exactly that shape absolute to the daemon's
+  // own origin (both quote styles) is enough; nothing else in the HTML is
+  // touched.
+  function absolutizeCardImageSrcs(html) {
+    // scan.rs preserves the source HTML's attribute-name casing (it only
+    // rewrites the value, not `tag[..vs]`) — an `<IMG SRC="...">` post
+    // reaches here with `SRC` still uppercase, so the attribute name must
+    // be matched case-insensitively even though canvasd only ever writes
+    // lowercase `src` itself.
+    return html.replace(
+      /(src=["'])(\/api\/cards\/)/gi,
+      (_match, prefix, path) => `${prefix}${location.origin}${path}`
+    );
+  }
+
   function buildIframeDoc(html) {
+    html = absolutizeCardImageSrcs(html);
     const csp =
       "default-src 'none'; " +
       "script-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com 'unsafe-inline'; " +
@@ -500,6 +520,19 @@
           new ResizeObserver(canvasSendHeight).observe(canvasRoot);
         } catch (e) {}
         setInterval(canvasSendHeight, 400);
+
+        // The scan step (canvas post) rewrites a local path or http(s) link
+        // to '#canvas-open-<n>' and records the real target server-side, at
+        // card.targets[n] — this iframe never learns or names a real path,
+        // it only ever sends the index it clicked.
+        document.addEventListener('click', function (e) {
+          var el = e.target.closest && e.target.closest('a[href^="#canvas-open-"]');
+          if (!el) return;
+          e.preventDefault();
+          var n = parseInt(el.getAttribute('href').slice('#canvas-open-'.length), 10);
+          if (Number.isNaN(n)) return;
+          parent.postMessage({ type: 'canvas-open', index: n }, '*');
+        });
       </script>
     `;
     return (
@@ -512,15 +545,53 @@
     );
   }
 
-  window.addEventListener("message", (event) => {
-    const data = event.data;
-    if (!data || data.type !== "canvas-resize") return;
+  // Finds the card whose iframe's contentWindow is `source` — the only way
+  // a card is identified from a postMessage, since the message itself never
+  // carries a card id (an untrusted iframe naming its own card id would let
+  // one card's script open another card's targets).
+  function cardForFrameSource(source) {
     const frames = cardsEl.querySelectorAll("iframe");
     for (const frame of frames) {
-      if (frame.contentWindow === event.source) {
-        frame.style.height = `${Math.max(20, data.height)}px`;
-        break;
+      if (frame.contentWindow === source) {
+        const el = frame.closest(".card");
+        return el ? cards.get(el.dataset.cardId) : null;
       }
+    }
+    return null;
+  }
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data) return;
+
+    if (data.type === "canvas-resize") {
+      const frames = cardsEl.querySelectorAll("iframe");
+      for (const frame of frames) {
+        if (frame.contentWindow === event.source) {
+          frame.style.height = `${Math.max(20, data.height)}px`;
+          break;
+        }
+      }
+      return;
+    }
+
+    if (data.type === "canvas-open") {
+      // Only a real card iframe's contentWindow may trigger an open — never
+      // the top window itself, and never an index a card iframe cannot
+      // name a path for.
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      const index = data.index;
+      if (!Number.isInteger(index) || index < 0 || index >= card.targets.length) {
+        return;
+      }
+      const path = card.targets[index];
+      fetch("/api/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      }).catch(() => {});
+      return;
     }
   });
 
