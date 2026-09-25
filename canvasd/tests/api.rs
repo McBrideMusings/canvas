@@ -702,6 +702,15 @@ async fn rebound_host_cannot_delete_even_with_matching_origin() {
 }
 
 #[tokio::test]
+async fn host_with_userinfo_is_refused() {
+    let response = app()
+        .oneshot(get_with_host("/api/state", "evil@127.0.0.1:8229"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+}
+
+#[tokio::test]
 async fn missing_host_is_refused() {
     let request = Request::builder()
         .uri("/api/state")

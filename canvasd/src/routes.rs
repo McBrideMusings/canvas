@@ -45,6 +45,9 @@ pub async fn require_loopback_host(request: Request, next: Next) -> Response {
         .headers()
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
+        // `Authority` accepts and drops userinfo (`evil@127.0.0.1`), which a
+        // `Host` header never legitimately carries.
+        .filter(|v| !v.contains('@'))
         .and_then(|v| v.parse::<Authority>().ok());
     match host {
         Some(authority)

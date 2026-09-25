@@ -44,6 +44,10 @@ the terminal all day.
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
   `connect-src`. Never set post markup as `innerHTML` in the viewer's own origin.
 - A turn with no links, paths or images, and no explicit post, produces no card.
+- canvasd answers only requests whose `Host` is `127.0.0.1` or `localhost` (any
+  port); anything else, or no `Host`, gets 421. That router-wide layer is the
+  DNS-rebinding defence: add routes inside `build_router`, never around it, and
+  point clients at one of those two names.
 
 ## Commands
 
