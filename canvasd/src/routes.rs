@@ -3,7 +3,7 @@ use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -12,7 +12,6 @@ use canvas_core::{
     OpenRequest, PostRequest, Session, StateResponse, TurnCard, TurnRequest, UpsertSessionRequest,
 };
 use futures::stream::Stream;
-use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use uuid::Uuid;
@@ -352,19 +351,32 @@ pub async fn events(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct FileQuery {
-    pub path: String,
-}
-
 const ALLOWED_IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg"];
 
-pub async fn get_file(Query(q): Query<FileQuery>) -> Response {
-    if !q.path.starts_with('/') {
+/// Serves the `index`th image of a stored card. The request names a card, not
+/// a path, so no caller can read a file no card shows — and a card id is a
+/// random UUID another origin can't learn, since `/api/state` and
+/// `/api/events` send no CORS headers.
+pub async fn get_card_image(
+    State(state): State<AppState>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Response {
+    let image = {
+        let inner = state.inner.read().await;
+        inner
+            .cards
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.images.get(index).cloned())
+    };
+    let Some(image) = image else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !image.starts_with('/') {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    let path = StdPath::new(&q.path);
+    let path = StdPath::new(&image);
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())

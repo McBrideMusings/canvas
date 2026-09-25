@@ -629,10 +629,10 @@
       body.appendChild(iframe);
     }
 
-    for (const imagePath of card.images) {
+    for (const [index] of card.images.entries()) {
       const img = document.createElement("img");
       img.className = "card-image";
-      img.src = `/api/file?path=${encodeURIComponent(imagePath)}`;
+      img.src = `/api/cards/${encodeURIComponent(card.id)}/images/${index}`;
       img.alt = "";
       img.addEventListener("click", () => {
         overlayImgEl.src = img.src;

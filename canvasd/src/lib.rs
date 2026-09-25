@@ -19,7 +19,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/state", get(routes::get_state))
         .route("/api/cards/:id", delete(routes::delete_card))
         .route("/api/events", get(routes::events))
-        .route("/api/file", get(routes::get_file))
+        .route("/api/cards/:id/images/:index", get(routes::get_card_image))
         .route("/api/open", post(routes::open_path))
         .route("/*path", get(viewer::asset))
         .with_state(state)
