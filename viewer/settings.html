@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Settings</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <main class="prefs">
+    <div class="pref">
+      <label class="pref-label" for="archive-ended">Archive sessions when they end</label>
+      <div class="pref-control">
+        <input type="checkbox" id="archive-ended" class="switch" role="switch" />
+        <p class="pref-note">Their posts stay saved. Show them again from the Sessions drawer.</p>
+      </div>
+    </div>
+    <div class="pref">
+      <span class="pref-label" id="colour-label">Colour sessions by</span>
+      <div class="pref-control">
+        <span class="seg" role="group" aria-labelledby="colour-label">
+          <button type="button" class="seg-btn" data-color-by="repo" aria-pressed="false">Repo</button>
+          <button type="button" class="seg-btn" data-color-by="session" aria-pressed="false">Session</button>
+        </span>
+      </div>
+    </div>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>
