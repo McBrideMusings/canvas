@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|stop> | canvas post [file|-] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -17,8 +17,8 @@ fn main() {
                 }
             };
             // A hook must never slow or break a Claude session: every
-            // failure — bad stdin, canvasd unreachable, a malformed
-            // transcript — is swallowed and the process exits 0 silently.
+            // failure — bad stdin, canvasd unreachable, an unrecognised
+            // event — is swallowed and the process exits 0 silently.
             let _ = canvas::hook::run(event);
             std::process::exit(0);
         }

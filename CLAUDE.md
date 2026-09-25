@@ -1,8 +1,8 @@
 # Canvas — agent guide
 
 Canvas is one live stream of posts from every Claude Code session on this Mac:
-links, file paths, images, and HTML plans or docs. It is meant to sit open beside
-the terminal all day.
+HTML plans, docs and images an agent posts on purpose. It is meant to sit open
+beside the terminal all day.
 
 ## Map
 
@@ -18,23 +18,24 @@ the terminal all day.
   Cargo workspace, outside the root one. It holds no state; quitting it loses
   nothing.
 - `viewer/` — plain `index.html` + JS, no build step. Sidebar of sessions
-  ("All" by default), stream of turn cards.
+  ("All" by default), stream of cards, one per post.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
   `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
   override), and runs as a launchd agent (`com.piercemakes.canvasd`).
-  `canvas hook session-start|session-end|stop` reads Claude Code hook JSON on
-  stdin: SessionStart and SessionEnd register sessions, and Stop turns each
-  finished turn into a card. `canvas post <file|->` reads the session id from
-  `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in every Bash tool shell) and
-  posts HTML from a file or stdin into that session's open card, creating the
-  session if the daemon doesn't already know it (e.g. after a daemon
-  restart) — and unlike a hook it fails loudly — one line on stderr, non-zero
-  exit — on any error, including when `CLAUDE_CODE_SESSION_ID` isn't set.
-  Hook dispatch never starts a tokio runtime; only `canvas daemon` does.
+  `canvas hook session-start|session-end` reads Claude Code hook JSON on
+  stdin and registers or ends a session. `canvas post <file|->` reads the
+  session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in every Bash
+  tool shell) and creates a new card from HTML read from a file or stdin,
+  creating the session if the daemon doesn't already know it (e.g. after a
+  daemon restart) — and unlike a hook it fails loudly — one line on stderr,
+  non-zero exit — on any error, including when `CLAUDE_CODE_SESSION_ID` isn't
+  set. On success it prints one JSON line to stdout:
+  `{"card_id": "...", "images": [...], "targets": [...]}`. Hook dispatch
+  never starts a tokio runtime; only `canvas daemon` does.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
-  repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and
-  Stop to `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents
-  load to know how to post. `admin deploy` installs the `canvas` binary there.
+  repo root lists it): `hooks/hooks.json` wires SessionStart and SessionEnd to
+  `~/.local/bin/canvas hook …`, and `skills/canvas/` is the skill agents load
+  to know how to post. `admin deploy` installs the `canvas` binary there.
 
 ## Rules
 
@@ -43,7 +44,7 @@ the terminal all day.
 - HTML posts render in `<iframe sandbox="allow-scripts">` (no `allow-same-origin`)
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
   `connect-src`. Never set post markup as `innerHTML` in the viewer's own origin.
-- A turn with no links, paths or images, and no explicit post, produces no card.
+- Every `canvas post` creates its own card; nothing creates a card automatically.
 - canvasd answers only requests whose `Host` is `127.0.0.1` or `localhost` (any
   port); anything else, or no `Host`, gets 421. That router-wide layer is the
   DNS-rebinding defence: add routes inside `build_router`, never around it, and

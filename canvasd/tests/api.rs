@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Session, StateResponse, TurnCard};
+use canvas_core::{Card, Session, StateResponse};
 use canvasd::build_router;
 use canvasd::state::AppState;
 use http_body_util::BodyExt;
@@ -160,17 +160,8 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
 }
 
 #[tokio::test]
-async fn empty_turn_with_no_open_card_creates_nothing() {
+async fn turns_endpoint_is_gone() {
     let app = app();
-
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
-        ))
-        .await
-        .unwrap();
-
     let response = app
         .clone()
         .oneshot(post(
@@ -179,42 +170,11 @@ async fn empty_turn_with_no_open_card_creates_nothing() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert_eq!(state.cards.len(), 0);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn turn_with_content_and_no_open_card_creates_closed_card() {
-    let app = app();
-
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
-        ))
-        .await
-        .unwrap();
-
-    app.clone()
-        .oneshot(post(
-            "/api/turns",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": ["https://example.com"], "paths": [], "images": []}),
-        ))
-        .await
-        .unwrap();
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert_eq!(state.cards.len(), 1);
-    assert!(!state.cards[0].open);
-    assert_eq!(state.cards[0].links, vec!["https://example.com"]);
-}
-
-#[tokio::test]
-async fn explicit_post_opens_then_next_turn_closes_it() {
+async fn each_post_creates_its_own_card() {
     let app = app();
 
     app.clone()
@@ -234,11 +194,12 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let card: TurnCard = json_body(response).await;
-    assert!(card.open);
-    assert_eq!(card.html, vec!["<p>hello</p>"]);
+    let card: Card = json_body(response).await;
+    assert_eq!(card.html, "<p>hello</p>");
+    assert!(card.images.is_empty());
+    assert!(card.targets.is_empty());
 
-    // A second post extends the same open card.
+    // A second post from the same session makes a second, distinct card.
     let response = app
         .clone()
         .oneshot(post(
@@ -247,29 +208,16 @@ async fn explicit_post_opens_then_next_turn_closes_it() {
         ))
         .await
         .unwrap();
-    let card2: TurnCard = json_body(response).await;
-    assert_eq!(card2.id, card.id);
-    assert_eq!(card2.html, vec!["<p>hello</p>", "<p>again</p>"]);
+    let card2: Card = json_body(response).await;
+    assert_ne!(card2.id, card.id);
+    assert_eq!(card2.html, "<p>again</p>");
 
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
-    assert_eq!(state.cards.len(), 1);
-    assert!(state.cards[0].open);
-
-    // The next turn closes it.
-    app.clone()
-        .oneshot(post(
-            "/api/turns",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": ["/tmp/foo"], "paths": [], "images": []}),
-        ))
-        .await
-        .unwrap();
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert_eq!(state.cards.len(), 1);
-    assert!(!state.cards[0].open);
-    assert_eq!(state.cards[0].html, vec!["<p>hello</p>", "<p>again</p>"]);
+    assert_eq!(state.cards.len(), 2);
+    let ids: Vec<&str> = state.cards.iter().map(|c| c.id.as_str()).collect();
+    assert!(ids.contains(&card.id.as_str()));
+    assert!(ids.contains(&card2.id.as_str()));
 }
 
 #[tokio::test]
@@ -284,36 +232,15 @@ async fn post_for_unknown_session_creates_it_named_from_cwd() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let card: TurnCard = json_body(response).await;
+    let card: Card = json_body(response).await;
     assert_eq!(card.session_id, "s9");
-    assert_eq!(card.html, vec!["<p>x</p>"]);
+    assert_eq!(card.html, "<p>x</p>");
 
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
     let session = state.sessions.iter().find(|s| s.id == "s9").unwrap();
     assert_eq!(session.cwd, "/tmp/unregistered-proj");
     assert_eq!(session.name, "unregistered-proj");
-}
-
-#[tokio::test]
-async fn turn_for_unknown_session_creates_it_named_from_cwd() {
-    let app = app();
-    let response = app
-        .clone()
-        .oneshot(post(
-            "/api/turns",
-            json!({"session_id": "s8", "cwd": "/tmp/unregistered-turn-proj", "links": ["https://example.com"], "paths": [], "images": []}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    let session = state.sessions.iter().find(|s| s.id == "s8").unwrap();
-    assert_eq!(session.cwd, "/tmp/unregistered-turn-proj");
-    assert_eq!(session.name, "unregistered-turn-proj");
-    assert!(state.cards.iter().any(|c| c.session_id == "s8"));
 }
 
 #[tokio::test]
@@ -330,8 +257,8 @@ async fn ring_evicts_oldest_at_501() {
     for i in 0..501 {
         app.clone()
             .oneshot(post(
-                "/api/turns",
-                json!({"session_id": "s1", "cwd": "/tmp/proj", "links": [format!("https://example.com/{i}")], "paths": [], "images": []}),
+                "/api/posts",
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
             ))
             .await
             .unwrap();
@@ -340,26 +267,22 @@ async fn ring_evicts_oldest_at_501() {
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
     assert_eq!(state.cards.len(), 500);
-    // Newest first: the very first card (link .../0) should have been evicted.
-    assert!(state
-        .cards
-        .iter()
-        .all(|c| c.links[0] != "https://example.com/0"));
-    assert_eq!(state.cards[0].links[0], "https://example.com/500");
+    // Newest first: the very first card (html "<p>0</p>") should have been evicted.
+    assert!(state.cards.iter().all(|c| c.html != "<p>0</p>"));
+    assert_eq!(state.cards[0].html, "<p>500</p>");
 }
 
-/// Posts one turn carrying `images` and returns the card it created.
-async fn card_with_images(app: &axum::Router, images: Vec<String>) -> TurnCard {
+/// Posts one card carrying `images` and returns it.
+async fn card_with_images(app: &axum::Router, images: Vec<String>) -> Card {
     let response = app
         .clone()
         .oneshot(post(
-            "/api/turns",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": [], "paths": [], "images": images}),
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>x</p>", "images": images}),
         ))
         .await
         .unwrap();
-    let card: Option<TurnCard> = json_body(response).await;
-    card.unwrap()
+    json_body(response).await
 }
 
 #[tokio::test]
@@ -466,7 +389,7 @@ async fn events_endpoint_is_sse() {
     assert!(content_type.starts_with("text/event-stream"));
 }
 
-async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> TurnCard {
+async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> Card {
     app.clone()
         .oneshot(post(
             "/api/sessions",
@@ -478,8 +401,8 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> TurnCard 
     let response = app
         .clone()
         .oneshot(post(
-            "/api/turns",
-            json!({"session_id": session_id, "cwd": cwd, "links": ["https://example.com"], "paths": [], "images": []}),
+            "/api/posts",
+            json!({"session_id": session_id, "cwd": cwd, "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();

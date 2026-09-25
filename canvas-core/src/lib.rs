@@ -19,19 +19,19 @@ pub struct Session {
     pub ended_at: Option<String>,
 }
 
-/// Everything one turn of one session produced: explicit posts, images, links
-/// and file paths, shown as one card.
+/// One deliberate `canvas post`, shown as one card. Every post creates its
+/// own card — there is no open/closed lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TurnCard {
+pub struct Card {
     pub id: String,
     pub session_id: String,
     pub at: String,
-    pub html: Vec<String>,
-    pub links: Vec<String>,
-    pub paths: Vec<String>,
+    pub html: String,
+    #[serde(default)]
     pub images: Vec<String>,
-    pub open: bool,
+    #[serde(default)]
+    pub targets: Vec<String>,
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
@@ -42,24 +42,16 @@ pub struct UpsertSessionRequest {
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnRequest {
-    pub session_id: String,
-    pub cwd: String,
-    #[serde(default)]
-    pub links: Vec<String>,
-    #[serde(default)]
-    pub paths: Vec<String>,
-    #[serde(default)]
-    pub images: Vec<String>,
-}
-
-/// Request bodies use snake_case, matching Claude Code hook JSON.
+/// `images`/`targets` are empty until a later slice fills them in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostRequest {
     pub session_id: String,
     pub cwd: String,
     pub html: String,
+    #[serde(default)]
+    pub images: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,5 +65,5 @@ pub struct OpenRequest {
 pub struct StateResponse {
     pub sessions: Vec<Session>,
     /// Newest first.
-    pub cards: Vec<TurnCard>,
+    pub cards: Vec<Card>,
 }

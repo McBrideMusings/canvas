@@ -15,7 +15,16 @@ pub fn run(arg: Option<&str>) -> Result<(), String> {
     validate(&html)?;
     let session_id = session_id()?;
     let cwd = current_dir()?;
-    client::post_explicit(&session_id, &cwd, html)
+    let card = client::post_explicit(&session_id, &cwd, html)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "card_id": card.id,
+            "images": card.images,
+            "targets": card.targets,
+        })
+    );
+    Ok(())
 }
 
 /// Claude Code sets `CLAUDE_CODE_SESSION_ID` in every Bash tool shell, equal

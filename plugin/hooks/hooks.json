@@ -5,9 +5,6 @@
     ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "\"$HOME/.local/bin/canvas\" hook session-end", "timeout": 5 }] }
-    ],
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "\"$HOME/.local/bin/canvas\" hook stop", "timeout": 5 }] }
     ]
   }
 }

@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use canvas_core::{PostRequest, TurnRequest, UpsertSessionRequest};
+use canvas_core::{Card, PostRequest, UpsertSessionRequest};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -46,37 +46,24 @@ pub fn end_session(session_id: &str) -> Result<(), ureq::Error> {
     Ok(())
 }
 
-pub fn post_turn(
-    session_id: &str,
-    cwd: &str,
-    links: Vec<String>,
-    paths: Vec<String>,
-    images: Vec<String>,
-) -> Result<(), ureq::Error> {
-    let body = TurnRequest {
-        session_id: session_id.to_string(),
-        cwd: cwd.to_string(),
-        links,
-        paths,
-        images,
-    };
-    post_json("/api/turns", body)?;
-    Ok(())
-}
-
 /// Unlike the hook calls above, `canvas post` is meant to be seen by the
 /// agent that ran it, so this returns a one-line, human-readable message on
-/// every failure instead of the raw `ureq::Error`.
-pub fn post_explicit(session_id: &str, cwd: &str, html: String) -> Result<(), String> {
+/// every failure instead of the raw `ureq::Error`, and returns the card the
+/// daemon created on success so the caller can report its id.
+pub fn post_explicit(session_id: &str, cwd: &str, html: String) -> Result<Card, String> {
     let body = PostRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
         html,
+        images: Vec::new(),
+        targets: Vec::new(),
     };
     let result = post_json("/api/posts", body);
 
     match result {
-        Ok(_) => Ok(()),
+        Ok(response) => response
+            .into_json::<Card>()
+            .map_err(|e| format!("canvasd returned malformed JSON: {e}")),
         Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
         Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
     }

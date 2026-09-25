@@ -468,7 +468,7 @@
     emptyStateEl.hidden = visible > 0;
     emptyStateEl.textContent =
       cards.size === 0
-        ? "No posts yet. Canvas shows links, files and images from your Claude sessions as they work."
+        ? "No posts yet. Canvas shows what your Claude sessions post as they work."
         : "No cards yet for this session.";
   }
 
@@ -524,55 +524,6 @@
     }
   });
 
-  function createIconButton(iconName, ariaLabel, onClick) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "icon-btn";
-    btn.setAttribute("aria-label", ariaLabel);
-    btn.appendChild(buildIcon(iconName));
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onClick(btn);
-    });
-    return btn;
-  }
-
-  function showCopied(button) {
-    clearTimeout(button._copyTimer);
-    setButtonIcon(button, "check");
-    button.classList.add("copied");
-    button.setAttribute("aria-label", "Copied");
-    button._copyTimer = setTimeout(() => {
-      setButtonIcon(button, "copy");
-      button.classList.remove("copied");
-      button.setAttribute("aria-label", "Copy path");
-    }, 1500);
-  }
-
-  function copyToClipboard(text, button) {
-    navigator.clipboard
-      .writeText(text)
-      .catch(() => {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      })
-      .finally(() => {
-        showCopied(button);
-      });
-  }
-
-  function openTarget(path) {
-    fetch("/api/open", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    }).catch(() => {});
-  }
-
   function renderCard(card) {
     const el = document.createElement("div");
     el.className = "card";
@@ -622,12 +573,10 @@
     const body = document.createElement("div");
     body.className = "card-body";
 
-    for (const html of card.html) {
-      const iframe = document.createElement("iframe");
-      iframe.setAttribute("sandbox", "allow-scripts");
-      iframe.srcdoc = buildIframeDoc(html);
-      body.appendChild(iframe);
-    }
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("sandbox", "allow-scripts");
+    iframe.srcdoc = buildIframeDoc(card.html);
+    body.appendChild(iframe);
 
     for (const [index] of card.images.entries()) {
       const img = document.createElement("img");
@@ -639,38 +588,6 @@
         overlayEl.hidden = false;
       });
       body.appendChild(img);
-    }
-
-    for (const link of card.links) {
-      const row = document.createElement("div");
-      row.className = "row link-row";
-      const text = document.createElement("span");
-      text.className = "row-text";
-      text.textContent = link;
-      row.appendChild(text);
-      row.addEventListener("click", () => openTarget(link));
-      body.appendChild(row);
-    }
-
-    for (const path of card.paths) {
-      const row = document.createElement("div");
-      row.className = "row path-row";
-      const text = document.createElement("span");
-      text.className = "row-text";
-      text.textContent = path;
-      row.appendChild(text);
-
-      const actions = document.createElement("div");
-      actions.className = "path-row-actions";
-      actions.appendChild(
-        createIconButton("open", "Open file", () => openTarget(path))
-      );
-      actions.appendChild(
-        createIconButton("copy", "Copy path", (btn) => copyToClipboard(path, btn))
-      );
-      row.appendChild(actions);
-
-      body.appendChild(row);
     }
 
     el.appendChild(body);
