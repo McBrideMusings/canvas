@@ -337,48 +337,59 @@ async fn ring_evicts_oldest_at_501() {
     assert_eq!(state.cards[0].links[0], "https://example.com/500");
 }
 
-#[tokio::test]
-async fn file_endpoint_serves_allowed_images_and_rejects_others() {
-    let app = app();
-
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let image_path = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
-
+/// Posts one turn carrying `images` and returns the card it created.
+async fn card_with_images(app: &axum::Router, images: Vec<String>) -> TurnCard {
     let response = app
         .clone()
-        .oneshot(get(&format!(
-            "/api/file?path={}",
-            urlencoding_encode(&image_path)
-        )))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app
-        .clone()
-        .oneshot(get(&format!(
-            "/api/file?path={}",
-            urlencoding_encode(&format!("{manifest_dir}/Cargo.toml"))
-        )))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn file_endpoint_rejects_relative_paths() {
-    let app = app();
-    // This relative path *does* resolve to a real png from the test process's
-    // cwd (the canvasd package root) — the point is that a relative path is
-    // rejected outright, not that the file happens to be missing.
-    let response = app
-        .clone()
-        .oneshot(get(
-            "/api/file?path=../app/src-tauri/icons/tray.png",
+        .oneshot(post(
+            "/api/turns",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "links": [], "paths": [], "images": images}),
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let card: Option<TurnCard> = json_body(response).await;
+    card.unwrap()
+}
+
+#[tokio::test]
+async fn card_image_serves_the_cards_images_and_rejects_others() {
+    let app = app();
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let card = card_with_images(
+        &app,
+        vec![
+            format!("{manifest_dir}/../app/src-tauri/icons/tray.png"),
+            format!("{manifest_dir}/Cargo.toml"),
+            // Resolves to a real png from the test process's cwd (the canvasd
+            // package root) — a relative path is rejected outright.
+            "../app/src-tauri/icons/tray.png".to_string(),
+        ],
+    )
+    .await;
+
+    let status = |uri: String| {
+        let app = app.clone();
+        async move { app.oneshot(get(&uri)).await.unwrap().status() }
+    };
+    let id = &card.id;
+    assert_eq!(status(format!("/api/cards/{id}/images/0")).await, StatusCode::OK);
+    assert_eq!(status(format!("/api/cards/{id}/images/1")).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(format!("/api/cards/{id}/images/2")).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(format!("/api/cards/{id}/images/3")).await, StatusCode::NOT_FOUND);
+    assert_eq!(status("/api/cards/unknown/images/0".to_string()).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn file_path_endpoint_is_gone() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let response = app()
+        .oneshot(get(&format!(
+            "/api/file?path={manifest_dir}/../app/src-tauri/icons/tray.png"
+        )))
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -633,16 +644,4 @@ async fn delete_card_accepts_same_origin_127_and_localhost() {
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
     assert!(state.cards.is_empty());
-}
-
-fn urlencoding_encode(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "-_.~/".contains(c) {
-                c.to_string()
-            } else {
-                format!("%{:02X}", c as u32)
-            }
-        })
-        .collect()
 }
