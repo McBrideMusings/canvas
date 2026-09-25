@@ -54,7 +54,17 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                         if exists(value) {
                             let idx = images.len();
                             images.push(value.to_string());
-                            out.push_str(&tag[..vs]);
+                            // Written as exactly `src="canvas-image:<n>"`, with no
+                            // whitespace around `=`: canvasd matches that one shape.
+                            let quote = &tag[vs - 1..vs];
+                            let before_quote = tag[..vs - 1].trim_end();
+                            let name_end = before_quote
+                                .strip_suffix('=')
+                                .unwrap_or(before_quote)
+                                .trim_end();
+                            out.push_str(name_end);
+                            out.push('=');
+                            out.push_str(quote);
                             out.push_str(&format!("canvas-image:{idx}"));
                             out.push_str(&tag[ve..]);
                         } else {
@@ -208,6 +218,13 @@ mod tests {
         assert!(s.warnings.is_empty());
         assert!(s.html.contains(r#"src="canvas-image:0""#));
         assert!(!s.html.contains("/abs/x.png"));
+    }
+
+    #[test]
+    fn image_placeholder_has_no_whitespace_around_equals() {
+        let html = r#"<img src = '/abs/x.png'>"#;
+        let s = scan(html, exists_in(&["/abs/x.png"]));
+        assert_eq!(s.html, "<img src='canvas-image:0'>");
     }
 
     #[test]
