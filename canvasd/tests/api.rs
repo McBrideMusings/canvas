@@ -16,19 +16,30 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::response::Res
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// The `Host` every real client sends: the CLI, hooks and app all default to
+/// `http://127.0.0.1:8229`. `oneshot` never opens a socket, so nothing else
+/// sets it.
+const HOST: &str = "127.0.0.1:8229";
+
 fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
+        .header("host", HOST)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
 fn get(uri: &str) -> Request<Body> {
+    get_with_host(uri, HOST)
+}
+
+fn get_with_host(uri: &str, host: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
+        .header("host", host)
         .body(Body::empty())
         .unwrap()
 }
@@ -644,4 +655,69 @@ async fn delete_card_accepts_same_origin_127_and_localhost() {
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
     assert!(state.cards.is_empty());
+}
+
+const REBOUND: &str = "rebind.example.com:8229";
+
+#[tokio::test]
+async fn rebound_host_is_refused_on_every_route() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+
+    for uri in [
+        "/".to_string(),
+        "/app.js".to_string(),
+        "/api/state".to_string(),
+        "/api/events".to_string(),
+        format!("/api/cards/{}/images/0", card.id),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(get_with_host(&uri, REBOUND))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn rebound_host_cannot_delete_even_with_matching_origin() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+
+    let response = app
+        .clone()
+        .oneshot(delete(
+            &format!("/api/cards/{}", card.id),
+            Some("http://rebind.example.com:8229"),
+            REBOUND,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.iter().any(|c| c.id == card.id));
+}
+
+#[tokio::test]
+async fn missing_host_is_refused() {
+    let request = Request::builder()
+        .uri("/api/state")
+        .body(Body::empty())
+        .unwrap();
+    let response = app().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+}
+
+#[tokio::test]
+async fn loopback_hosts_are_served_at_any_port() {
+    for host in ["127.0.0.1:8229", "localhost:8229", "localhost:9001", "localhost"] {
+        let response = app()
+            .oneshot(get_with_host("/api/state", host))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{host}");
+    }
 }
