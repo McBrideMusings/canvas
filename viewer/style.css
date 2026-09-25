@@ -913,6 +913,15 @@ body {
   animation: chip-pulse 900ms ease-out;
 }
 
+.chip[data-arriving] {
+  animation: chip-slide 300ms ease-out;
+}
+
+@keyframes chip-slide {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: none; }
+}
+
 @keyframes chip-pulse {
   from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--session-colour, #888) 60%, transparent); }
   to { box-shadow: 0 0 0 8px transparent; }
