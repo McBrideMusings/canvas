@@ -18,6 +18,7 @@
   const layoutEl = document.querySelector(".layout");
   const sidebarToggleEl = document.getElementById("sidebar-toggle");
   const titlebarEl = document.getElementById("titlebar");
+  const toastsEl = document.getElementById("toasts");
 
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -65,9 +66,15 @@
       case "check":
         svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
         break;
-      case "xmark":
-        svg.appendChild(svgEl("path", { d: "M6 6l12 12" }));
-        svg.appendChild(svgEl("path", { d: "M18 6L6 18" }));
+      case "more":
+        for (const cx of ["5.5", "12", "18.5"]) {
+          svg.appendChild(
+            svgEl("circle", { cx, cy: "12", r: "1.2", fill: "currentColor", stroke: "none" })
+          );
+        }
+        break;
+      case "filter":
+        svg.appendChild(svgEl("path", { d: "M4 5h16l-6 7.5V19l-4 2v-8.5z" }));
         break;
       case "trash":
         svg.appendChild(svgEl("path", { d: "M4 7h16" }));
@@ -113,11 +120,19 @@
     return svg;
   }
 
-  function setButtonIcon(button, iconName) {
+  // `text`, when given, follows the icon as the button's visible label (a
+  // menu item); icon-only buttons leave it out and rely on aria-label.
+  function setButtonIcon(button, iconName, text) {
     while (button.firstChild) {
       button.removeChild(button.firstChild);
     }
     button.appendChild(buildIcon(iconName));
+    if (text !== undefined) {
+      const label = document.createElement("span");
+      label.className = "menu-item-label";
+      label.textContent = text;
+      button.appendChild(label);
+    }
   }
 
   // window.__TAURI__ is only ever injected into Canvas.app's own WKWebView
@@ -384,15 +399,17 @@
     pendingConfirm = null;
   }
 
+  // `withText: true` shows the label beside the icon (a menu item) instead
+  // of only in aria-label (an icon button).
   function armConfirm(button, opts, ms = 4000) {
-    const { idleLabel, idleIcon, confirmLabel, confirmIcon, onConfirm } = opts;
+    const { idleLabel, idleIcon, confirmLabel, confirmIcon, onConfirm, withText } = opts;
     if (pendingConfirm && pendingConfirm.button === button) {
       clearPendingConfirm();
       onConfirm();
       return;
     }
     clearPendingConfirm();
-    setButtonIcon(button, confirmIcon);
+    setButtonIcon(button, confirmIcon, withText ? confirmLabel : undefined);
     button.setAttribute("aria-label", confirmLabel);
     button.classList.add("confirming");
     const timeoutId = setTimeout(clearPendingConfirm, ms);
@@ -402,15 +419,23 @@
       deadline: Date.now() + ms,
       timeoutId,
       revert() {
-        setButtonIcon(button, idleIcon);
+        setButtonIcon(button, idleIcon, withText ? idleLabel : undefined);
         button.setAttribute("aria-label", idleLabel);
         button.classList.remove("confirming");
       },
     };
   }
 
+  // composedPath() is fixed when the event is dispatched, so a click on a
+  // button whose contents were rebuilt mid-dispatch (armConfirm swapping the
+  // icon under the pointer) still counts as inside it; e.target no longer
+  // would, having been detached.
+  function clickIsInside(e, el) {
+    return e.composedPath().includes(el);
+  }
+
   document.addEventListener("click", (e) => {
-    if (pendingConfirm && !pendingConfirm.button.contains(e.target)) {
+    if (pendingConfirm && !clickIsInside(e, pendingConfirm.button)) {
       clearPendingConfirm();
     }
   });
@@ -420,6 +445,180 @@
       clearPendingConfirm();
     }
   });
+
+  // Bottom-left toasts: a message and at most one action button. Each lasts
+  // 3s (6s with an action); a fourth pushes the oldest out.
+  const MAX_TOASTS = 3;
+
+  function toast(message, action, onAction) {
+    const el = document.createElement("div");
+    el.className = "toast";
+    const text = document.createElement("span");
+    text.textContent = message;
+    el.appendChild(text);
+    if (action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-action";
+      btn.textContent = action;
+      btn.addEventListener("click", () => {
+        el.remove();
+        onAction();
+      });
+      el.appendChild(btn);
+    }
+    toastsEl.appendChild(el);
+    while (toastsEl.children.length > MAX_TOASTS) {
+      toastsEl.firstChild.remove();
+    }
+    setTimeout(() => el.remove(), action ? 6000 : 3000);
+  }
+
+  // The text a reader sees in a post, from card.html alone. DOMParser builds
+  // an inert document that is never attached here — no script runs and no
+  // image loads — and <style>/<script> are dropped so the CSS a Markdown
+  // post carries never reaches the text. Whitespace follows rendering: runs
+  // collapse to one space outside <pre>, block elements end a line, and
+  // table cells are tab-separated. Copy post text and search share it.
+  const BLOCK_TAGS =
+    "address, article, aside, blockquote, dd, div, dl, dt, figcaption, figure, " +
+    "footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, " +
+    "section, table, tr, ul";
+
+  function postText(card) {
+    const doc = new DOMParser().parseFromString(card.html, "text/html");
+    for (const el of doc.querySelectorAll("style, script, template, noscript")) {
+      el.remove();
+    }
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.parentElement.closest("pre, textarea")) {
+        node.data = node.data.replace(/\s+/g, " ");
+      }
+    }
+    for (const el of doc.body.querySelectorAll("br")) el.replaceWith("\n");
+    for (const el of doc.body.querySelectorAll("td, th")) el.after("\t");
+    for (const el of doc.body.querySelectorAll(BLOCK_TAGS)) el.after("\n");
+    return doc.body.textContent
+      .replace(/[ \t]+$/gm, "")
+      .replace(/^ (?=\S)/gm, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  // The one open card menu, if any: { menu, button }.
+  let openMenu = null;
+
+  function closeMenu({ refocus = false } = {}) {
+    if (!openMenu) return;
+    const { menu, button } = openMenu;
+    openMenu = null;
+    if (pendingConfirm && menu.contains(pendingConfirm.button)) {
+      clearPendingConfirm();
+    }
+    menu.remove();
+    button.setAttribute("aria-expanded", "false");
+    if (refocus) button.focus();
+  }
+
+  // A card re-render or removal can detach the open menu with its card.
+  function closeMenuIfDetached() {
+    if (openMenu && !openMenu.menu.isConnected) closeMenu();
+  }
+
+  function buildMenuItem(iconName, text, onClick) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "menu-item";
+    item.setAttribute("role", "menuitem");
+    item.tabIndex = -1;
+    setButtonIcon(item, iconName, text);
+    item.addEventListener("click", onClick);
+    return item;
+  }
+
+  function copyPostText(card) {
+    closeMenu();
+    navigator.clipboard.writeText(postText(card)).then(
+      () => toast("Copied post text"),
+      () => toast("Couldn't copy post text")
+    );
+  }
+
+  function showOnlySession(sessionId) {
+    closeMenu();
+    selectSession(sessionId);
+    streamEl.scrollTop = 0;
+  }
+
+  function toggleCardMenu(card, header, button) {
+    const wasOpenHere = openMenu && openMenu.button === button;
+    closeMenu();
+    if (wasOpenHere) return;
+
+    const menu = document.createElement("div");
+    menu.className = "card-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Post actions");
+
+    menu.appendChild(buildMenuItem("copy", "Copy post text", () => copyPostText(card)));
+    menu.appendChild(
+      buildMenuItem("filter", `Show only ${sessionName(card.sessionId)}`, () =>
+        showOnlySession(card.sessionId)
+      )
+    );
+    const divider = document.createElement("div");
+    divider.className = "menu-divider";
+    divider.setAttribute("role", "separator");
+    menu.appendChild(divider);
+    const deleteItem = buildMenuItem("trash", "Delete post", () => {
+      armConfirm(deleteItem, {
+        idleLabel: "Delete post",
+        idleIcon: "trash",
+        confirmLabel: "Confirm delete",
+        confirmIcon: "trash",
+        withText: true,
+        onConfirm: () => {
+          closeMenu();
+          deleteCard(card.id);
+        },
+      });
+    });
+    deleteItem.classList.add("danger");
+    menu.appendChild(deleteItem);
+
+    menu.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      const at = items.indexOf(document.activeElement);
+      items[(at + step + items.length) % items.length].focus();
+    });
+
+    header.appendChild(menu);
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button };
+    menu.querySelector('[role="menuitem"]').focus();
+  }
+
+  document.addEventListener("click", (e) => {
+    if (
+      openMenu &&
+      !clickIsInside(e, openMenu.menu) &&
+      !clickIsInside(e, openMenu.button)
+    ) {
+      closeMenu();
+    }
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && openMenu) closeMenu({ refocus: true });
+  });
+
+  // A click inside a card's iframe never reaches this document; the window
+  // losing focus to it is the only sign, so treat that as an outside click.
+  window.addEventListener("blur", () => closeMenu());
 
   function deleteCard(id) {
     fetch(`/api/cards/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
@@ -438,6 +637,7 @@
     cards.delete(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
+    closeMenuIfDetached();
     applyFilter();
     renderSidebar();
   }
@@ -452,6 +652,7 @@
       const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
       if (el) el.remove();
     }
+    closeMenuIfDetached();
     if (selectedSessionId === id) selectedSessionId = null;
     renderSidebar();
     applyFilter();
@@ -659,22 +860,15 @@
     headerInfo.appendChild(timeSpan);
     header.appendChild(headerInfo);
 
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "icon-btn card-delete-btn";
-    delBtn.setAttribute("aria-label", "Delete card");
-    delBtn.appendChild(buildIcon("xmark"));
-    delBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      armConfirm(delBtn, {
-        idleLabel: "Delete card",
-        idleIcon: "xmark",
-        confirmLabel: "Confirm delete",
-        confirmIcon: "check",
-        onConfirm: () => deleteCard(card.id),
-      });
-    });
-    header.appendChild(delBtn);
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "icon-btn card-more-btn";
+    moreBtn.setAttribute("aria-label", "Post actions");
+    moreBtn.setAttribute("aria-haspopup", "menu");
+    moreBtn.setAttribute("aria-expanded", "false");
+    moreBtn.appendChild(buildIcon("more"));
+    moreBtn.addEventListener("click", () => toggleCardMenu(card, header, moreBtn));
+    header.appendChild(moreBtn);
     el.appendChild(header);
 
     const body = document.createElement("div");
@@ -699,6 +893,7 @@
   // reconnect, where cards may have changed without the browser seeing it.
   function bootstrapRender() {
     renderSidebar();
+    closeMenu();
     const sorted = sortedCards();
     cardsEl.innerHTML = "";
     for (const card of sorted) {
@@ -717,14 +912,11 @@
       `[data-card-id="${CSS.escape(card.id)}"]`
     );
     if (existing) {
-      // The replacement is about to detach this card's delete button too —
-      // clear an armed confirm pointing at it first, the same way
-      // renderSidebar does for a sidebar rebuild, so pendingConfirm never
-      // holds a reference to a node no longer in the document.
-      if (pendingConfirm && existing.contains(pendingConfirm.button)) {
-        clearPendingConfirm();
-      }
+      // The replacement is about to detach this card's menu too — close it
+      // first (which also clears an armed Delete post inside it), so neither
+      // openMenu nor pendingConfirm holds a node no longer in the document.
       existing.remove();
+      closeMenuIfDetached();
     }
 
     const el = renderCard(card);
