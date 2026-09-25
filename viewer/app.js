@@ -1457,6 +1457,7 @@
     if (arrives && !el.hidden) pulseChip(card.sessionId);
     if (arrives && el.hidden) {
       toast(`New post from ${sessionName(card.sessionId)} (filtered out)`, "Show", () => {
+        setQuery("");
         selectSession(card.sessionId);
         scrollToTop();
       });
