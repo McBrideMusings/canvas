@@ -306,6 +306,35 @@ pub async fn delete_card(
     StatusCode::OK.into_response()
 }
 
+/// Removes every card of a session and leaves the session registered. One
+/// `card-removed` event per card, so viewers and the persisted log drop them
+/// the same way a single delete does.
+pub async fn clear_session_cards(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let mut inner = state.inner.write().await;
+    if !inner.sessions.contains_key(&id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let removed: Vec<String> = inner
+        .cards
+        .iter()
+        .filter(|c| c.session_id == id)
+        .map(|c| c.id.clone())
+        .collect();
+    inner.cards.retain(|c| c.session_id != id);
+    for card_id in &removed {
+        state.publish(CanvasEvent::CardRemoved(card_id.clone()));
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 pub async fn delete_session(
     State(state): State<AppState>,
     Path(id): Path<String>,

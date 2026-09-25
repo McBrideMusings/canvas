@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use canvas_core::{Card, Session, StateResponse};
 use canvasd::build_router;
-use canvasd::state::AppState;
+use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt;
@@ -591,6 +591,72 @@ async fn delete_unknown_session_is_404() {
     let response = app
         .clone()
         .oneshot(delete("/api/sessions/nope", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn clear_cards_removes_only_that_sessions_cards_and_keeps_it_registered() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let a1 = seed_card(&app, "s1", "/tmp/proj").await;
+    let a2 = seed_card(&app, "s1", "/tmp/proj").await;
+    let other = seed_card(&app, "s2", "/tmp/proj2").await;
+    let mut events = state.events.subscribe();
+
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/s1/cards", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.iter().any(|s| s.id == "s1"));
+    assert!(state.sessions.iter().find(|s| s.id == "s1").unwrap().ended_at.is_none());
+    assert!(state.cards.iter().all(|c| c.session_id != "s1"));
+    assert!(state.cards.iter().any(|c| c.id == other.id));
+
+    let mut removed = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            CanvasEvent::CardRemoved(id) => removed.push(id),
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+    removed.sort();
+    let mut expected = vec![a1.id, a2.id];
+    expected.sort();
+    assert_eq!(removed, expected);
+}
+
+#[tokio::test]
+async fn clear_cards_on_a_session_with_no_cards_is_204_with_no_events() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    app.clone()
+        .oneshot(post("/api/sessions", json!({"session_id": "s1", "cwd": "/tmp/proj"})))
+        .await
+        .unwrap();
+    let mut events = state.events.subscribe();
+
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/s1/cards", None, "127.0.0.1:8242"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn clear_cards_on_an_unknown_session_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/nope/cards", None, "127.0.0.1:8242"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
