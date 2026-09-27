@@ -23,9 +23,11 @@ beside the terminal all day.
   `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
   override), and runs as a launchd agent (`com.piercemakes.canvasd`).
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
-  stdin and registers or ends a session; on a successful `session-start` it
-  also prints the guidance block to stdout (Claude Code adds SessionStart
-  stdout to the session's context) — nothing is printed if canvasd is down.
+  stdin and registers or ends a session; `session-start` always prints the
+  guidance block to stdout (Claude Code adds SessionStart stdout to the
+  session's context), whether or not registering the session with canvasd
+  succeeds — posting only needs a running canvasd, not a registered session
+  (`canvas post` creates one server-side if it's missing).
   `canvas guidance` prints that same block unconditionally, for a person or
   agent to read on demand. `canvas post <file|-> [--format md|text|html]`
   reads the session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in

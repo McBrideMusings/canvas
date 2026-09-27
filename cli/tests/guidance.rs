@@ -98,18 +98,33 @@ fn session_start_prints_guidance_when_the_daemon_is_up() {
 }
 
 #[test]
-fn session_start_prints_nothing_and_exits_0_when_the_daemon_is_down() {
+fn session_start_still_prints_guidance_when_registration_fails() {
     // An address in the TEST-NET-1 documentation range: routable but
     // guaranteed nothing answers, so the connection attempt actually times
-    // out rather than failing fast with connection-refused.
+    // out rather than failing fast with connection-refused. Registering the
+    // session with canvasd fails either way, but posting only needs a
+    // running canvasd, not a registered session, so the guidance still
+    // belongs in the transcript.
     let start = Instant::now();
     let output = run_hook_session_start("http://192.0.2.1:8229");
     let elapsed = start.elapsed();
 
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);
     assert!(
         elapsed < Duration::from_secs(3),
         "hook took {elapsed:?}, expected it to respect the 1s client timeout"
     );
+}
+
+#[test]
+fn session_start_prints_guidance_when_canvasd_refuses_the_connection() {
+    // Nothing listens on this port (bound and immediately dropped), so the
+    // connection fails fast with ECONNREFUSED instead of timing out — the
+    // failure mode a canvasd restart mid-deploy actually produces.
+    let port = free_port();
+    let output = run_hook_session_start(&format!("http://127.0.0.1:{port}"));
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);
 }
