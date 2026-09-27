@@ -249,7 +249,7 @@
   const SCROLLED_PX = 40;
   const TO_TOP_PX = 500;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const unseen = { count: 0, sessionIds: new Set() };
+  const unseen = { cardIds: new Set() };
   // True from a click on the pill or back-to-top button until the stream
   // reaches the top, so place-holding does not fight the smooth scroll.
   let returningToTop = false;
@@ -322,7 +322,6 @@
     renderChips();
     applyFilter();
     renderDrawer();
-    renderPill();
   }
 
   function setPrefsAndRefresh(change) {
@@ -1095,8 +1094,17 @@
     if (lightbox && lightbox.card.id === id) closeLightbox();
     cards.delete(id);
     postTextLower.delete(id);
+    unseen.cardIds.delete(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
-    if (el) el.remove();
+    if (el) {
+      // A card removed from above the reader shrinks the stream above them
+      // exactly as a resize does — hold place against its own height going
+      // away, before it leaves the document.
+      const wasAbove = cardIsAboveViewport(el);
+      const height = el.offsetHeight + (parseFloat(getComputedStyle(el).marginBottom) || 0);
+      el.remove();
+      if (wasAbove) holdPlace(-height);
+    }
     closeMenuIfDetached();
     refreshVisibility();
   }
@@ -1110,8 +1118,14 @@
       if (c.sessionId !== id) continue;
       cards.delete(cardId);
       postTextLower.delete(cardId);
+      unseen.cardIds.delete(cardId);
       const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
-      if (el) el.remove();
+      if (el) {
+        const wasAbove = cardIsAboveViewport(el);
+        const height = el.offsetHeight + (parseFloat(getComputedStyle(el).marginBottom) || 0);
+        el.remove();
+        if (wasAbove) holdPlace(-height);
+      }
     }
     closeMenuIfDetached();
     if (selectedSessionId === id) selectedSessionId = null;
@@ -1238,6 +1252,7 @@
     searchCountEl.textContent = `${visible} of ${fromVisibleSessions}`;
     searchEl.classList.toggle("filtering", filtering);
     updateEmptyState(visible);
+    renderPill();
   }
 
   // The empty-state message differs depending on whether every session is
@@ -1804,6 +1819,13 @@
     const existing = cardsEl.querySelector(
       `[data-card-id="${CSS.escape(card.id)}"]`
     );
+    // Replacing a card above the reader can change its height (a longer
+    // post, a resized image) as surely as a resize or an arrival can — hold
+    // the same way, against the height existing had a moment ago.
+    const wasAbove = existing ? cardIsAboveViewport(existing) : false;
+    const existingHeight = existing
+      ? existing.offsetHeight + (parseFloat(getComputedStyle(existing).marginBottom) || 0)
+      : 0;
     if (existing) {
       // The replacement is about to detach this card's menu too — close it
       // first (which also clears an armed Delete post inside it), so neither
@@ -1822,6 +1844,10 @@
       cardsEl.insertBefore(el, insertBefore);
     } else {
       cardsEl.appendChild(el);
+    }
+    if (wasAbove) {
+      const newHeight = el.offsetHeight + (parseFloat(getComputedStyle(el).marginBottom) || 0);
+      holdPlace(newHeight - existingHeight);
     }
 
     // Only a new post from a session the reader can see arrives; replacing
@@ -1870,8 +1896,7 @@
       // to hold and nothing new above.
       if (el.getBoundingClientRect().top >= streamEl.getBoundingClientRect().top) return;
       if (!returningToTop) streamEl.scrollTop += el.offsetHeight + gap;
-      unseen.count++;
-      unseen.sessionIds.add(card.sessionId);
+      unseen.cardIds.add(card.id);
     } else if (animating()) {
       el.style.setProperty("--arrive-height", `${el.offsetHeight}px`);
       el.classList.add("arriving");
@@ -1902,20 +1927,33 @@
   }
 
   function clearUnseen() {
-    unseen.count = 0;
-    unseen.sessionIds.clear();
+    unseen.cardIds.clear();
     renderPill();
+  }
+
+  // Only the unseen cards the current chip filter and search still show —
+  // recomputed from cards.get() each render, so switching filters after
+  // arrival can't leave the pill describing posts no longer in view.
+  function unseenVisibleCards() {
+    const result = [];
+    for (const id of unseen.cardIds) {
+      const card = cards.get(id);
+      if (card && cardMatchesFilter(card)) result.push(card);
+    }
+    return result;
   }
 
   // "↑", up to four dots in the colours of the sessions with unseen posts,
   // and the count.
   function renderPill() {
-    newPillEl.hidden = unseen.count === 0;
-    newPillEl.dataset.count = String(unseen.count);
-    if (unseen.count === 0) return;
+    const visible = unseenVisibleCards();
+    newPillEl.hidden = visible.length === 0;
+    newPillEl.dataset.count = String(visible.length);
+    if (visible.length === 0) return;
     const dots = document.createElement("span");
     dots.className = "pill-dots";
-    for (const id of Array.from(unseen.sessionIds).slice(-4)) {
+    const sessionIds = Array.from(new Set(visible.map((c) => c.sessionId))).slice(-4);
+    for (const id of sessionIds) {
       const s = sessions.get(id);
       if (!s) continue;
       const dot = document.createElement("span");
@@ -1923,7 +1961,7 @@
       dot.style.setProperty("--session-colour", sessionColour(s));
       dots.appendChild(dot);
     }
-    const n = unseen.count;
+    const n = visible.length;
     newPillEl.replaceChildren("↑", dots, `${n} new post${n === 1 ? "" : "s"}`);
   }
 
@@ -1937,7 +1975,7 @@
     toTopEl.hidden = y <= TO_TOP_PX;
     if (y < SCROLLED_PX) {
       returningToTop = false;
-      if (unseen.count > 0) clearUnseen();
+      if (unseen.cardIds.size > 0) clearUnseen();
     }
   });
   // The reader taking the wheel or a finger back ends a smooth scroll to top.
@@ -2033,6 +2071,12 @@
     cards.clear();
     postTextLower.clear();
     for (const c of data.cards) cards.set(c.id, c);
+    // A card that aged out of the server's window (or was deleted) while
+    // this browser was disconnected never passes through removeCard, so
+    // drop it here instead of leaving its id in unseen.cardIds forever.
+    for (const id of Array.from(unseen.cardIds)) {
+      if (!cards.has(id)) unseen.cardIds.delete(id);
+    }
     prunePrefs();
     bootstrapRender();
   }
