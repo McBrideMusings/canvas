@@ -322,7 +322,10 @@ async fn update_unknown_card_is_404() {
     let app = app();
     let response = app
         .clone()
-        .oneshot(put("/api/cards/does-not-exist", json!({"html": "<p>x</p>"})))
+        .oneshot(put(
+            "/api/cards/does-not-exist",
+            json!({"html": "<p>x</p>"}),
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -355,6 +358,57 @@ async fn ring_evicts_oldest_at_501() {
     // Newest first: the very first card (html "<p>0</p>") should have been evicted.
     assert!(state.cards.iter().all(|c| c.html != "<p>0</p>"));
     assert_eq!(state.cards[0].html, "<p>500</p>");
+}
+
+#[tokio::test]
+async fn updating_a_card_moves_it_to_the_front_so_it_survives_eviction() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>status</p>"}),
+        ))
+        .await
+        .unwrap();
+    let status_card: Card = json_body(response).await;
+
+    // 500 other cards land after it — enough to reach the ring's cap.
+    for i in 0..499 {
+        app.clone()
+            .oneshot(post(
+                "/api/posts",
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
+            ))
+            .await
+            .unwrap();
+    }
+    // Touch the status card — it's still the oldest in the ring by position.
+    app.clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", status_card.id),
+            json!({"html": "<p>status v2</p>"}),
+        ))
+        .await
+        .unwrap();
+    // One more post would evict it by position alone, if update hadn't moved it.
+    app.clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>499</p>"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert_eq!(state.cards.len(), 500);
+    let survived = state.cards.iter().find(|c| c.id == status_card.id);
+    assert!(
+        survived.is_some(),
+        "updated card was evicted despite being touched last"
+    );
+    assert_eq!(survived.unwrap().html, "<p>status v2</p>");
 }
 
 /// Posts one card carrying `images` and returns it.
@@ -676,7 +730,13 @@ async fn clear_cards_removes_only_that_sessions_cards_and_keeps_it_registered() 
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
     assert!(state.sessions.iter().any(|s| s.id == "s1"));
-    assert!(state.sessions.iter().find(|s| s.id == "s1").unwrap().ended_at.is_none());
+    assert!(state
+        .sessions
+        .iter()
+        .find(|s| s.id == "s1")
+        .unwrap()
+        .ended_at
+        .is_none());
     assert!(state.cards.iter().all(|c| c.session_id != "s1"));
     assert!(state.cards.iter().any(|c| c.id == other.id));
 
@@ -698,7 +758,10 @@ async fn clear_cards_on_a_session_with_no_cards_is_204_with_no_events() {
     let state = AppState::new();
     let app = build_router(state.clone());
     app.clone()
-        .oneshot(post("/api/sessions", json!({"session_id": "s1", "cwd": "/tmp/proj"})))
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+        ))
         .await
         .unwrap();
     let mut events = state.events.subscribe();
@@ -959,9 +1022,7 @@ async fn guidance_setters_reject_cross_origin_requests() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let response = app
-        .clone()
-        .oneshot(get("/api/guidance")).await.unwrap();
+    let response = app.clone().oneshot(get("/api/guidance")).await.unwrap();
     let g: GuidanceState = json_body(response).await;
     assert!(g.global.is_none());
 }

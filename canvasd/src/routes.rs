@@ -306,7 +306,7 @@ pub async fn update_card(
             images: req.images,
             targets: req.targets,
         };
-        inner.cards[idx] = card.clone();
+        inner.upsert_card(card.clone());
         state.publish(CanvasEvent::CardUpserted(card.clone()));
         card
     };

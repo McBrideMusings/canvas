@@ -105,12 +105,7 @@ impl Inner {
             CanvasEvent::SessionUpserted(session) => {
                 self.sessions.insert(session.id.clone(), session);
             }
-            CanvasEvent::CardUpserted(card) => {
-                match self.cards.iter().position(|c| c.id == card.id) {
-                    Some(idx) => self.cards[idx] = card,
-                    None => self.push_card(card),
-                }
-            }
+            CanvasEvent::CardUpserted(card) => self.upsert_card(card),
             CanvasEvent::CardRemoved(id) => self.cards.retain(|c| c.id != id),
             CanvasEvent::SessionRemoved(id) => {
                 self.sessions.remove(&id);
@@ -131,6 +126,17 @@ impl Inner {
             cards.iter().any(|c| &c.session_id == id)
                 || fresh(s.ended_at.as_deref().unwrap_or(&s.started_at))
         });
+    }
+
+    /// Insert or replace a card, moving it to the front either way — an
+    /// update is a fresh touch, same as a new post, so it competes for
+    /// ring space on the same terms and doesn't sit wherever it originally
+    /// landed waiting to be evicted despite being current.
+    pub fn upsert_card(&mut self, card: Card) {
+        if let Some(idx) = self.cards.iter().position(|c| c.id == card.id) {
+            self.cards.remove(idx);
+        }
+        self.push_card(card);
     }
 
     /// Push a new card at the front, evicting the oldest if the ring is full.
