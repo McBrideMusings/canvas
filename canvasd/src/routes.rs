@@ -538,6 +538,7 @@ pub async fn get_profiles(
     let config = state.profiles.read().await;
     let set = config.kind(&kind);
     let effective_profile = set.effective_profile(repo.as_deref()).map(str::to_string);
+    let builtin = crate::profiles::builtin_default(&kind).map(str::to_string);
     Json(ProfilesState {
         kind,
         profiles: set.profiles,
@@ -545,6 +546,7 @@ pub async fn get_profiles(
         repos: set.repos,
         repo,
         effective_profile,
+        builtin,
     })
 }
 

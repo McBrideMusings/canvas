@@ -939,6 +939,25 @@ async fn profiles_default_to_no_assignment() {
     assert!(p.effective_text().is_none());
 }
 
+/// The compiled-in default is only meaningful for the one kind that ships
+/// with one — an arbitrary kind string has no builtin to show read-only.
+#[tokio::test]
+async fn only_posting_guidance_reports_a_builtin_default() {
+    let response = app()
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.builtin.is_some_and(|t| !t.trim().is_empty()));
+
+    let response = app()
+        .oneshot(get("/api/profiles/some-other-kind"))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.builtin.is_none());
+}
+
 #[tokio::test]
 async fn global_profile_assignment_applies_to_every_repo() {
     let app = app();

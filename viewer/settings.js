@@ -224,8 +224,67 @@
     "M4 7h16M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13M10 11v6M14 11v6";
   const PENCIL_PATH = "M16.5 3.5a1.5 1.5 0 012.12 2.12L7 17.25 3 18l.75-4L15.38 3.38a1.5 1.5 0 011.12-.5z";
 
-  function renderProfileRows(profiles) {
+  // The compiled-in default a session falls back to when nothing is
+  // assigned — shown in the same list as the editable profiles, collapsible
+  // the same way, but with no rename/delete/save: it isn't stored data,
+  // it's the text this build of Canvas shipped with.
+  function renderBuiltinRow(text) {
+    const row = document.createElement("div");
+    row.className = "profile-row";
+
+    const head = document.createElement("div");
+    head.className = "profile-row-head";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", "false");
+    const chevron = document.createElement("span");
+    chevron.className = "profile-row-chevron";
+    chevron.textContent = "▸";
+    chevron.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "profile-row-name";
+    label.textContent = "Built-in default";
+    const lock = document.createElement("span");
+    lock.className = "profile-row-readonly-tag";
+    lock.textContent = "read-only";
+    const preview = document.createElement("span");
+    preview.className = "profile-row-preview";
+    preview.textContent = text;
+    head.append(chevron, label, lock, preview);
+
+    const detail = document.createElement("div");
+    detail.className = "profile-row-detail";
+    detail.hidden = true;
+    const textarea = document.createElement("textarea");
+    textarea.className = "guidance-text";
+    textarea.rows = 5;
+    textarea.value = text;
+    textarea.disabled = true;
+    const note = document.createElement("p");
+    note.className = "pref-note";
+    note.textContent = "Compiled into this build of Canvas — edit plugin/guidance.md to change it.";
+    detail.append(textarea, note);
+
+    const toggle = () => {
+      const expanded = head.getAttribute("aria-expanded") === "true";
+      head.setAttribute("aria-expanded", String(!expanded));
+      detail.hidden = expanded;
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+
+    row.append(head, detail);
+    profilesListEl.appendChild(row);
+  }
+
+  function renderProfileRows(profiles, builtin) {
     profilesListEl.innerHTML = "";
+    if (builtin) renderBuiltinRow(builtin);
     const names = Object.keys(profiles).sort();
     for (const name of names) {
       const row = document.createElement("div");
@@ -436,7 +495,7 @@
     try {
       const p = await getJson(`/api/profiles/${KIND}`);
       const names = Object.keys(p.profiles).sort();
-      renderProfileRows(p.profiles);
+      renderProfileRows(p.profiles, p.builtin);
       fillProfileSelect(profileGlobalSelectEl, names, p.global);
       const repo = profileRepoInputEl.value.trim();
       fillProfileSelect(profileRepoSelectEl, names, repo ? (p.repos || {})[repo] : "");

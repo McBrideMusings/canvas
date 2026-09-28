@@ -22,6 +22,18 @@ pub const PROFILES_FILE: &str = "profiles.json";
 /// single-purpose `GuidanceConfig` for.
 pub const KIND_POSTING_GUIDANCE: &str = "posting-guidance";
 
+/// Same file `cli/src/guidance.rs` embeds as `canvas::guidance::TEXT` — the
+/// two copies stay in sync because there's only one `plugin/guidance.md` to
+/// edit, not because either crate depends on the other for it. Shown
+/// read-only in the settings page's profile list so the fallback a session
+/// gets when nothing is assigned isn't invisible.
+const BUILTIN_POSTING_GUIDANCE: &str = include_str!("../../plugin/guidance.md");
+
+/// The compiled-in default for `kind`, for kinds that have one.
+pub fn builtin_default(kind: &str) -> Option<&'static str> {
+    (kind == KIND_POSTING_GUIDANCE).then_some(BUILTIN_POSTING_GUIDANCE)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSet {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

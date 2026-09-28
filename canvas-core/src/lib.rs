@@ -86,6 +86,11 @@ pub struct ProfilesState {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_profile: Option<String>,
+    /// The compiled-in default text a session falls back to when nothing is
+    /// assigned, for kinds that have one — shown read-only alongside the
+    /// named profiles so it's visible without leaving the settings page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<String>,
 }
 
 impl ProfilesState {
