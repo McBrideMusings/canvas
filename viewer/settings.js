@@ -27,57 +27,103 @@
   const animate = document.getElementById("animate");
   const colourButtons = Array.from(document.querySelectorAll("[data-color-by]"));
 
-  // Daemon status: only Canvas.app's WKWebView injects window.__TAURI__ (see
+  // Daemon tab: only Canvas.app's WKWebView injects window.__TAURI__ (see
   // app.js's own get_pinned/open_settings calls) — a plain browser tab has
   // nothing to report here, since it's canvasd itself answering the page.
-  const daemonPrefEl = document.getElementById("daemon-status-pref");
+  // Every fact daemon_status returns gets its own row rather than folding
+  // them into one dot: a daemon can be installed but not registered with
+  // launchd, registered but not running, or running an older binary than
+  // this app bundles, and those are different problems with different fixes.
+  const daemonTabEl = document.getElementById("tab-daemon");
   const daemonDotEl = document.getElementById("daemon-status-dot");
   const daemonTextEl = document.getElementById("daemon-status-text");
   const daemonPathEl = document.getElementById("daemon-status-path");
   const daemonErrorEl = document.getElementById("daemon-status-error");
+  const daemonRefreshEl = document.getElementById("daemon-refresh");
+  const daemonCheckedAtEl = document.getElementById("daemon-checked-at");
+  const daemonRows = {
+    installed: [document.getElementById("daemon-installed-dot"), document.getElementById("daemon-installed-text")],
+    upToDate: [document.getElementById("daemon-uptodate-dot"), document.getElementById("daemon-uptodate-text")],
+    loaded: [document.getElementById("daemon-loaded-dot"), document.getElementById("daemon-loaded-text")],
+    running: [document.getElementById("daemon-running-dot"), document.getElementById("daemon-running-text")],
+  };
+
+  function setRow(row, ok, yes, no) {
+    const [dot, text] = row;
+    dot.dataset.state = ok ? "ok" : "error";
+    text.textContent = ok ? yes : no;
+  }
 
   function renderDaemonStatus(status) {
     daemonPathEl.textContent = status.installedPath;
+    setRow(daemonRows.installed, status.installed, "Yes", "No");
+    setRow(daemonRows.upToDate, status.upToDate, "Yes", "No — reopen Canvas to update it");
+    setRow(daemonRows.loaded, status.loaded, "Yes", "No");
+    setRow(daemonRows.running, status.running, "Yes", "No");
+    daemonCheckedAtEl.textContent = new Date().toLocaleTimeString();
+
     if (status.error) {
       daemonDotEl.dataset.state = "error";
       daemonTextEl.textContent = "Needs attention";
       daemonErrorEl.textContent = status.error;
       daemonErrorEl.hidden = false;
-    } else if (status.running && status.upToDate) {
-      daemonDotEl.dataset.state = "ok";
-      daemonTextEl.textContent = "Running";
-      daemonErrorEl.hidden = true;
-    } else if (status.running && !status.upToDate) {
-      daemonDotEl.dataset.state = "";
-      daemonTextEl.textContent = "Running (older than this app — reopen Canvas to update it)";
-      daemonErrorEl.hidden = true;
-    } else if (status.loaded) {
-      daemonDotEl.dataset.state = "error";
-      daemonTextEl.textContent = "Installed but not running";
-      daemonErrorEl.hidden = true;
-    } else if (status.installed) {
-      daemonDotEl.dataset.state = "error";
-      daemonTextEl.textContent = "Installed but not registered to run";
-      daemonErrorEl.hidden = true;
     } else {
-      daemonDotEl.dataset.state = "error";
-      daemonTextEl.textContent = "Not installed";
       daemonErrorEl.hidden = true;
+      if (status.running && status.upToDate) {
+        daemonDotEl.dataset.state = "ok";
+        daemonTextEl.textContent = "Running";
+      } else if (status.running) {
+        daemonDotEl.dataset.state = "";
+        daemonTextEl.textContent = "Running an older build";
+      } else if (status.loaded) {
+        daemonDotEl.dataset.state = "error";
+        daemonTextEl.textContent = "Installed but not running";
+      } else if (status.installed) {
+        daemonDotEl.dataset.state = "error";
+        daemonTextEl.textContent = "Installed but not registered to run";
+      } else {
+        daemonDotEl.dataset.state = "error";
+        daemonTextEl.textContent = "Not installed";
+      }
     }
   }
 
-  function pollDaemonStatus(tauriCore) {
-    tauriCore
+  function pollDaemonStatus() {
+    if (!window.__TAURI__) return;
+    window.__TAURI__.core
       .invoke("daemon_status")
       .then(renderDaemonStatus)
-      .catch(() => {});
+      .catch(() => {
+        daemonTextEl.textContent = "Could not reach the app's own backend";
+      });
+  }
+
+  let daemonPollTimer = null;
+
+  function startDaemonPolling() {
+    pollDaemonStatus();
+    clearInterval(daemonPollTimer);
+    daemonPollTimer = setInterval(pollDaemonStatus, 5000);
+  }
+
+  function stopDaemonPolling() {
+    clearInterval(daemonPollTimer);
+    daemonPollTimer = null;
   }
 
   if (window.__TAURI__ && window.__TAURI__.core) {
-    daemonPrefEl.hidden = false;
-    pollDaemonStatus(window.__TAURI__.core);
-    setInterval(() => pollDaemonStatus(window.__TAURI__.core), 5000);
+    daemonRefreshEl.addEventListener("click", pollDaemonStatus);
+  } else {
+    daemonTabEl.hidden = true;
   }
+
+  // The settings window hides rather than closes (lib.rs), so this script
+  // keeps running — pause the poll while the page isn't visible instead of
+  // ticking a background window forever.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopDaemonPolling();
+    else if (daemonTabEl.getAttribute("aria-selected") === "true") startDaemonPolling();
+  });
 
   // Section tabs: one visible <main> at a time, no persisted selection —
   // every open starts on General, same as the window's own default size.
@@ -99,6 +145,8 @@
   function openTab(section) {
     selectTab(section);
     if (section === "guidance") loadProfilesTab();
+    if (section === "daemon") startDaemonPolling();
+    else stopDaemonPolling();
   }
 
   for (const tab of tabs) {

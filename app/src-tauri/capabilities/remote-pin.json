@@ -1,11 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-pin-drag",
-  "description": "Grants canvasd's own page, loaded remotely into the main window, access to set_pinned, get_pinned, open_settings, and starting a window drag from its title bar — nothing else core:default or any other capability would otherwise imply, since this capability is remote-only (local: false).",
-  "windows": ["main"],
+  "description": "Grants canvasd's own pages, loaded remotely into the main and settings windows, access to set_pinned, get_pinned, open_settings, daemon_status, and starting a window drag from a title bar — nothing else core:default or any other capability would otherwise imply, since this capability is remote-only (local: false).",
+  "windows": ["main", "settings"],
   "local": false,
   "remote": {
     "urls": ["http://127.0.0.1:*/*"]
   },
-  "permissions": ["allow-set-pinned", "allow-get-pinned", "allow-open-settings", "core:window:allow-start-dragging"]
+  "permissions": [
+    "allow-set-pinned",
+    "allow-get-pinned",
+    "allow-open-settings",
+    "allow-daemon-status",
+    "core:window:allow-start-dragging"
+  ]
 }

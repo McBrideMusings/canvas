@@ -3,6 +3,8 @@ use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+mod daemon;
+
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
 // Same env var the CLI already reads (cli/src/client.rs) to point at a
@@ -86,6 +88,15 @@ async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
     show_settings_window(&app)
 }
 
+// settings.js polls this to render the General tab's Daemon status. Reruns
+// the live checks fresh each call and carries forward whatever error setup()
+// hit installing the daemon, if any — see daemon::query_status.
+#[tauri::command]
+fn daemon_status(app: tauri::AppHandle, state: tauri::State<daemon::DaemonState>) -> daemon::DaemonStatus {
+    let stored_error = state.0.lock().unwrap().clone();
+    daemon::query_status(&app, stored_error)
+}
+
 // The default macOS menu with "Settings…" (⌘,) added under the app menu's
 // About item.
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -102,8 +113,23 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![canvas_url, set_pinned, get_pinned, open_settings])
+        .invoke_handler(tauri::generate_handler![
+            canvas_url,
+            set_pinned,
+            get_pinned,
+            open_settings,
+            daemon_status
+        ])
         .setup(|app| {
+            // Debug builds aren't bundled (no Resources dir to install from);
+            // `admin dev canvas` runs the daemon separately in that workflow.
+            let install_error = if !cfg!(debug_assertions) {
+                daemon::ensure_daemon(app.handle()).error
+            } else {
+                None
+            };
+            app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

@@ -103,13 +103,6 @@ body {
   color: #c0392b;
 }
 
-.daemon-status-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13px;
-}
-
 .status-dot {
   width: 8px;
   height: 8px;
@@ -124,6 +117,60 @@ body {
 
 .status-dot[data-state="error"] {
   background: #c0392b;
+}
+
+/* Daemon tab: a summary line, then a two-column detail grid — one row per
+   independently-checkable fact (installed, matches this build, registered
+   with launchd, actually running), since any one of those can be true while
+   another is false and a single dot can't say which. */
+.daemon-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.daemon-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.daemon-summary-text {
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.daemon-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  row-gap: 10px;
+  column-gap: 14px;
+  font-size: 12.5px;
+}
+
+.daemon-grid-label {
+  color: #888;
+  white-space: nowrap;
+}
+
+.daemon-grid-value {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  word-break: break-all;
+}
+
+.daemon-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #fdecea;
+  color: #c0392b;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .seg {

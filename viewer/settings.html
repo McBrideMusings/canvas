@@ -57,6 +57,23 @@
       </svg>
       Guidance
     </button>
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-daemon"
+      data-section="daemon"
+      role="tab"
+      aria-selected="false"
+      aria-controls="section-daemon"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="6" rx="1.5" />
+        <rect x="3" y="14" width="18" height="6" rx="1.5" />
+        <circle cx="7" cy="7" r="1" fill="currentColor" stroke="none" />
+        <circle cx="7" cy="17" r="1" fill="currentColor" stroke="none" />
+      </svg>
+      Daemon
+    </button>
   </div>
   <h1 class="settings-title" id="settings-title">General</h1>
   <main class="prefs" id="section-general" role="tabpanel" aria-labelledby="tab-general">
@@ -71,17 +88,6 @@
       <label class="pref-label" for="animate">Animate new posts</label>
       <div class="pref-control">
         <input type="checkbox" id="animate" class="switch" role="switch" />
-      </div>
-    </div>
-    <div class="pref" id="daemon-status-pref" hidden>
-      <span class="pref-label">Daemon</span>
-      <div class="pref-control">
-        <div class="daemon-status-row">
-          <span class="status-dot" id="daemon-status-dot"></span>
-          <span id="daemon-status-text"></span>
-        </div>
-        <p class="pref-note" id="daemon-status-path"></p>
-        <p class="pref-note pref-note-error" id="daemon-status-error" hidden></p>
       </div>
     </div>
   </main>
@@ -153,6 +159,47 @@
         />
         <button type="button" class="btn" id="profile-new-add">Add profile</button>
       </div>
+    </div>
+  </main>
+  <main class="prefs prefs-wide" id="section-daemon" role="tabpanel" aria-labelledby="tab-daemon" hidden>
+    <div class="daemon-panel" id="daemon-panel">
+      <div class="daemon-summary">
+        <span class="status-dot" id="daemon-status-dot"></span>
+        <span class="daemon-summary-text" id="daemon-status-text"></span>
+        <button type="button" class="btn" id="daemon-refresh">Check now</button>
+      </div>
+      <div class="daemon-grid">
+        <span class="daemon-grid-label">Installed</span>
+        <span class="daemon-grid-value">
+          <span class="status-dot" id="daemon-installed-dot"></span>
+          <span id="daemon-installed-text"></span>
+        </span>
+
+        <span class="daemon-grid-label">Path</span>
+        <span class="daemon-grid-value" id="daemon-status-path"></span>
+
+        <span class="daemon-grid-label">Matches this app</span>
+        <span class="daemon-grid-value">
+          <span class="status-dot" id="daemon-uptodate-dot"></span>
+          <span id="daemon-uptodate-text"></span>
+        </span>
+
+        <span class="daemon-grid-label">Registered with launchd</span>
+        <span class="daemon-grid-value">
+          <span class="status-dot" id="daemon-loaded-dot"></span>
+          <span id="daemon-loaded-text"></span>
+        </span>
+
+        <span class="daemon-grid-label">Process running</span>
+        <span class="daemon-grid-value">
+          <span class="status-dot" id="daemon-running-dot"></span>
+          <span id="daemon-running-text"></span>
+        </span>
+
+        <span class="daemon-grid-label">Last checked</span>
+        <span class="daemon-grid-value" id="daemon-checked-at"></span>
+      </div>
+      <pre class="daemon-error" id="daemon-status-error" hidden></pre>
     </div>
   </main>
   <script src="settings.js"></script>

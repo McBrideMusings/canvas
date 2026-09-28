@@ -23,8 +23,16 @@ beside the terminal all day.
   The window loads a local waiting page (`app/dist/index.html`) that polls
   the daemon and navigates to it once it answers, so a not-yet-started or
   restarting daemon never leaves the window on a dead error page. Its own
-  Cargo workspace, outside the root one. It holds no state; quitting it loses
-  nothing.
+  Cargo workspace, outside the root one. It holds no persisted state;
+  quitting it loses nothing. `daemon.rs` makes the app self-installing: on a
+  release build's `setup()`, `ensure_daemon` copies the `canvas` binary
+  bundled as a Tauri resource (`tauri.conf.json`) out to `~/.local/bin` and
+  registers it as the `com.piercemakes.canvasd` launchd agent, skipping the
+  copy and restart when the bundled binary already matches what's installed
+  so an ordinary relaunch doesn't empty the daemon's in-memory stream. A
+  debug build skips this — `admin dev canvas` runs the daemon separately.
+  The `daemon_status` command reports installed/up-to-date/loaded/running
+  plus any install error, and the Settings window's Daemon tab polls it.
 - `viewer/` — plain `index.html` + JS, no build step. A toolbar (search field,
   row of session chips) below the title bar, stream of cards, one per post.
   Session chips and the drawer's per-row eye toggle add/remove sessions from a
