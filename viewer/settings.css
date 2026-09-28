@@ -14,13 +14,67 @@ body {
   color: #1a1a1a;
 }
 
+/* The System Settings convention: a row of icon-and-label section tabs
+   under the (native, traffic-lit) title bar, a bold centred title naming
+   the open one, then that section's preferences below. */
+.settings-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 16px 8px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.settings-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 68px;
+  padding: 6px 4px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: #444;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  background: #ece9e0;
+}
+
+.settings-tab[aria-selected="true"] {
+  background: #dbe6fd;
+  color: #2563eb;
+}
+
+.settings-tab:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.settings-title {
+  margin: 0 0 6px;
+  padding: 0 24px;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+
 /* A macOS Settings pane: each preference is a label right-aligned against
    the middle of the window, its control left-aligned beside it. */
 .prefs {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding: 28px 24px;
+  padding: 8px 24px 28px;
+}
+
+.prefs[hidden] {
+  display: none;
 }
 
 .pref {

@@ -3,12 +3,33 @@
 
   const sessions = new Map(); // id -> session
   const cards = new Map(); // id -> card
-  let selectedSessionId = null; // null = "All"
+  // Three states: null = every session visible (nothing selected). A Set,
+  // however small, means "only these" — chips and the drawer's per-row eye
+  // toggle both read and write it, so picking one in either place narrows
+  // the other. Selecting a session for the first time (from null) isolates
+  // to just that one; after that, each control just toggles its own id in
+  // or out of the set. Only resetVisibility() goes back to null.
+  let visibleSessionIds = null;
 
   const streamEl = document.getElementById("stream");
   const cardsEl = document.getElementById("cards");
   const emptyStateEl = document.getElementById("empty-state");
   const chipsEl = document.getElementById("chips");
+  // A trackpad's horizontal swipe scrolls the chip row natively; a plain
+  // mouse wheel only ever sends a vertical delta, which the row has no
+  // vertical overflow to consume. Redirect it to horizontal scroll, but only
+  // when vertical actually dominates — a trackpad's diagonal swipe already
+  // has its own deltaX and should scroll natively, untouched.
+  chipsEl.addEventListener(
+    "wheel",
+    (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        chipsEl.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    },
+    { passive: false }
+  );
   const bannerEl = document.getElementById("disconnected-banner");
   const overlayEl = document.getElementById("image-overlay");
   const overlayImgEl = document.getElementById("image-overlay-img");
@@ -110,14 +131,17 @@
         svg.appendChild(svgEl("path", { d: "M12 14v7", fill: "none" }));
         break;
       }
-      // A toothed cog: eight trapezoid teeth around a hub.
+      // The standard rounded-tooth settings cog (Feather Icons' "settings"
+      // glyph, MIT-licensed) — the two hand-rolled attempts before this one
+      // still read as a sun at icon size, so this uses a known-good shape
+      // instead of another guess.
       case "gear":
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "3" }));
         svg.appendChild(
           svgEl("path", {
-            d: "M10.4 4.8L10.9 2.5L13.1 2.5L13.6 4.8L16.0 5.8L17.9 4.5L19.5 6.1L18.2 8.0L19.2 10.4L21.5 10.9L21.5 13.1L19.2 13.6L18.2 16.0L19.5 17.9L17.9 19.5L16.0 18.2L13.6 19.2L13.1 21.5L10.9 21.5L10.4 19.2L8.0 18.2L6.1 19.5L4.5 17.9L5.8 16.0L4.8 13.6L2.5 13.1L2.5 10.9L4.8 10.4L5.8 8.0L4.5 6.1L6.1 4.5L8.0 5.8z",
+            d: "M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z",
           })
         );
-        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "3" }));
         break;
       // A window with its sidebar on the right.
       case "sidebar-right":
@@ -136,10 +160,18 @@
           })
         );
         break;
-      // A circled ×: empties a session of its posts, keeps the session.
-      case "clear":
-        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "9" }));
-        svg.appendChild(svgEl("path", { d: "M9 9l6 6M15 9l-6 6" }));
+      // An open eye — a diagonal strike marks the -off variant, shown when
+      // a custom selection excludes this session.
+      case "eye":
+      case "eye-off":
+        svg.appendChild(
+          svgEl("path", {
+            d: "M2 12c2.5-5 7-7.5 10-7.5S19.5 7 22 12c-2.5 5-7 7.5-10 7.5S4.5 17 2 12z",
+          })
+        );
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "3" }));
+        if (name === "eye-off") svg.appendChild(svgEl("path", { d: "M3 3l18 18" }));
+        break;
       case "arrow-up":
         svg.appendChild(svgEl("path", { d: "M12 19V5M5.5 11.5L12 5l6.5 6.5" }));
         break;
@@ -312,12 +344,14 @@
     paintCardColours();
   }
 
-  // An archived session can't stay selected: its cards would all be filtered
-  // out behind a filter the chip row no longer shows.
+  // An archived session can't stay in the visible set: its cards are
+  // already filtered out behind isHidden, and its drawer row is gone.
   function refreshVisibility() {
-    const selected = selectedSessionId && sessions.get(selectedSessionId);
-    if (selected && (isHidden(selected) || sessionCardCount(selected.id) === 0)) {
-      selectedSessionId = null;
+    if (visibleSessionIds) {
+      for (const id of visibleSessionIds) {
+        const s = sessions.get(id);
+        if (!s || isHidden(s)) visibleSessionIds.delete(id);
+      }
     }
     renderChips();
     applyFilter();
@@ -332,12 +366,17 @@
     refreshVisibility();
   }
 
+  // Archiving hides the session and permanently deletes its posts — "hide
+  // it but leave an empty husk around" wasn't a distinction anyone wanted.
+  // Undo below only restores visibility; the posts are already gone by the
+  // time it could run.
   function archiveSession(id) {
     const name = sessionName(id);
+    clearSessionPosts(id);
     setPrefsAndRefresh(() => {
       if (!prefs.hidden.includes(id)) prefs.hidden.push(id);
     });
-    toast(`Archived ${name}`, "Undo", () =>
+    toast(`Archived ${name} and cleared its posts`, "Undo", () =>
       setPrefsAndRefresh(() => {
         prefs.hidden = prefs.hidden.filter((h) => h !== id);
       })
@@ -447,12 +486,35 @@
     return tile;
   }
 
+  // Isolates to exactly `id` (or, for null, resets to "everything visible")
+  // regardless of whatever the current set already holds — distinct from
+  // toggleSessionVisibility, which adds/removes one id from what's there.
   function selectSession(id) {
-    selectedSessionId = id;
+    visibleSessionIds = id === null ? null : new Set([id]);
     renderChips();
     applyFilter();
+    renderDrawer();
     const pressed = chipsEl.querySelector('.chip[aria-pressed="true"]');
     if (pressed) pressed.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  // Flips one session's membership in the visible set. The first toggle
+  // from "everything visible" isolates to just that one (state 1 -> 2);
+  // every toggle after that adds or removes it from what's already there.
+  // Toggling off the last one left empties the set back to null — "nothing
+  // selected" is state 1 again, not a distinct "nothing visible" state.
+  function toggleSessionVisibility(id) {
+    if (visibleSessionIds === null) visibleSessionIds = new Set();
+    if (visibleSessionIds.has(id)) visibleSessionIds.delete(id);
+    else visibleSessionIds.add(id);
+    if (visibleSessionIds.size === 0) visibleSessionIds = null;
+    renderChips();
+    applyFilter();
+    renderDrawer();
+  }
+
+  function resetVisibility() {
+    selectSession(null);
   }
 
   // Most recent post first; a session with no posts counts from when it
@@ -496,14 +558,14 @@
     let total = 0;
     for (const s of visible) total += sessionCardCount(s.id);
 
-    const all = buildChip("", selectedSessionId === null);
+    const all = buildChip("", visibleSessionIds === null);
     all.classList.add("chip-all");
     all.append("All", chipCount(total));
-    all.addEventListener("click", () => selectSession(null));
+    all.addEventListener("click", () => resetVisibility());
 
     const chips = [all];
     for (const s of visible) {
-      const selected = selectedSessionId === s.id;
+      const selected = visibleSessionIds !== null && visibleSessionIds.has(s.id);
       const chip = buildChip(s.id, selected);
       chip.style.setProperty("--session-colour", sessionColour(s));
       if (chipsMayArrive && animating() && !renderedChipIds.has(s.id)) {
@@ -521,7 +583,7 @@
       x.className = "chip-x";
       x.appendChild(buildIcon("x"));
       chip.append(buildAgentTile(), name, repo, chipCount(sessionCardCount(s.id)), x);
-      chip.addEventListener("click", () => selectSession(selected ? null : s.id));
+      chip.addEventListener("click", () => toggleSessionVisibility(s.id));
       chips.push(chip);
     }
 
@@ -560,17 +622,15 @@
     return count;
   }
 
-  // The Sessions drawer slides in from the right edge under the title bar and
-  // lists every session, ACTIVE then ARCHIVED. Its header stays put; the body
-  // is rebuilt on every change while the drawer is open.
+  // The Sessions drawer docks beside the stream, narrowing it rather than
+  // covering it, and lists every session, ACTIVE then ARCHIVED. Its header
+  // stays put; the body is rebuilt on every change while the drawer is open.
   const drawerToggleEl = document.getElementById("drawer-toggle");
   const drawerBadgeEl = document.createElement("span");
   const drawerEl = document.getElementById("drawer");
-  const drawerCloseEl = document.getElementById("drawer-close");
   const drawerBodyEl = document.getElementById("drawer-body");
   drawerBadgeEl.className = "badge";
   drawerToggleEl.append(buildIcon("sidebar-right"), drawerBadgeEl);
-  drawerCloseEl.appendChild(buildIcon("x"));
 
   const settingsToggleEl = document.getElementById("settings-toggle");
   settingsToggleEl.appendChild(buildIcon("gear"));
@@ -595,7 +655,6 @@
     drawerEl.inert = false;
     drawerToggleEl.setAttribute("aria-expanded", "true");
     renderDrawer();
-    drawerCloseEl.focus();
   }
 
   function closeDrawer({ refocus = false } = {}) {
@@ -612,19 +671,6 @@
   drawerToggleEl.addEventListener("click", () => {
     if (drawerIsOpen()) closeDrawer();
     else openDrawer();
-  });
-  drawerCloseEl.addEventListener("click", () => closeDrawer({ refocus: true }));
-
-  // A click on a toast (Undo, Keep showing) belongs to the drawer's own
-  // actions, so it doesn't close the drawer.
-  document.addEventListener("click", (e) => {
-    if (
-      !clickIsInside(e, drawerEl) &&
-      !clickIsInside(e, drawerToggleEl) &&
-      !clickIsInside(e, toastsEl)
-    ) {
-      closeDrawer();
-    }
   });
 
   // The first Escape only reverts an armed confirm (its own handler below);
@@ -652,6 +698,21 @@
     btn.setAttribute("aria-label", label);
     btn.title = label;
     btn.appendChild(buildIcon(icon));
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // A section heading's bulk action: a labelled button rather than the
+  // per-row icon-only style, since there's only one and it needs to read as
+  // a verb at a glance. Disabled — never hidden — when there's nothing for
+  // it to do, so it never shifts position in the header.
+  function drawerActionButton(key, label, onClick, disabled) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "drawer-action-btn";
+    btn.dataset.key = key;
+    setButtonIcon(btn, null, label);
+    btn.disabled = disabled;
     btn.addEventListener("click", onClick);
     return btn;
   }
@@ -702,16 +763,27 @@
     row.append(dot, text);
 
     if (section === "active") {
+      // The icon tracks effective visibility (on in state 1, since nothing
+      // is excluded yet); aria-pressed only lights up once this session is
+      // actually named in a custom selection, matching the chip it shares
+      // state with.
+      const isSelected = visibleSessionIds !== null && visibleSessionIds.has(session.id);
+      const isVisible = visibleSessionIds === null || isSelected;
+      const visibilityToggle = drawerButton(
+        `visible:${session.id}`,
+        isVisible ? "eye" : "eye-off",
+        isVisible ? "Showing in stream — click to isolate or hide" : "Hidden — click to show",
+        () => toggleSessionVisibility(session.id)
+      );
+      visibilityToggle.setAttribute("aria-pressed", String(isSelected));
       row.append(
+        visibilityToggle,
         confirmButton(
-          `clear:${session.id}`,
-          "clear",
-          "Clear posts",
-          "Confirm clear posts",
-          () => clearSessionPosts(session.id)
-        ),
-        drawerButton(`archive:${session.id}`, "archive", "Archive", () =>
-          archiveSession(session.id)
+          `archive:${session.id}`,
+          "archive",
+          "Archive (deletes its posts)",
+          "Really archive & delete its posts?",
+          () => archiveSession(session.id)
         )
       );
     } else {
@@ -778,22 +850,33 @@
 
     const activeList = byRecency(Array.from(sessions.values()).filter((x) => !isHidden(x)));
     const archivedList = byRecency(archived);
-    const deleteAll =
-      archivedList.length > 0
-        ? confirmButton(
-            "delete-all",
-            "trash",
-            "Delete all",
-            "Confirm delete all",
-            () => {
-              // The archive as it is at the second click, not at render time.
-              for (const s of archivedSessions()) deleteSession(s.id);
-            }
-          )
-        : null;
+    const showAll = drawerActionButton(
+      "show-all",
+      "Show all",
+      () => resetVisibility(),
+      visibleSessionIds === null
+    );
+    const clearAll = drawerActionButton(
+      "clear-all",
+      "Clear all",
+      () =>
+        armConfirm(clearAll, {
+          idleLabel: "Clear all",
+          idleIcon: null,
+          confirmLabel: "Confirm clear all",
+          confirmIcon: null,
+          withText: true,
+          onConfirm: () => {
+            // The archive as it is at the second click, not at render time.
+            for (const s of archivedSessions()) deleteSession(s.id);
+          },
+        }),
+      archivedList.length === 0
+    );
+    clearAll.classList.add("danger");
     drawerBodyEl.replaceChildren(
-      drawerSection("active", "Active", activeList),
-      drawerSection("archived", "Archived", archivedList, deleteAll)
+      drawerSection("active", "Active", activeList, showAll),
+      drawerSection("archived", "Archived", archivedList, clearAll)
     );
     drawerBodyEl.scrollTop = scrollTop;
 
@@ -999,16 +1082,25 @@
         showOnlySession(card.sessionId)
       )
     );
-    menu.appendChild(
-      buildMenuItem("archive", "Archive this session", () => {
-        closeMenu();
-        archiveSession(card.sessionId);
-      })
-    );
     const divider = document.createElement("div");
     divider.className = "menu-divider";
     divider.setAttribute("role", "separator");
     menu.appendChild(divider);
+    const archiveItem = buildMenuItem("archive", "Archive this session", () => {
+      armConfirm(archiveItem, {
+        idleLabel: "Archive this session",
+        idleIcon: "archive",
+        confirmLabel: "Really archive & delete its posts?",
+        confirmIcon: "archive",
+        withText: true,
+        onConfirm: () => {
+          closeMenu();
+          archiveSession(card.sessionId);
+        },
+      });
+    });
+    archiveItem.classList.add("danger");
+    menu.appendChild(archiveItem);
     const deleteItem = buildMenuItem("trash", "Delete post", () => {
       armConfirm(deleteItem, {
         idleLabel: "Delete post",
@@ -1128,7 +1220,6 @@
       }
     }
     closeMenuIfDetached();
-    if (selectedSessionId === id) selectedSessionId = null;
     prunePrefs();
     refreshVisibility();
     toast(`Deleted ${name} and its posts`);
@@ -1173,7 +1264,7 @@
   function cardMatchesFilter(card) {
     const session = sessions.get(card.sessionId);
     if (session && isHidden(session)) return false;
-    if (selectedSessionId !== null && card.sessionId !== selectedSessionId) return false;
+    if (visibleSessionIds !== null && !visibleSessionIds.has(card.sessionId)) return false;
     return cardMatchesQuery(card);
   }
 
@@ -1206,9 +1297,8 @@
   }
 
   function clearSearch() {
-    selectedSessionId = null;
+    resetVisibility();
     setQuery("");
-    renderChips();
   }
 
   searchInputEl.addEventListener("input", () => setQuery(searchInputEl.value));
@@ -1245,9 +1335,9 @@
       const session = sessions.get(card.sessionId);
       if (!session || !isHidden(session)) fromVisibleSessions++;
     }
-    streamEl.dataset.filterSession = selectedSessionId || "";
+    streamEl.dataset.filterSession = visibleSessionIds ? Array.from(visibleSessionIds).join(" ") : "";
     streamEl.dataset.query = query;
-    const filtering = selectedSessionId !== null || query !== "";
+    const filtering = visibleSessionIds !== null || query !== "";
     searchCountEl.hidden = !filtering;
     searchCountEl.textContent = `${visible} of ${fromVisibleSessions}`;
     searchEl.classList.toggle("filtering", filtering);
@@ -1288,10 +1378,11 @@
         `No posts match “${query}”. `,
         textButton("Clear search", "link-btn", clearSearch)
       );
-    } else if (selectedSessionId !== null) {
+    } else if (visibleSessionIds !== null) {
+      const label = visibleSessionIds.size === 1 ? "this session" : "these sessions";
       emptyStateEl.replaceChildren(
-        "No posts from this session yet. ",
-        textButton("Show all", "link-btn", () => selectSession(null))
+        `No posts from ${label} yet. `,
+        textButton("Show all", "link-btn", resetVisibility)
       );
     } else {
       emptyStateEl.textContent =

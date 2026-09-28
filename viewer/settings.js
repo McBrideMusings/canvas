@@ -27,6 +27,27 @@
   const animate = document.getElementById("animate");
   const colourButtons = Array.from(document.querySelectorAll("[data-color-by]"));
 
+  // Section tabs: one visible <main> at a time, no persisted selection —
+  // every open starts on General, same as the window's own default size.
+  const tabs = Array.from(document.querySelectorAll(".settings-tab"));
+  const titleEl = document.getElementById("settings-title");
+  const sections = new Map(
+    tabs.map((tab) => [tab.dataset.section, document.getElementById(`section-${tab.dataset.section}`)])
+  );
+
+  function selectTab(section) {
+    for (const tab of tabs) {
+      const selected = tab.dataset.section === section;
+      tab.setAttribute("aria-selected", String(selected));
+      sections.get(tab.dataset.section).hidden = !selected;
+      if (selected) titleEl.textContent = tab.textContent.trim();
+    }
+  }
+
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => selectTab(tab.dataset.section));
+  }
+
   function render() {
     const stored = readStored();
     archiveEnded.checked = typeof stored.hideEnded === "boolean" ? stored.hideEnded : true;

@@ -7,7 +7,43 @@
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-  <main class="prefs">
+  <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-general"
+      data-section="general"
+      role="tab"
+      aria-selected="true"
+      aria-controls="section-general"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
+      </svg>
+      General
+    </button>
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-appearance"
+      data-section="appearance"
+      role="tab"
+      aria-selected="false"
+      aria-controls="section-appearance"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3a9 9 0 100 18c1.3 0 1.9-.9 1.9-1.8 0-.5-.2-.9-.4-1.3-.2-.4-.4-.8-.4-1.2 0-.9.7-1.6 1.6-1.6h1.8A4.5 4.5 0 0021 11.5C21 6.8 17 3 12 3z" />
+        <circle cx="7.3" cy="10.8" r="1.1" fill="currentColor" stroke="none" />
+        <circle cx="9.3" cy="7.2" r="1.1" fill="currentColor" stroke="none" />
+        <circle cx="14.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
+        <circle cx="17" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
+      </svg>
+      Appearance
+    </button>
+  </div>
+  <h1 class="settings-title" id="settings-title">General</h1>
+  <main class="prefs" id="section-general" role="tabpanel" aria-labelledby="tab-general">
     <div class="pref">
       <label class="pref-label" for="archive-ended">Archive sessions when they end</label>
       <div class="pref-control">
@@ -21,6 +57,8 @@
         <input type="checkbox" id="animate" class="switch" role="switch" />
       </div>
     </div>
+  </main>
+  <main class="prefs" id="section-appearance" role="tabpanel" aria-labelledby="tab-appearance" hidden>
     <div class="pref">
       <span class="pref-label" id="colour-label">Colour sessions by</span>
       <div class="pref-control">
