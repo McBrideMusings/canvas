@@ -1811,6 +1811,19 @@
       return;
     }
 
+    if (data.type === "canvas-reply") {
+      // canvas-17z: the card is identified from event.source, same rule as
+      // canvas-open — an untrusted iframe never names its own id.
+      const card = cardForFrameSource(event.source);
+      if (!card) return;
+      fetch(`/api/cards/${card.id}/reply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(data.value),
+      }).catch(() => {});
+      return;
+    }
+
     if (data.type === "canvas-image") {
       // Same rule as canvas-open: the card comes from the sending frame,
       // never from the message, and the index must name one of its images.

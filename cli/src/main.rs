@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas guidance | canvas install [repo] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas guidance | canvas install [repo] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -54,6 +54,62 @@ fn main() {
             if let Err(e) = canvas::post::run(parsed.arg, parsed.format_flag, parsed.update_id) {
                 eprintln!("{e}");
                 std::process::exit(1);
+            }
+        }
+        Some("wait") => {
+            // canvas-17z: blocks until the named card's iframe has posted a
+            // reply, or the timeout elapses. See client::wait_for_reply.
+            let card_id = match args.get(2) {
+                Some(id) => id.clone(),
+                None => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+            };
+            let timeout_secs = args
+                .iter()
+                .position(|a| a == "--timeout")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            match canvas::client::wait_for_reply(
+                &card_id,
+                std::time::Duration::from_secs(timeout_secs),
+            ) {
+                Ok(value) => {
+                    println!("{value}");
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("replies") => {
+            // canvas-17z: one non-blocking check, for an agent that's doing
+            // other work and checking back rather than sitting in `wait`.
+            let card_id = match args.get(2) {
+                Some(id) => id.clone(),
+                None => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+            };
+            // Exit 1 means "not yet" — keep polling. Exit 3 means canvasd
+            // itself failed, which a caller retrying on exit code alone
+            // needs to tell apart from "no reply yet" or it retries forever
+            // against a daemon that isn't there.
+            match canvas::client::get_reply(&card_id) {
+                Ok(Some(value)) => {
+                    println!("{value}");
+                }
+                Ok(None) => {
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(3);
+                }
             }
         }
         _ => {

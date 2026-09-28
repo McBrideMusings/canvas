@@ -1042,3 +1042,136 @@ async fn loopback_hosts_are_served_at_any_port() {
         assert_eq!(response.status(), StatusCode::OK, "{host}");
     }
 }
+
+#[tokio::test]
+async fn card_reply_round_trips() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/reply", card.id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .clone()
+        .oneshot(post(&format!("/api/cards/{}/reply", card.id), json!("A")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/reply", card.id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!("A"));
+}
+
+#[tokio::test]
+async fn card_reply_last_write_wins() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+
+    for value in ["A", "B"] {
+        let response = app
+            .clone()
+            .oneshot(post(&format!("/api/cards/{}/reply", card.id), json!(value)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/reply", card.id)))
+        .await
+        .unwrap();
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!("B"));
+}
+
+#[tokio::test]
+async fn card_reply_on_unknown_card_is_404() {
+    let app = app();
+
+    let response = app
+        .clone()
+        .oneshot(post("/api/cards/does-not-exist/reply", json!("A")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/cards/does-not-exist/reply"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn oversized_card_reply_is_rejected() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+
+    let huge = "x".repeat(5000);
+    let response = app
+        .clone()
+        .oneshot(post(&format!("/api/cards/{}/reply", card.id), json!(huge)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/reply", card.id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
+    let state = AppState::new();
+    let app = canvasd::build_router(state.clone());
+    app.clone()
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>0</p>"}),
+        ))
+        .await
+        .unwrap();
+    let first: Card = json_body(response).await;
+    app.clone()
+        .oneshot(post(&format!("/api/cards/{}/reply", first.id), json!("A")))
+        .await
+        .unwrap();
+    assert_eq!(state.inner.read().await.replies.len(), 1);
+
+    for i in 1..501 {
+        app.clone()
+            .oneshot(post(
+                "/api/posts",
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // The ring evicted the first card at 501; its reply shouldn't outlive it.
+    assert!(state.inner.read().await.replies.is_empty());
+}

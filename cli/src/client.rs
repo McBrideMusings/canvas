@@ -102,6 +102,43 @@ pub fn fetch_guidance(cwd: &str) -> Option<GuidanceState> {
     response.into_json::<GuidanceState>().ok()
 }
 
+/// `canvas wait`: polls `GET /api/cards/:id/reply` every 250ms until a reply
+/// lands or `timeout` elapses. Blocks the calling agent, so it's for "ask a
+/// question in a card, then wait for the click" — `get_reply` below is the
+/// non-blocking single check for "did they answer yet".
+pub fn wait_for_reply(card_id: &str, timeout: Duration) -> Result<serde_json::Value, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match get_reply(card_id)? {
+            Some(value) => return Ok(value),
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!("no reply for {card_id} within {timeout:?}"));
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    }
+}
+
+/// `canvas replies`: one non-blocking check of `GET /api/cards/:id/reply`.
+/// `Ok(None)` means the card hasn't been answered yet — not an error, since
+/// checking back later without blocking is the whole point of this call.
+pub fn get_reply(card_id: &str) -> Result<Option<serde_json::Value>, String> {
+    let result = agent()
+        .get(&format!("{}/api/cards/{}/reply", base_url(), card_id))
+        .call();
+    match result {
+        Ok(response) => response
+            .into_json::<serde_json::Value>()
+            .map(Some)
+            .map_err(|e| format!("canvasd returned malformed JSON: {e}")),
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
+        Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
+    }
+}
+
 fn handle_card_response(result: Result<ureq::Response, ureq::Error>) -> Result<Card, String> {
     match result {
         Ok(response) => response

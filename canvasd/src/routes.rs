@@ -314,6 +314,44 @@ pub async fn update_card(
     (StatusCode::OK, Json(updated)).into_response()
 }
 
+/// A card's own script cannot reach this route at all — its iframe has no
+/// `connect-src` and no `allow-forms` — so the only caller is the viewer,
+/// which relays a `postMessage({type:'canvas-reply', value})` it received
+/// from that card's iframe, identifying the card by `event.source` rather
+/// than trusting an id the message could name. Last write wins, in memory
+/// only — no history, gone on restart, same as the rest of a reply's
+/// lifetime being tied to the session that's waiting on it. 404s when `id`
+/// names no card, same as `update_card`; 413 when the value serializes
+/// larger than `MAX_REPLY_BYTES` — a reply is an answer, not a file upload.
+const MAX_REPLY_BYTES: usize = 4096;
+
+pub async fn post_card_reply(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(value): Json<serde_json::Value>,
+) -> Response {
+    let size = serde_json::to_vec(&value).map(|b| b.len()).unwrap_or(0);
+    if size > MAX_REPLY_BYTES {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let mut inner = state.inner.write().await;
+    if !inner.cards.iter().any(|c| c.id == id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    inner.replies.insert(id, value);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Polled by `canvas wait` and `canvas replies`. 200 with the stored value
+/// once `post_card_reply` has been called for this id, 404 until then.
+pub async fn get_card_reply(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let inner = state.inner.read().await;
+    match inner.replies.get(&id) {
+        Some(value) => (StatusCode::OK, Json(value.clone())).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 pub async fn delete_card(
     State(state): State<AppState>,
     Path(id): Path<String>,

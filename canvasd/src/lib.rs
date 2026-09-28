@@ -30,6 +30,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
+        .route(
+            "/api/cards/:id/reply",
+            post(routes::post_card_reply).get(routes::get_card_reply),
+        )
         .route("/api/open", post(routes::open_path))
         .route("/*path", any(viewer::asset))
         .layer(middleware::from_fn(routes::require_loopback_host))

@@ -26,6 +26,11 @@ pub struct Inner {
     pub sessions: HashMap<String, Session>,
     /// Front = newest.
     pub cards: VecDeque<Card>,
+    /// One reply value per card id (canvas-17z), last write wins. In-memory
+    /// only, like the rest of `Inner` on a restart — a reply is part of a
+    /// live interaction with a running session, not history worth carrying
+    /// across a daemon restart the way a card's own content is.
+    pub replies: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -50,6 +55,7 @@ impl AppState {
             inner: Arc::new(RwLock::new(Inner {
                 sessions: HashMap::new(),
                 cards: VecDeque::new(),
+                replies: HashMap::new(),
             })),
             events: tx,
             guidance: Arc::new(RwLock::new(GuidanceConfig::default())),
@@ -106,10 +112,18 @@ impl Inner {
                 self.sessions.insert(session.id.clone(), session);
             }
             CanvasEvent::CardUpserted(card) => self.upsert_card(card),
-            CanvasEvent::CardRemoved(id) => self.cards.retain(|c| c.id != id),
+            CanvasEvent::CardRemoved(id) => {
+                self.cards.retain(|c| c.id != id);
+                self.replies.remove(&id);
+            }
             CanvasEvent::SessionRemoved(id) => {
                 self.sessions.remove(&id);
-                self.cards.retain(|c| c.session_id != id);
+                let (removed, kept): (VecDeque<_>, VecDeque<_>) =
+                    self.cards.drain(..).partition(|c| c.session_id == id);
+                self.cards = kept;
+                for card in removed {
+                    self.replies.remove(&card.id);
+                }
             }
         }
     }
@@ -120,6 +134,9 @@ impl Inner {
         let fresh = |ts: &str| {
             DateTime::parse_from_rfc3339(ts).map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
         };
+        for card in self.cards.iter().filter(|c| !fresh(&c.at)) {
+            self.replies.remove(&card.id);
+        }
         self.cards.retain(|c| fresh(&c.at));
         let cards = &self.cards;
         self.sessions.retain(|id, s| {
@@ -143,7 +160,9 @@ impl Inner {
     pub fn push_card(&mut self, card: Card) {
         self.cards.push_front(card);
         while self.cards.len() > CARD_RING_CAPACITY {
-            self.cards.pop_back();
+            if let Some(evicted) = self.cards.pop_back() {
+                self.replies.remove(&evicted.id);
+            }
         }
     }
 }

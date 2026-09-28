@@ -100,7 +100,40 @@ Posted HTML renders in `<iframe sandbox="allow-scripts">` (no
 `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, and `unpkg.com` — pin a library
 to an exact version from one of those. There is no `connect-src`, so the
 page cannot `fetch()` or open a `WebSocket`; everything it shows has to
-already be in the content you post.
+already be in the content you post. The one exception is `canvas-reply`,
+below — the card's script never fetches anything itself; it hands a value up
+to the viewer, which makes the real HTTP call on its behalf.
+
+### Asking a question in a card and waiting for the answer
+
+A card's own script can send one value back to the session that posted it —
+a button's answer, a form's value, anything JSON-serializable — by calling:
+
+```js
+parent.postMessage({ type: 'canvas-reply', value: 'A' }, '*');
+```
+
+The viewer relays it to canvasd, keyed by which card's iframe sent it — never
+by an id the message names, so one card's script cannot write a reply onto
+another card. The value is capped at 4KB and there's one reply per card
+(a second `canvas-reply` overwrites the first); it lives in canvasd's memory
+only, not in `stream.jsonl`, so it doesn't survive a daemon restart.
+
+On the agent side:
+
+```
+canvas wait <card_id> [--timeout secs]   # blocks until a reply lands (default 30s), prints it as JSON
+canvas replies <card_id>                 # one non-blocking check: prints the value and exits 0 if answered
+```
+
+`canvas replies` exits 1 for "no reply yet" — keep polling — and exits 3 with a message
+on stderr if canvasd itself couldn't be reached, so a script polling on exit code alone
+can tell "not answered" from "the daemon is down" instead of retrying forever.
+
+Use `wait` when the next step genuinely depends on the answer and there's
+nothing else to do meanwhile. Use `replies` when checking in between other
+work — post a card with a question, keep going, and poll `replies` before
+acting on the default the card describes.
 
 ### Result
 

@@ -49,6 +49,12 @@ beside the terminal all day.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
   instead, replacing that card's html/images/targets in place (same id and
   session_id) rather than creating a new one; 404s if the id doesn't exist.
+  A card can send one value back (canvas-17z): its script posts
+  `{type:'canvas-reply', value}` to the viewer, which relays it to
+  `POST /api/cards/:id/reply` keyed by which iframe sent it, capped at 4KB,
+  last write wins, in memory only. `canvas wait <card_id> [--timeout secs]`
+  blocks until a reply lands (default 30s); `canvas replies <card_id>` is
+  the non-blocking single check.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart and SessionEnd to
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
@@ -70,7 +76,9 @@ beside the terminal all day.
   timeout and the hook exits 0 on any failure.
 - HTML posts render in `<iframe sandbox="allow-scripts">` (no `allow-same-origin`)
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
-  `connect-src`. Never set post markup as `innerHTML` in the viewer's own origin.
+  `connect-src` — a card can still hand one value back via `canvas-reply`
+  (canvas-17z), but only by posting it up to the viewer, never by fetching
+  anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
 - canvasd answers only requests whose `Host` is `127.0.0.1` or `localhost` (any
   port); anything else, or no `Host`, gets 421. That router-wide layer is the
