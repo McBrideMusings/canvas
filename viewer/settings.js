@@ -168,6 +168,7 @@
   const profileRepoSelectEl = document.getElementById("profile-repo-select");
   const profileRepoStatusEl = document.getElementById("profile-repo-status");
   let knownRepos = [];
+  let builtinText = null;
 
   async function getJson(url) {
     const response = await fetch(url);
@@ -494,6 +495,7 @@
 
     try {
       const p = await getJson(`/api/profiles/${KIND}`);
+      builtinText = p.builtin || null;
       const names = Object.keys(p.profiles).sort();
       renderProfileRows(p.profiles, p.builtin);
       fillProfileSelect(profileGlobalSelectEl, names, p.global);
@@ -525,6 +527,10 @@
     textarea.className = "guidance-text";
     textarea.rows = 5;
     textarea.placeholder = "Write this profile's text…";
+    // Pre-fill from the built-in default so a new profile starts from real
+    // text to edit rather than a blank box — most profiles are a variation
+    // on the shipped guidance, not something written from nothing.
+    if (builtinText) textarea.value = builtinText;
 
     const actions = document.createElement("div");
     actions.className = "guidance-actions";
@@ -554,7 +560,7 @@
       }
       // Blank text is how the definitions route deletes a profile, so an
       // empty draft needs a real starter value to actually get created.
-      const text = textarea.value.trim() || "(write this profile's text)";
+      const text = textarea.value.trim() || builtinText || "(write this profile's text)";
       try {
         await putJson(`/api/profiles/${KIND}/definitions`, { name, text });
         await loadProfilesTab(true);
