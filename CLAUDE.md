@@ -11,10 +11,13 @@ beside the terminal all day.
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
   the last 24h reload and the file is rewritten compacted), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
-  `guidance.rs` persists the SessionStart guidance text — an optional global
-  override plus a per-repo override map — as `guidance.json` in
-  `CANVAS_DATA_DIR`, outside the 24h `stream.jsonl` retention window;
-  `AppState::open` loads it alongside the stream reload, so it's async.
+  `profiles.rs` is the generalized named-profile store any feature can reuse
+  instead of growing its own bespoke override: a "kind" (`posting-guidance`,
+  `dashboard-style`, more in `profiles::KINDS`) owns its own set of named text
+  profiles plus which one is assigned globally and which repos have their own
+  assignment. Persisted as `profiles.json` in `CANVAS_DATA_DIR`, outside the
+  24h `stream.jsonl` retention window; `AppState::open` loads it alongside the
+  stream reload, so it's async.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The window loads a local waiting page (`app/dist/index.html`) that polls
   the daemon and navigates to it once it answers, so a not-yet-started or
@@ -60,9 +63,9 @@ beside the terminal all day.
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
   guidance text (`include_str!`), and `skills/canvas/` is the skill agents
   load to know how to post. `canvas hook session-start` and `canvas
-  guidance` call `GET /api/guidance?cwd=<cwd>` and use, in order, the
-  daemon's per-repo override, its global override, then the compiled-in
-  default from `guidance.md`. Claude Code runs a cached copy of
+  guidance` call `GET /api/profiles/posting-guidance?cwd=<cwd>` and use, in
+  order, the profile assigned to that repo, the one assigned globally, then
+  the compiled-in default from `guidance.md`. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a
   local `directory` marketplace (never a git remote — the repo is private) and
   installs or updates `canvas@canvas` from it. `admin deploy canvas` installs

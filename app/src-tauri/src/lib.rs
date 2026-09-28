@@ -69,8 +69,9 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|e: <tauri::Url as std::str::FromStr>::Err| e.to_string())?;
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(url))
         .title("Settings")
-        .inner_size(520.0, 300.0)
-        .resizable(false)
+        .inner_size(640.0, 640.0)
+        .min_inner_size(480.0, 360.0)
+        .resizable(true)
         .minimizable(false)
         .maximizable(false)
         .build()

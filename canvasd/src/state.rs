@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::guidance::GuidanceConfig;
+use crate::profiles::ProfilesConfig;
 use crate::store::Store;
 
 pub const CARD_RING_CAPACITY: usize = 500;
@@ -37,7 +37,7 @@ pub struct Inner {
 pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
-    pub guidance: Arc<RwLock<GuidanceConfig>>,
+    pub profiles: Arc<RwLock<ProfilesConfig>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -58,33 +58,33 @@ impl AppState {
                 replies: HashMap::new(),
             })),
             events: tx,
-            guidance: Arc::new(RwLock::new(GuidanceConfig::default())),
+            profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
             store: None,
             data_dir: None,
         }
     }
 
     /// State backed by `dir/stream.jsonl` for sessions and cards, and
-    /// `dir/guidance.json` for guidance overrides: reloads both on start.
+    /// `dir/profiles.json` for named-profile overrides: reloads both on start.
     pub async fn open(dir: &std::path::Path) -> Self {
         let (store, inner) = Store::open(dir);
-        let guidance = crate::guidance::load(dir).await;
+        let profiles = crate::profiles::load(dir).await;
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
-            guidance: Arc::new(RwLock::new(guidance)),
+            profiles: Arc::new(RwLock::new(profiles)),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
     }
 
-    /// Persist the current guidance config to `guidance.json`. No-op
+    /// Persist the current profiles config to `profiles.json`. No-op
     /// without a data dir (e.g. `AppState::new()` in tests).
-    pub async fn save_guidance(&self) {
+    pub async fn save_profiles(&self) {
         if let Some(dir) = &self.data_dir {
-            let config = self.guidance.read().await;
-            crate::guidance::save(dir, &config).await;
+            let config = self.profiles.read().await;
+            crate::profiles::save(dir, &config).await;
         }
     }
 

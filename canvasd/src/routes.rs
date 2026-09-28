@@ -11,8 +11,9 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
-    Card, GuidanceState, OpenRequest, PostRequest, Session, SetGlobalGuidanceRequest,
-    SetRepoGuidanceRequest, StateResponse, UpdateCardRequest, UpsertSessionRequest,
+    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, OpenRequest, PostRequest,
+    ProfilesState, Session, SetProfileTextRequest, StateResponse, UpdateCardRequest,
+    UpsertSessionRequest,
 };
 use futures::stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
@@ -513,18 +514,19 @@ pub async fn get_card_image(
 }
 
 /// `cwd` is optional so the settings page (which has no cwd of its own) can
-/// still read the global override — pass a `repo` query param instead in
-/// that case, since the daemon already knows every repo it's seen from the
+/// still read a kind's profiles — pass a `repo` query param instead in that
+/// case, since the daemon already knows every repo it's seen from the
 /// sessions it's registered, with no `git` call needed.
 #[derive(serde::Deserialize)]
-pub struct GuidanceQueryFull {
+pub struct ProfilesQuery {
     cwd: Option<String>,
     repo: Option<String>,
 }
 
-pub async fn get_guidance(
+pub async fn get_profiles(
     State(state): State<AppState>,
-    Query(params): Query<GuidanceQueryFull>,
+    Path(kind): Path<String>,
+    Query(params): Query<ProfilesQuery>,
 ) -> impl IntoResponse {
     let repo = match params.repo {
         Some(repo) => Some(repo),
@@ -533,53 +535,91 @@ pub async fn get_guidance(
             None => None,
         },
     };
-    let config = state.guidance.read().await;
-    Json(GuidanceState {
-        global: config.global.clone(),
-        repo_override: config.repo_override(repo.as_deref()),
+    let config = state.profiles.read().await;
+    let set = config.kind(&kind);
+    let effective_profile = set.effective_profile(repo.as_deref()).map(str::to_string);
+    Json(ProfilesState {
+        kind,
+        profiles: set.profiles,
+        global: set.global,
+        repos: set.repos,
         repo,
+        effective_profile,
     })
 }
 
-/// Only the settings page (a browser tab, same-origin) sets these — never
-/// the CLI — so both guidance setters get the same-origin check the delete
-/// routes use.
-pub async fn set_global_guidance(
+/// An assignment naming a profile that isn't in that kind's set would
+/// silently fall back to the compiled-in default with no sign why — reject
+/// it instead.
+fn unknown_profile_response(name: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        format!("no profile named {name:?}"),
+    )
+        .into_response()
+}
+
+/// Only the settings page (a browser tab, same-origin) mutates a kind's
+/// profiles or assignments — never the CLI — so every one of these gets the
+/// same-origin check the delete routes use.
+pub async fn set_profile_text(
     State(state): State<AppState>,
+    Path(kind): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<SetGlobalGuidanceRequest>,
+    Json(req): Json<SetProfileTextRequest>,
 ) -> Response {
     if !is_same_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     {
-        let mut config = state.guidance.write().await;
-        config.global = req.text.filter(|t| !t.trim().is_empty());
+        let mut config = state.profiles.write().await;
+        config.set_profile_text(&kind, &req.name, req.text);
     }
-    state.save_guidance().await;
+    state.save_profiles().await;
     StatusCode::OK.into_response()
 }
 
-pub async fn set_repo_guidance(
+pub async fn set_global_profile(
     State(state): State<AppState>,
+    Path(kind): Path<String>,
     headers: HeaderMap,
-    Json(req): Json<SetRepoGuidanceRequest>,
+    Json(req): Json<AssignGlobalProfileRequest>,
 ) -> Response {
     if !is_same_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     {
-        let mut config = state.guidance.write().await;
-        match req.text.filter(|t| !t.trim().is_empty()) {
-            Some(text) => {
-                config.repos.insert(req.repo, text);
-            }
-            None => {
-                config.repos.remove(&req.repo);
+        let mut config = state.profiles.write().await;
+        if let Some(name) = &req.profile {
+            if !config.kind(&kind).profiles.contains_key(name) {
+                return unknown_profile_response(name);
             }
         }
+        config.set_global(&kind, req.profile);
     }
-    state.save_guidance().await;
+    state.save_profiles().await;
+    StatusCode::OK.into_response()
+}
+
+pub async fn set_repo_profile(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AssignRepoProfileRequest>,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    {
+        let mut config = state.profiles.write().await;
+        if let Some(name) = &req.profile {
+            if !config.kind(&kind).profiles.contains_key(name) {
+                return unknown_profile_response(name);
+            }
+        }
+        config.set_repo(&kind, &req.repo, req.profile);
+    }
+    state.save_profiles().await;
     StatusCode::OK.into_response()
 }
 

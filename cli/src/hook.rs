@@ -30,17 +30,17 @@ fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
 /// if it's missing), so a session started while canvasd is unreachable —
 /// e.g. mid-restart during `admin deploy canvas` — still gets its guidance
 /// instead of losing it to a swallowed registration error. The text itself
-/// is whichever override (repo, else global) the settings page has set for
-/// this `cwd`, falling back to the compiled-in default on any fetch failure
-/// or when neither override is set.
+/// is whichever `posting-guidance` profile (repo, else global) the settings
+/// page has assigned for this `cwd`, falling back to the compiled-in default
+/// on any fetch failure or when nothing is assigned.
 pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match event {
         "session-start" => {
             let text = match read_input() {
                 Ok(input) => {
                     let _ = client::upsert_session(&input.session_id, &input.cwd);
-                    client::fetch_guidance(&input.cwd)
-                        .and_then(|g| g.effective().map(str::to_string))
+                    client::fetch_profile(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
+                        .and_then(|p| p.effective_text().map(str::to_string))
                         .unwrap_or_else(|| crate::guidance::TEXT.to_string())
                 }
                 Err(_) => crate::guidance::TEXT.to_string(),

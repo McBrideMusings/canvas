@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Card, GuidanceState, Session, StateResponse};
+use canvas_core::{Card, ProfilesState, Session, StateResponse};
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
@@ -924,27 +924,36 @@ async fn missing_host_is_refused() {
     assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
 }
 
+const KIND: &str = "posting-guidance";
+
 #[tokio::test]
-async fn guidance_defaults_to_no_override() {
+async fn profiles_default_to_no_assignment() {
     let response = app()
-        .oneshot(get("/api/guidance?cwd=/tmp/proj"))
+        .oneshot(get(&format!("/api/profiles/{KIND}?cwd=/tmp/proj")))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let g: GuidanceState = json_body(response).await;
-    assert!(g.global.is_none());
-    assert!(g.repo_override.is_none());
-    assert!(g.effective().is_none());
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.profiles.is_empty());
+    assert!(p.global.is_none());
+    assert!(p.effective_text().is_none());
 }
 
 #[tokio::test]
-async fn global_guidance_override_applies_to_every_repo() {
+async fn global_profile_assignment_applies_to_every_repo() {
     let app = app();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "chatty", "text": "post more, always"}),
+        ))
+        .await
+        .unwrap();
     let response = app
         .clone()
         .oneshot(put(
-            "/api/guidance/global",
-            json!({"text": "post more, always"}),
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "chatty"}),
         ))
         .await
         .unwrap();
@@ -952,79 +961,189 @@ async fn global_guidance_override_applies_to_every_repo() {
 
     let response = app
         .clone()
-        .oneshot(get("/api/guidance?cwd=/tmp/proj"))
+        .oneshot(get(&format!("/api/profiles/{KIND}?cwd=/tmp/proj")))
         .await
         .unwrap();
-    let g: GuidanceState = json_body(response).await;
-    assert_eq!(g.effective(), Some("post more, always"));
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.effective_text(), Some("post more, always"));
 }
 
 #[tokio::test]
-async fn repo_guidance_override_wins_over_global_for_that_repo_only() {
+async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
     let app = app();
     app.clone()
-        .oneshot(put("/api/guidance/global", json!({"text": "global text"})))
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "default", "text": "global text"}),
+        ))
         .await
         .unwrap();
     app.clone()
         .oneshot(put(
-            "/api/guidance/repo",
-            json!({"repo": "acme/canvas", "text": "canvas-specific text"}),
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "canvas", "text": "canvas-specific text"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "default"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/repos"),
+            json!({"repo": "acme/canvas", "profile": "canvas"}),
         ))
         .await
         .unwrap();
 
     let response = app
         .clone()
-        .oneshot(get("/api/guidance?repo=acme/canvas"))
+        .oneshot(get(&format!(
+            "/api/profiles/{KIND}?repo=acme/canvas"
+        )))
         .await
         .unwrap();
-    let g: GuidanceState = json_body(response).await;
-    assert_eq!(g.effective(), Some("canvas-specific text"));
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.effective_text(), Some("canvas-specific text"));
 
     let response = app
         .clone()
-        .oneshot(get("/api/guidance?repo=someone/other-repo"))
+        .oneshot(get(&format!("/api/profiles/{KIND}?repo=someone/other-repo")))
         .await
         .unwrap();
-    let g: GuidanceState = json_body(response).await;
-    assert_eq!(g.effective(), Some("global text"));
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.effective_text(), Some("global text"));
 }
 
 #[tokio::test]
-async fn blank_text_clears_a_guidance_override() {
+async fn blank_text_deletes_a_profile_and_clears_its_assignments() {
     let app = app();
     app.clone()
-        .oneshot(put("/api/guidance/global", json!({"text": "something"})))
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "chatty", "text": "something"}),
+        ))
         .await
         .unwrap();
     app.clone()
-        .oneshot(put("/api/guidance/global", json!({"text": "   "})))
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "chatty"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "chatty", "text": "   "}),
+        ))
         .await
         .unwrap();
 
-    let response = app.clone().oneshot(get("/api/guidance")).await.unwrap();
-    let g: GuidanceState = json_body(response).await;
-    assert!(g.global.is_none());
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.profiles.is_empty());
+    assert!(p.global.is_none());
 }
 
 #[tokio::test]
-async fn guidance_setters_reject_cross_origin_requests() {
+async fn profile_setters_reject_cross_origin_requests() {
     let app = app();
     let response = app
         .clone()
         .oneshot(put_with_origin(
-            "/api/guidance/global",
-            json!({"text": "x"}),
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "chatty", "text": "x"}),
             Some("http://evil.example"),
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let response = app.clone().oneshot(get("/api/guidance")).await.unwrap();
-    let g: GuidanceState = json_body(response).await;
-    assert!(g.global.is_none());
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.profiles.is_empty());
+}
+
+#[tokio::test]
+async fn different_kinds_keep_independent_profile_sets() {
+    let app = app();
+    app.clone()
+        .oneshot(put(
+            "/api/profiles/posting-guidance/definitions",
+            json!({"name": "a", "text": "guidance text"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            "/api/profiles/dashboard-style/definitions",
+            json!({"name": "a", "text": "dark, minimal"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/profiles/posting-guidance"))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.profiles.get("a").map(String::as_str), Some("guidance text"));
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/profiles/dashboard-style"))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.profiles.get("a").map(String::as_str), Some("dark, minimal"));
+}
+
+#[tokio::test]
+async fn assigning_a_profile_name_that_does_not_exist_is_rejected() {
+    let app = app();
+
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "nonexistent"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/repos"),
+            json!({"repo": "acme/canvas", "profile": "nonexistent"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.global.is_none());
+    assert!(p.repos.is_empty());
 }
 
 #[tokio::test]

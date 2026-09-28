@@ -66,42 +66,64 @@ pub struct UpdateCardRequest {
     pub targets: Vec<String>,
 }
 
-/// What `GET /api/guidance?cwd=<cwd>` reports: the stored global override,
-/// the repo `cwd` resolved to (when it has a GitHub `origin`), and that
-/// repo's own override. A caller with neither wants the compiled-in default
-/// it already carries — canvasd never ships one of its own.
+/// What `GET /api/profiles/:kind?cwd=<cwd>` reports for one kind (e.g.
+/// `"posting-guidance"`, `"dashboard-style"`): every named profile defined
+/// for that kind, which one is assigned globally, which repo has its own
+/// assignment, and — resolved for the `cwd`/`repo` the query named — which
+/// profile and text actually apply. A caller with no effective profile wants
+/// its own compiled-in default; canvasd never ships one of its own.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GuidanceState {
+pub struct ProfilesState {
+    pub kind: String,
+    #[serde(default)]
+    pub profiles: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub repos: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repo_override: Option<String>,
+    pub effective_profile: Option<String>,
 }
 
-impl GuidanceState {
-    /// The text a session should actually see: the repo override, else the
-    /// global one, else `None` (fall back to the compiled-in default).
-    pub fn effective(&self) -> Option<&str> {
-        self.repo_override.as_deref().or(self.global.as_deref())
+impl ProfilesState {
+    /// The text a session should actually see: the profile assigned to its
+    /// repo, else the one assigned globally, else `None` (fall back to the
+    /// caller's own compiled-in default).
+    pub fn effective_text(&self) -> Option<&str> {
+        self.effective_profile
+            .as_deref()
+            .and_then(|name| self.profiles.get(name))
+            .map(String::as_str)
     }
 }
 
-/// Body for `PUT /api/guidance/global`. `text: None` (or blank) clears the
-/// override and reverts every session to its own compiled-in default.
+/// Body for `PUT /api/profiles/:kind/definitions`. `text: None` (or blank)
+/// deletes the named profile — clearing it from every global/repo assignment
+/// that pointed at it too, since an assignment naming a profile that no
+/// longer exists would silently fall back to the compiled-in default anyway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetGlobalGuidanceRequest {
+pub struct SetProfileTextRequest {
+    pub name: String,
     pub text: Option<String>,
 }
 
-/// Body for `PUT /api/guidance/repo`. `text: None` (or blank) clears that
-/// repo's override.
+/// Body for `PUT /api/profiles/:kind/global`. `profile: None` clears the
+/// global assignment and reverts every session with no repo override to its
+/// own compiled-in default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetRepoGuidanceRequest {
+pub struct AssignGlobalProfileRequest {
+    pub profile: Option<String>,
+}
+
+/// Body for `PUT /api/profiles/:kind/repos`. `profile: None` clears that
+/// repo's assignment, falling back to the global one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignRepoProfileRequest {
     pub repo: String,
-    pub text: Option<String>,
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

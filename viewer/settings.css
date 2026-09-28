@@ -99,6 +99,33 @@ body {
   color: #888;
 }
 
+.pref-note-error {
+  color: #c0392b;
+}
+
+.daemon-status-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #999;
+  flex: none;
+}
+
+.status-dot[data-state="ok"] {
+  background: #2e9e4f;
+}
+
+.status-dot[data-state="error"] {
+  background: #c0392b;
+}
+
 .seg {
   display: inline-flex;
   padding: 2px;
@@ -269,4 +296,39 @@ body {
 .btn:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
+}
+
+.profile-select {
+  width: 100%;
+  max-width: 280px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.profile-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.profile-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid #d8d5cc;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.profile-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.profile-row-name {
+  font-weight: 600;
+  font-size: 12.5px;
 }

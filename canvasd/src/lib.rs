@@ -1,4 +1,4 @@
-pub mod guidance;
+pub mod profiles;
 pub mod repo;
 pub mod routes;
 pub mod state;
@@ -21,9 +21,16 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/posts", post(routes::post_explicit))
         .route("/api/state", get(routes::get_state))
-        .route("/api/guidance", get(routes::get_guidance))
-        .route("/api/guidance/global", put(routes::set_global_guidance))
-        .route("/api/guidance/repo", put(routes::set_repo_guidance))
+        .route("/api/profiles/:kind", get(routes::get_profiles))
+        .route(
+            "/api/profiles/:kind/definitions",
+            put(routes::set_profile_text),
+        )
+        .route(
+            "/api/profiles/:kind/global",
+            put(routes::set_global_profile),
+        )
+        .route("/api/profiles/:kind/repos", put(routes::set_repo_profile))
         .route(
             "/api/cards/:id",
             delete(routes::delete_card).put(routes::update_card),
