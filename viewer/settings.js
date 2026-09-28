@@ -160,8 +160,7 @@
   const KIND = "posting-guidance";
   const profilesStatusEl = document.getElementById("profiles-status");
   const profilesListEl = document.getElementById("profiles-list");
-  const profileNewNameEl = document.getElementById("profile-new-name");
-  const profileNewAddEl = document.getElementById("profile-new-add");
+  const profileNewEl = document.getElementById("profile-new");
   const profileGlobalSelectEl = document.getElementById("profile-global-select");
   const profileGlobalStatusEl = document.getElementById("profile-global-status");
   const profileRepoInputEl = document.getElementById("profile-repo-input");
@@ -208,6 +207,23 @@
     select.value = selected || "";
   }
 
+  function iconButton(className, title, pathD) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.title = title;
+    btn.setAttribute("aria-label", title);
+    btn.innerHTML =
+      `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ` +
+      `stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+      `<path d="${pathD}" /></svg>`;
+    return btn;
+  }
+
+  const TRASH_PATH =
+    "M4 7h16M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13M10 11v6M14 11v6";
+  const PENCIL_PATH = "M16.5 3.5a1.5 1.5 0 012.12 2.12L7 17.25 3 18l.75-4L15.38 3.38a1.5 1.5 0 011.12-.5z";
+
   function renderProfileRows(profiles) {
     profilesListEl.innerHTML = "";
     const names = Object.keys(profiles).sort();
@@ -227,14 +243,55 @@
       const label = document.createElement("span");
       label.className = "profile-row-name";
       label.textContent = name;
+      const renameBtn = iconButton("icon-btn", "Rename", PENCIL_PATH);
       const preview = document.createElement("span");
       preview.className = "profile-row-preview";
       preview.textContent = profiles[name];
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "btn btn-danger";
-      deleteBtn.textContent = "Delete";
-      head.append(chevron, label, preview, deleteBtn);
+      const deleteBtn = iconButton("icon-btn icon-btn-danger", "Delete", TRASH_PATH);
+      head.append(chevron, label, renameBtn, preview, deleteBtn);
+
+      // Renaming turns the name into an editable field in place, rather than
+      // a dialog — Enter/blur confirms, Escape cancels. A rename is really
+      // create-new + carry the assignment + delete-old (there's no rename
+      // route), since the store keys profiles by name.
+      renameBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "profile-row-rename-input";
+        input.value = name;
+        label.replaceWith(input);
+        input.focus();
+        input.select();
+
+        let settled = false;
+        const finish = async (commit) => {
+          if (settled) return;
+          settled = true;
+          const newName = input.value.trim();
+          if (!commit || !newName || newName === name) {
+            input.replaceWith(label);
+            return;
+          }
+          if (names.includes(newName)) {
+            flashStatus(profilesStatusEl, `"${newName}" already exists`);
+            input.replaceWith(label);
+            return;
+          }
+          try {
+            await renameProfile(name, newName, profiles[name]);
+            await loadProfilesTab(true);
+          } catch (err) {
+            flashStatus(profilesStatusEl, "rename failed");
+            input.replaceWith(label);
+          }
+        };
+        input.addEventListener("keydown", (ke) => {
+          if (ke.key === "Enter") finish(true);
+          else if (ke.key === "Escape") finish(false);
+        });
+        input.addEventListener("blur", () => finish(true));
+      });
 
       const detail = document.createElement("div");
       detail.className = "profile-row-detail";
@@ -257,18 +314,20 @@
       detail.append(textarea, actions);
 
       // The name/preview row toggles the editor open — everywhere except the
-      // Delete button itself, which has its own click handling below.
+      // rename and delete icon buttons, which have their own click handling.
+      const isActionClick = (e) =>
+        deleteBtn.contains(e.target) || renameBtn.contains(e.target) || e.target.tagName === "INPUT";
       const toggle = () => {
         const expanded = head.getAttribute("aria-expanded") === "true";
         head.setAttribute("aria-expanded", String(!expanded));
         detail.hidden = expanded;
       };
       head.addEventListener("click", (e) => {
-        if (e.target === deleteBtn) return;
+        if (isActionClick(e)) return;
         toggle();
       });
       head.addEventListener("keydown", (e) => {
-        if (e.target === deleteBtn) return;
+        if (isActionClick(e)) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           toggle();
@@ -301,11 +360,13 @@
       deleteBtn.addEventListener("click", async () => {
         if (deleteBtn.dataset.armed !== "true") {
           deleteBtn.dataset.armed = "true";
-          deleteBtn.textContent = "Confirm delete?";
+          deleteBtn.title = "Confirm delete?";
+          deleteBtn.setAttribute("aria-label", "Confirm delete?");
           clearTimeout(deleteBtn._disarmTimer);
           deleteBtn._disarmTimer = setTimeout(() => {
             deleteBtn.dataset.armed = "false";
-            deleteBtn.textContent = "Delete";
+            deleteBtn.title = "Delete";
+            deleteBtn.setAttribute("aria-label", "Delete");
           }, 3000);
           return;
         }
@@ -324,6 +385,31 @@
       row.append(head, detail);
       profilesListEl.appendChild(row);
     }
+  }
+
+  // There's no rename route — the store keys a profile by name — so this is
+  // create-new-with-the-old-text, carry any global/repo assignment pointing
+  // at the old name over to the new one, then delete-old. Carrying the
+  // assignment matters: without it a rename would silently fall back to the
+  // built-in default wherever the old name was assigned, the same failure
+  // mode `assigning_a_profile_name_that_does_not_exist_is_rejected` exists
+  // to catch on the backend side.
+  async function renameProfile(oldName, newName, text) {
+    await putJson(`/api/profiles/${KIND}/definitions`, { name: newName, text });
+    const p = await getJson(`/api/profiles/${KIND}`);
+    if (p.global === oldName) {
+      await putJson(`/api/profiles/${KIND}/global`, { profile: newName });
+    }
+    // `repos` is omitted from the response entirely when empty (canvas-core
+    // skip_serializing_if), not sent as `{}` — Object.entries(undefined)
+    // throws, which was silently aborting every rename with no repo
+    // overrides before it ever reached the delete-old-name step.
+    for (const [repo, assigned] of Object.entries(p.repos || {})) {
+      if (assigned === oldName) {
+        await putJson(`/api/profiles/${KIND}/repos`, { repo, profile: newName });
+      }
+    }
+    await putJson(`/api/profiles/${KIND}/definitions`, { name: oldName, text: null });
   }
 
   async function loadKnownRepos() {
@@ -353,29 +439,70 @@
       renderProfileRows(p.profiles);
       fillProfileSelect(profileGlobalSelectEl, names, p.global);
       const repo = profileRepoInputEl.value.trim();
-      fillProfileSelect(profileRepoSelectEl, names, repo ? p.repos[repo] : "");
+      fillProfileSelect(profileRepoSelectEl, names, repo ? (p.repos || {})[repo] : "");
       profileRepoSelectEl.disabled = !repo;
     } catch (e) {
       flashStatus(profilesStatusEl, "could not reach canvasd");
     }
   }
 
-  profileNewAddEl.addEventListener("click", async () => {
-    const name = profileNewNameEl.value.trim();
-    if (!name) return;
-    try {
-      // Blank text is how the definitions route deletes a profile, so a new
-      // one needs a real starter value to actually get created — the user
-      // overwrites it in the textarea that appears right after.
-      await putJson(`/api/profiles/${KIND}/definitions`, {
-        name,
-        text: "(write this profile's text)",
-      });
-      profileNewNameEl.value = "";
-      await loadProfilesTab(true);
-    } catch (e) {
-      flashStatus(profilesStatusEl, "add failed");
+  profileNewEl.addEventListener("click", () => {
+    // Only one draft at a time — clicking + again just refocuses it.
+    const existing = profilesListEl.querySelector(".profile-row-draft");
+    if (existing) {
+      existing.querySelector("input").focus();
+      return;
     }
+
+    const draft = document.createElement("div");
+    draft.className = "profile-row profile-row-draft";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "guidance-repo-input";
+    nameInput.placeholder = "Enter profile name";
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "guidance-text";
+    textarea.rows = 5;
+    textarea.placeholder = "Write this profile's text…";
+
+    const actions = document.createElement("div");
+    actions.className = "guidance-actions";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn";
+    saveBtn.textContent = "Save";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn btn-secondary";
+    cancelBtn.textContent = "Cancel";
+    const status = document.createElement("span");
+    status.className = "guidance-status";
+    actions.append(saveBtn, cancelBtn, status);
+
+    draft.append(nameInput, textarea, actions);
+    profilesListEl.prepend(draft);
+    nameInput.focus();
+
+    cancelBtn.addEventListener("click", () => draft.remove());
+
+    saveBtn.addEventListener("click", async () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        flashStatus(status, "name required");
+        return;
+      }
+      // Blank text is how the definitions route deletes a profile, so an
+      // empty draft needs a real starter value to actually get created.
+      const text = textarea.value.trim() || "(write this profile's text)";
+      try {
+        await putJson(`/api/profiles/${KIND}/definitions`, { name, text });
+        await loadProfilesTab(true);
+      } catch (e) {
+        flashStatus(status, "add failed");
+      }
+    });
   });
 
   profileGlobalSelectEl.addEventListener("change", async () => {
@@ -400,7 +527,7 @@
       const p = await getJson(
         `/api/profiles/${KIND}?repo=${encodeURIComponent(repo)}`
       );
-      fillProfileSelect(profileRepoSelectEl, Object.keys(p.profiles).sort(), p.repos[repo]);
+      fillProfileSelect(profileRepoSelectEl, Object.keys(p.profiles).sort(), (p.repos || {})[repo]);
     } catch (e) {}
   }
 

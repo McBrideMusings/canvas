@@ -144,21 +144,16 @@
     <div class="guidance-block">
       <div class="guidance-head">
         <span class="pref-label-wide">Profiles</span>
-        <span class="guidance-status" id="profiles-status"></span>
+        <span class="guidance-head-end">
+          <span class="guidance-status" id="profiles-status"></span>
+          <button type="button" class="icon-btn" id="profile-new" title="Add profile" aria-label="Add profile">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        </span>
       </div>
-      <p class="pref-note" id="profiles-note">
-        Named blocks of guidance text — click one to edit it.
-      </p>
       <div id="profiles-list"></div>
-      <div class="guidance-actions">
-        <input
-          type="text"
-          id="profile-new-name"
-          class="guidance-repo-input"
-          placeholder="New profile name"
-        />
-        <button type="button" class="btn" id="profile-new-add">Add profile</button>
-      </div>
     </div>
   </main>
   <main class="prefs prefs-wide" id="section-daemon" role="tabpanel" aria-labelledby="tab-daemon" hidden>
