@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Card, Session, StateResponse};
+use canvas_core::{Card, GuidanceState, Session, StateResponse};
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
@@ -29,6 +29,22 @@ fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
+}
+
+fn put(uri: &str, body: serde_json::Value) -> Request<Body> {
+    put_with_origin(uri, body, None)
+}
+
+fn put_with_origin(uri: &str, body: serde_json::Value, origin: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("host", HOST)
+        .header("content-type", "application/json");
+    if let Some(origin) = origin {
+        builder = builder.header("origin", origin);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
 }
 
 fn get(uri: &str) -> Request<Body> {
@@ -265,6 +281,51 @@ async fn post_for_unknown_session_creates_it_named_from_cwd() {
     let session = state.sessions.iter().find(|s| s.id == "s9").unwrap();
     assert_eq!(session.cwd, "/tmp/unregistered-proj");
     assert_eq!(session.name, "unregistered-proj");
+}
+
+#[tokio::test]
+async fn update_card_replaces_content_in_place_and_keeps_its_id_and_session() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>v1</p>"}),
+        ))
+        .await
+        .unwrap();
+    let card: Card = json_body(response).await;
+
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", card.id),
+            json!({"html": "<p>v2</p>", "targets": ["/tmp/x"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated: Card = json_body(response).await;
+    assert_eq!(updated.id, card.id);
+    assert_eq!(updated.session_id, card.session_id);
+    assert_eq!(updated.html, "<p>v2</p>");
+    assert_eq!(updated.targets, vec!["/tmp/x".to_string()]);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert_eq!(state.cards.len(), 1);
+    assert_eq!(state.cards[0].html, "<p>v2</p>");
+}
+
+#[tokio::test]
+async fn update_unknown_card_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(put("/api/cards/does-not-exist", json!({"html": "<p>x</p>"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -798,6 +859,111 @@ async fn missing_host_is_refused() {
         .unwrap();
     let response = app().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+}
+
+#[tokio::test]
+async fn guidance_defaults_to_no_override() {
+    let response = app()
+        .oneshot(get("/api/guidance?cwd=/tmp/proj"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let g: GuidanceState = json_body(response).await;
+    assert!(g.global.is_none());
+    assert!(g.repo_override.is_none());
+    assert!(g.effective().is_none());
+}
+
+#[tokio::test]
+async fn global_guidance_override_applies_to_every_repo() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(put(
+            "/api/guidance/global",
+            json!({"text": "post more, always"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/guidance?cwd=/tmp/proj"))
+        .await
+        .unwrap();
+    let g: GuidanceState = json_body(response).await;
+    assert_eq!(g.effective(), Some("post more, always"));
+}
+
+#[tokio::test]
+async fn repo_guidance_override_wins_over_global_for_that_repo_only() {
+    let app = app();
+    app.clone()
+        .oneshot(put("/api/guidance/global", json!({"text": "global text"})))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            "/api/guidance/repo",
+            json!({"repo": "acme/canvas", "text": "canvas-specific text"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/guidance?repo=acme/canvas"))
+        .await
+        .unwrap();
+    let g: GuidanceState = json_body(response).await;
+    assert_eq!(g.effective(), Some("canvas-specific text"));
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/guidance?repo=someone/other-repo"))
+        .await
+        .unwrap();
+    let g: GuidanceState = json_body(response).await;
+    assert_eq!(g.effective(), Some("global text"));
+}
+
+#[tokio::test]
+async fn blank_text_clears_a_guidance_override() {
+    let app = app();
+    app.clone()
+        .oneshot(put("/api/guidance/global", json!({"text": "something"})))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put("/api/guidance/global", json!({"text": "   "})))
+        .await
+        .unwrap();
+
+    let response = app.clone().oneshot(get("/api/guidance")).await.unwrap();
+    let g: GuidanceState = json_body(response).await;
+    assert!(g.global.is_none());
+}
+
+#[tokio::test]
+async fn guidance_setters_reject_cross_origin_requests() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(put_with_origin(
+            "/api/guidance/global",
+            json!({"text": "x"}),
+            Some("http://evil.example"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/guidance")).await.unwrap();
+    let g: GuidanceState = json_body(response).await;
+    assert!(g.global.is_none());
 }
 
 #[tokio::test]

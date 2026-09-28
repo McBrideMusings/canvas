@@ -54,6 +54,56 @@ pub struct PostRequest {
     pub targets: Vec<String>,
 }
 
+/// Body for `PUT /api/cards/:id` — replaces an existing card's content in
+/// place. No `session_id`/`cwd`: the card already carries those, and the
+/// route 404s if `id` doesn't name an existing card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCardRequest {
+    pub html: String,
+    #[serde(default)]
+    pub images: Vec<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+/// What `GET /api/guidance?cwd=<cwd>` reports: the stored global override,
+/// the repo `cwd` resolved to (when it has a GitHub `origin`), and that
+/// repo's own override. A caller with neither wants the compiled-in default
+/// it already carries — canvasd never ships one of its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidanceState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_override: Option<String>,
+}
+
+impl GuidanceState {
+    /// The text a session should actually see: the repo override, else the
+    /// global one, else `None` (fall back to the compiled-in default).
+    pub fn effective(&self) -> Option<&str> {
+        self.repo_override.as_deref().or(self.global.as_deref())
+    }
+}
+
+/// Body for `PUT /api/guidance/global`. `text: None` (or blank) clears the
+/// override and reverts every session to its own compiled-in default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetGlobalGuidanceRequest {
+    pub text: Option<String>,
+}
+
+/// Body for `PUT /api/guidance/repo`. `text: None` (or blank) clears that
+/// repo's override.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetRepoGuidanceRequest {
+    pub repo: String,
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenRequest {

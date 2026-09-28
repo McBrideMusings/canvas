@@ -171,3 +171,102 @@ body {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
 }
+
+/* Guidance tab: full-width blocks instead of the label/control grid the
+   other tabs use — a prompt doesn't fit a two-column layout. */
+.prefs-wide {
+  gap: 18px;
+}
+
+.guidance-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.guidance-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pref-label-wide {
+  font-weight: 600;
+}
+
+.guidance-status {
+  font-size: 11px;
+  color: #888;
+  min-height: 14px;
+}
+
+.guidance-repo-input {
+  flex: 1;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid #d8d5cc;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 12px;
+}
+
+.guidance-repo-input:disabled {
+  opacity: 0.6;
+}
+
+.guidance-text {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d8d5cc;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.guidance-text:disabled {
+  background: #ece9e0;
+  opacity: 0.7;
+}
+
+.guidance-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  height: 26px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  background: #b7c8f5;
+  cursor: default;
+}
+
+.btn-secondary {
+  background: #ece9e0;
+  color: #444;
+}
+
+.btn-secondary:disabled {
+  background: #ece9e0;
+  color: #aaa;
+}
+
+.btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}

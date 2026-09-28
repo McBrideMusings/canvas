@@ -642,7 +642,7 @@
     if (window.__TAURI__ && window.__TAURI__.core) {
       window.__TAURI__.core.invoke("open_settings").catch(() => {});
     } else {
-      window.open("/settings.html", "canvas-settings", "popup,width=560,height=340");
+      window.open("/settings.html", "canvas-settings", "popup,width=640,height=560");
     }
   });
 

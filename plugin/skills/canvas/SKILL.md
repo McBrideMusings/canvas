@@ -26,6 +26,29 @@ canvas post - <<'EOF'
 EOF
 ```
 
+`--update <card_id>` replaces an existing card's content in place instead of
+creating a new one — the `card_id` a prior `canvas post` reported in its
+JSON output. Use it for a card that represents one ongoing unit of work (a
+long task's status, a running checklist) rather than posting a fresh card
+every time it changes — the viewer updates the card where it sits, in every
+open window, without disturbing its scroll position or any other card. There
+is no separate threading concept: a card you keep updating with `--update`
+*is* the thread.
+
+```
+canvas post - <<'EOF' # first post
+## Task: migrate the schema
+- [ ] step one
+EOF
+# -> {"card_id": "c1", ...}
+
+canvas post --update c1 - <<'EOF' # later, same card
+## Task: migrate the schema
+- [x] step one
+- [ ] step two
+EOF
+```
+
 Input is Markdown, plain text, or HTML — pick with `--format md|text|html`,
 or let it infer from the file's extension (`.md`/`.markdown`, `.txt`,
 `.html`/`.htm`); stdin or an unrecognised extension defaults to Markdown.

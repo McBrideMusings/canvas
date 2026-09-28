@@ -1,10 +1,11 @@
+pub mod guidance;
 pub mod repo;
 pub mod routes;
 pub mod state;
 pub mod store;
 pub mod viewer;
 
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use axum::{middleware, Router};
 use state::AppState;
 
@@ -14,10 +15,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/sessions", post(routes::upsert_session))
         .route("/api/sessions/:id/end", post(routes::end_session))
         .route("/api/sessions/:id", delete(routes::delete_session))
-        .route("/api/sessions/:id/cards", delete(routes::clear_session_cards))
+        .route(
+            "/api/sessions/:id/cards",
+            delete(routes::clear_session_cards),
+        )
         .route("/api/posts", post(routes::post_explicit))
         .route("/api/state", get(routes::get_state))
-        .route("/api/cards/:id", delete(routes::delete_card))
+        .route("/api/guidance", get(routes::get_guidance))
+        .route("/api/guidance/global", put(routes::set_global_guidance))
+        .route("/api/guidance/repo", put(routes::set_repo_guidance))
+        .route(
+            "/api/cards/:id",
+            delete(routes::delete_card).put(routes::update_card),
+        )
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
         .route("/api/open", post(routes::open_path))

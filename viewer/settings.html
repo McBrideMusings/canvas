@@ -41,6 +41,22 @@
       </svg>
       Appearance
     </button>
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-guidance"
+      data-section="guidance"
+      role="tab"
+      aria-selected="false"
+      aria-controls="section-guidance"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 4h11l5 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z" />
+        <path d="M15 4v5h5" />
+        <path d="M7 12h8M7 15.5h5" />
+      </svg>
+      Guidance
+    </button>
   </div>
   <h1 class="settings-title" id="settings-title">General</h1>
   <main class="prefs" id="section-general" role="tabpanel" aria-labelledby="tab-general">
@@ -66,6 +82,58 @@
           <button type="button" class="seg-btn" data-color-by="repo" aria-pressed="false">Repo</button>
           <button type="button" class="seg-btn" data-color-by="session" aria-pressed="false">Session</button>
         </span>
+      </div>
+    </div>
+  </main>
+  <main class="prefs prefs-wide" id="section-guidance" role="tabpanel" aria-labelledby="tab-guidance" hidden>
+    <div class="guidance-block">
+      <div class="guidance-head">
+        <span class="pref-label-wide">Global prompt</span>
+        <span class="guidance-status" id="guidance-global-status"></span>
+      </div>
+      <p class="pref-note">
+        Sent to every session at start, in every repo, unless a repo below
+        overrides it. Leave blank to use Canvas's own built-in guidance.
+      </p>
+      <textarea
+        id="guidance-global"
+        class="guidance-text"
+        rows="6"
+        placeholder="Leave blank to use the built-in default"
+      ></textarea>
+      <div class="guidance-actions">
+        <button type="button" class="btn" id="guidance-global-save">Save</button>
+        <button type="button" class="btn btn-secondary" id="guidance-global-reset">
+          Reset to default
+        </button>
+      </div>
+    </div>
+    <div class="guidance-block">
+      <div class="guidance-head">
+        <span class="pref-label-wide">Repo override</span>
+        <input
+          type="text"
+          id="guidance-repo-input"
+          class="guidance-repo-input"
+          list="guidance-repo-list"
+          placeholder="owner/repo"
+        />
+        <datalist id="guidance-repo-list"></datalist>
+        <span class="guidance-status" id="guidance-repo-status"></span>
+      </div>
+      <p class="pref-note">Overrides the prompt above for sessions in this one repo.</p>
+      <textarea
+        id="guidance-repo"
+        class="guidance-text"
+        rows="6"
+        placeholder="Type a repo above, then leave blank to use the global prompt"
+        disabled
+      ></textarea>
+      <div class="guidance-actions">
+        <button type="button" class="btn" id="guidance-repo-save" disabled>Save</button>
+        <button type="button" class="btn btn-secondary" id="guidance-repo-reset" disabled>
+          Clear override
+        </button>
       </div>
     </div>
   </main>

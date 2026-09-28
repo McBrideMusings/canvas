@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use canvas_core::{Card, PostRequest, UpsertSessionRequest};
+use canvas_core::{Card, GuidanceState, PostRequest, UpdateCardRequest, UpsertSessionRequest};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -65,11 +65,51 @@ pub fn post_explicit(
         targets,
     };
     let result = post_json("/api/posts", body);
+    handle_card_response(result)
+}
 
+/// Replaces an existing card's content in place, keyed by the card id a
+/// prior `canvas post` reported. Same one-line error handling as
+/// `post_explicit` — `--update` is run by an agent that needs to know
+/// whether it worked.
+pub fn update_card(
+    card_id: &str,
+    html: String,
+    images: Vec<String>,
+    targets: Vec<String>,
+) -> Result<Card, String> {
+    let body = UpdateCardRequest {
+        html,
+        images,
+        targets,
+    };
+    let result = agent()
+        .put(&format!("{}/api/cards/{}", base_url(), card_id))
+        .send_json(serde_json::to_value(body).unwrap_or_default());
+    handle_card_response(result)
+}
+
+/// Fetches the guidance override in effect for `cwd`. `None` on any failure
+/// (canvasd unreachable, timeout, bad response) — every caller falls back to
+/// its own compiled-in default in that case, same as every other client.rs
+/// call in a hook's path.
+pub fn fetch_guidance(cwd: &str) -> Option<GuidanceState> {
+    let response = agent()
+        .get(&format!("{}/api/guidance", base_url()))
+        .query("cwd", cwd)
+        .call()
+        .ok()?;
+    response.into_json::<GuidanceState>().ok()
+}
+
+fn handle_card_response(result: Result<ureq::Response, ureq::Error>) -> Result<Card, String> {
     match result {
         Ok(response) => response
             .into_json::<Card>()
             .map_err(|e| format!("canvasd returned malformed JSON: {e}")),
+        Err(ureq::Error::Status(404, _)) => {
+            Err("canvasd returned HTTP 404 (no card with that id)".to_string())
+        }
         Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
         Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
     }
