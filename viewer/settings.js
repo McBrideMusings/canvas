@@ -172,14 +172,28 @@
 
       const head = document.createElement("div");
       head.className = "profile-row-head";
+      head.setAttribute("role", "button");
+      head.setAttribute("tabindex", "0");
+      head.setAttribute("aria-expanded", "false");
+      const chevron = document.createElement("span");
+      chevron.className = "profile-row-chevron";
+      chevron.textContent = "▸";
+      chevron.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
       label.className = "profile-row-name";
       label.textContent = name;
+      const preview = document.createElement("span");
+      preview.className = "profile-row-preview";
+      preview.textContent = profiles[name];
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "btn btn-danger";
       deleteBtn.textContent = "Delete";
-      head.append(label, deleteBtn);
+      head.append(chevron, label, preview, deleteBtn);
+
+      const detail = document.createElement("div");
+      detail.className = "profile-row-detail";
+      detail.hidden = true;
 
       const textarea = document.createElement("textarea");
       textarea.className = "guidance-text";
@@ -195,6 +209,26 @@
       const status = document.createElement("span");
       status.className = "guidance-status";
       actions.append(saveBtn, status);
+      detail.append(textarea, actions);
+
+      // The name/preview row toggles the editor open — everywhere except the
+      // Delete button itself, which has its own click handling below.
+      const toggle = () => {
+        const expanded = head.getAttribute("aria-expanded") === "true";
+        head.setAttribute("aria-expanded", String(!expanded));
+        detail.hidden = expanded;
+      };
+      head.addEventListener("click", (e) => {
+        if (e.target === deleteBtn) return;
+        toggle();
+      });
+      head.addEventListener("keydown", (e) => {
+        if (e.target === deleteBtn) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      });
 
       saveBtn.addEventListener("click", async () => {
         try {
@@ -242,7 +276,7 @@
         }
       });
 
-      row.append(head, textarea, actions);
+      row.append(head, detail);
       profilesListEl.appendChild(row);
     }
   }

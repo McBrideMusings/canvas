@@ -97,38 +97,16 @@
     </div>
   </main>
   <main class="prefs prefs-wide" id="section-profiles" role="tabpanel" aria-labelledby="tab-profiles" hidden>
-    <div class="pref">
-      <span class="pref-label" id="profiles-kind-label">Kind</span>
-      <div class="pref-control">
-        <span class="seg" role="group" aria-labelledby="profiles-kind-label">
-          <button type="button" class="seg-btn" data-kind="posting-guidance" aria-pressed="true">
-            Posting guidance
-          </button>
-          <button type="button" class="seg-btn" data-kind="dashboard-style" aria-pressed="false">
-            Dashboard style
-          </button>
-        </span>
-      </div>
-    </div>
-
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide">Profiles</span>
-        <span class="guidance-status" id="profiles-status"></span>
-      </div>
-      <p class="pref-note" id="profiles-note">
-        Named text blocks for this kind. Assign one globally or per repo below.
-      </p>
-      <div id="profiles-list"></div>
-      <div class="guidance-actions">
-        <input
-          type="text"
-          id="profile-new-name"
-          class="guidance-repo-input"
-          placeholder="New profile name"
-        />
-        <button type="button" class="btn" id="profile-new-add">Add profile</button>
-      </div>
+    <div class="kind-row">
+      <span class="kind-label" id="profiles-kind-label">Kind</span>
+      <span class="seg" role="group" aria-labelledby="profiles-kind-label">
+        <button type="button" class="seg-btn" data-kind="posting-guidance" aria-pressed="true">
+          Posting guidance
+        </button>
+        <button type="button" class="seg-btn" data-kind="dashboard-style" aria-pressed="false">
+          Dashboard style
+        </button>
+      </span>
     </div>
 
     <div class="guidance-block">
@@ -167,6 +145,26 @@
         aria-labelledby="profile-repo-label"
         disabled
       ></select>
+    </div>
+
+    <div class="guidance-block">
+      <div class="guidance-head">
+        <span class="pref-label-wide">Profiles</span>
+        <span class="guidance-status" id="profiles-status"></span>
+      </div>
+      <p class="pref-note" id="profiles-note">
+        Named text blocks for this kind — click one to edit it.
+      </p>
+      <div id="profiles-list"></div>
+      <div class="guidance-actions">
+        <input
+          type="text"
+          id="profile-new-name"
+          class="guidance-repo-input"
+          placeholder="New profile name"
+        />
+        <button type="button" class="btn" id="profile-new-add">Add profile</button>
+      </div>
     </div>
   </main>
   <script src="settings.js"></script>

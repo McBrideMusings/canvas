@@ -328,31 +328,39 @@ body {
   cursor: default;
 }
 
+/* The Kind switcher used to sit in the two-column `.pref` grid the other
+   tabs use (label right-aligned in a half-width column, control in the
+   other half) — on this full-width-block tab that left it floating away
+   from the left margin everything else lines up on. A plain left-aligned
+   row keeps it on the same edge as the sections below it. */
+.kind-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kind-label {
+  font-weight: 600;
+}
+
 /* Rows share a hairline divider rather than each getting its own bordered
    card — a border is the strongest grouping cue there is (grouping.md), and
    spending it on three interchangeable rows left nothing stronger for the
-   sections (Profiles / Global assignment / Repo override) that actually
-   need to read as distinct. */
+   sections (Global assignment / Repo override / Profiles) that actually
+   need to read as distinct. Each profile is collapsed to its name until
+   clicked — the previous always-open textarea per profile was most of what
+   made this tab feel like a wall of text. */
 #profiles-list {
   display: flex;
   flex-direction: column;
 }
 
 .profile-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 0;
   border-bottom: 1px solid #e4e1d8;
-}
-
-.profile-row:first-child {
-  padding-top: 0;
 }
 
 .profile-row:last-child {
   border-bottom: none;
-  padding-bottom: 0;
 }
 
 .profile-row-head {
@@ -360,9 +368,42 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding: 10px 0;
+  cursor: pointer;
 }
 
 .profile-row-name {
   font-weight: 600;
   font-size: 12px;
+}
+
+.profile-row-preview {
+  flex: 1;
+  min-width: 0;
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-row-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.profile-row-detail[hidden] {
+  display: none;
+}
+
+.profile-row-chevron {
+  flex: none;
+  color: #999;
+  transition: transform 150ms;
+}
+
+.profile-row-head[aria-expanded="true"] .profile-row-chevron {
+  transform: rotate(90deg);
 }
