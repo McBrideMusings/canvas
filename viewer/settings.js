@@ -177,7 +177,7 @@
       label.textContent = name;
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
-      deleteBtn.className = "btn btn-secondary";
+      deleteBtn.className = "btn btn-danger";
       deleteBtn.textContent = "Delete";
       head.append(label, deleteBtn);
 
@@ -216,7 +216,21 @@
         }
       });
 
+      // Deleting is permanent (it also clears any global/repo assignment
+      // pointing at this profile) and has no undo, so the first click only
+      // arms the button — a second click within 3s is what actually deletes.
       deleteBtn.addEventListener("click", async () => {
+        if (deleteBtn.dataset.armed !== "true") {
+          deleteBtn.dataset.armed = "true";
+          deleteBtn.textContent = "Confirm delete?";
+          clearTimeout(deleteBtn._disarmTimer);
+          deleteBtn._disarmTimer = setTimeout(() => {
+            deleteBtn.dataset.armed = "false";
+            deleteBtn.textContent = "Delete";
+          }, 3000);
+          return;
+        }
+        clearTimeout(deleteBtn._disarmTimer);
         try {
           await putJson(`/api/profiles/${currentKind}/definitions`, {
             name,

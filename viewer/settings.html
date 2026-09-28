@@ -133,19 +133,23 @@
 
     <div class="guidance-block">
       <div class="guidance-head">
-        <span class="pref-label-wide">Global assignment</span>
+        <span class="pref-label-wide" id="profile-global-label">Global assignment</span>
         <span class="guidance-status" id="profile-global-status"></span>
       </div>
       <p class="pref-note">
         Applies to every repo unless a repo below overrides it. "Built-in
         default" uses Canvas's own compiled-in default instead of a profile.
       </p>
-      <select id="profile-global-select" class="guidance-repo-input profile-select"></select>
+      <select
+        id="profile-global-select"
+        class="guidance-repo-input profile-select"
+        aria-labelledby="profile-global-label"
+      ></select>
     </div>
 
     <div class="guidance-block">
       <div class="guidance-head">
-        <span class="pref-label-wide">Repo override</span>
+        <span class="pref-label-wide" id="profile-repo-label">Repo override</span>
         <input
           type="text"
           id="profile-repo-input"
@@ -157,7 +161,12 @@
         <span class="guidance-status" id="profile-repo-status"></span>
       </div>
       <p class="pref-note">Overrides the global assignment for sessions in this one repo.</p>
-      <select id="profile-repo-select" class="guidance-repo-input profile-select" disabled></select>
+      <select
+        id="profile-repo-select"
+        class="guidance-repo-input profile-select"
+        aria-labelledby="profile-repo-label"
+        disabled
+      ></select>
     </div>
   </main>
   <script src="settings.js"></script>
