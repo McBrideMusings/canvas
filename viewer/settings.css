@@ -328,21 +328,6 @@ body {
   cursor: default;
 }
 
-/* The Kind switcher used to sit in the two-column `.pref` grid the other
-   tabs use (label right-aligned in a half-width column, control in the
-   other half) — on this full-width-block tab that left it floating away
-   from the left margin everything else lines up on. A plain left-aligned
-   row keeps it on the same edge as the sections below it. */
-.kind-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.kind-label {
-  font-weight: 600;
-}
-
 /* Rows share a hairline divider rather than each getting its own bordered
    card — a border is the strongest grouping cue there is (grouping.md), and
    spending it on three interchangeable rows left nothing stronger for the

@@ -11,11 +11,12 @@ beside the terminal all day.
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
   the last 24h reload and the file is rewritten compacted), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
-  `profiles.rs` is the generalized named-profile store any feature can reuse
-  instead of growing its own bespoke override: a "kind" (`posting-guidance`,
-  `dashboard-style`, more in `profiles::KINDS`) owns its own set of named text
-  profiles plus which one is assigned globally and which repos have their own
-  assignment. Persisted as `profiles.json` in `CANVAS_DATA_DIR`, outside the
+  `profiles.rs` is the generalized named-profile store a future feature can
+  reuse instead of growing its own bespoke override: a "kind" owns its own
+  set of named text profiles plus which one is assigned globally and which
+  repos have their own assignment — `posting-guidance` is the only kind that
+  ships today, and there's no kind switcher in Settings until a second one
+  does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`, outside the
   24h `stream.jsonl` retention window; `AppState::open` loads it alongside the
   stream reload, so it's async.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.

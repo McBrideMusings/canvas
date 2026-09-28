@@ -66,12 +66,12 @@ pub struct UpdateCardRequest {
     pub targets: Vec<String>,
 }
 
-/// What `GET /api/profiles/:kind?cwd=<cwd>` reports for one kind (e.g.
-/// `"posting-guidance"`, `"dashboard-style"`): every named profile defined
-/// for that kind, which one is assigned globally, which repo has its own
-/// assignment, and — resolved for the `cwd`/`repo` the query named — which
-/// profile and text actually apply. A caller with no effective profile wants
-/// its own compiled-in default; canvasd never ships one of its own.
+/// What `GET /api/profiles/:kind?cwd=<cwd>` reports for one kind (today,
+/// only `"posting-guidance"` ships): every named profile defined for that
+/// kind, which one is assigned globally, which repo has its own assignment,
+/// and — resolved for the `cwd`/`repo` the query named — which profile and
+/// text actually apply. A caller with no effective profile wants its own
+/// compiled-in default; canvasd never ships one of its own.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesState {

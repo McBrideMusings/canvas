@@ -98,19 +98,18 @@
 
   function openTab(section) {
     selectTab(section);
-    if (section === "profiles") loadProfilesTab();
+    if (section === "guidance") loadProfilesTab();
   }
 
   for (const tab of tabs) {
     tab.addEventListener("click", () => openTab(tab.dataset.section));
   }
 
-  // --- Profiles tab: backed by canvasd, not localStorage. Generalizes what
-  // used to be a single-purpose "guidance" override into named profiles per
-  // kind (e.g. posting-guidance, dashboard-style), each assignable globally
-  // or per repo — read by every session's SessionStart hook and by anything
-  // that wants a preconfigured style on this Mac, not just this browser tab.
-  const kindButtons = Array.from(document.querySelectorAll("[data-kind]"));
+  // --- Guidance tab: backed by canvasd, not localStorage. The store
+  // (canvasd/src/profiles.rs) is generalized to hold more than one "kind" of
+  // named profile, but posting-guidance is the only one that ships — no
+  // kind switcher here until a second kind has a real consumer.
+  const KIND = "posting-guidance";
   const profilesStatusEl = document.getElementById("profiles-status");
   const profilesListEl = document.getElementById("profiles-list");
   const profileNewNameEl = document.getElementById("profile-new-name");
@@ -121,8 +120,6 @@
   const profileRepoListEl = document.getElementById("profile-repo-list");
   const profileRepoSelectEl = document.getElementById("profile-repo-select");
   const profileRepoStatusEl = document.getElementById("profile-repo-status");
-
-  let currentKind = "posting-guidance";
   let knownRepos = [];
 
   async function getJson(url) {
@@ -232,7 +229,7 @@
 
       saveBtn.addEventListener("click", async () => {
         try {
-          await putJson(`/api/profiles/${currentKind}/definitions`, {
+          await putJson(`/api/profiles/${KIND}/definitions`, {
             name,
             text: textarea.value,
           });
@@ -266,7 +263,7 @@
         }
         clearTimeout(deleteBtn._disarmTimer);
         try {
-          await putJson(`/api/profiles/${currentKind}/definitions`, {
+          await putJson(`/api/profiles/${KIND}/definitions`, {
             name,
             text: null,
           });
@@ -297,13 +294,13 @@
   }
 
   async function loadProfilesTab(force) {
-    if (!force && loadProfilesTab._loadedKind === currentKind && knownRepos.length) return;
-    loadProfilesTab._loadedKind = currentKind;
+    if (!force && loadProfilesTab._loaded && knownRepos.length) return;
+    loadProfilesTab._loaded = true;
 
     await loadKnownRepos();
 
     try {
-      const p = await getJson(`/api/profiles/${currentKind}`);
+      const p = await getJson(`/api/profiles/${KIND}`);
       const names = Object.keys(p.profiles).sort();
       renderProfileRows(p.profiles);
       fillProfileSelect(profileGlobalSelectEl, names, p.global);
@@ -315,16 +312,6 @@
     }
   }
 
-  for (const btn of kindButtons) {
-    btn.addEventListener("click", () => {
-      for (const b of kindButtons) b.setAttribute("aria-pressed", String(b === btn));
-      currentKind = btn.dataset.kind;
-      profileRepoInputEl.value = "";
-      profileRepoSelectEl.disabled = true;
-      loadProfilesTab(true);
-    });
-  }
-
   profileNewAddEl.addEventListener("click", async () => {
     const name = profileNewNameEl.value.trim();
     if (!name) return;
@@ -332,7 +319,7 @@
       // Blank text is how the definitions route deletes a profile, so a new
       // one needs a real starter value to actually get created — the user
       // overwrites it in the textarea that appears right after.
-      await putJson(`/api/profiles/${currentKind}/definitions`, {
+      await putJson(`/api/profiles/${KIND}/definitions`, {
         name,
         text: "(write this profile's text)",
       });
@@ -345,7 +332,7 @@
 
   profileGlobalSelectEl.addEventListener("change", async () => {
     try {
-      await putJson(`/api/profiles/${currentKind}/global`, {
+      await putJson(`/api/profiles/${KIND}/global`, {
         profile: profileGlobalSelectEl.value || null,
       });
       flashStatus(profileGlobalStatusEl, "saved");
@@ -363,7 +350,7 @@
     profileRepoSelectEl.disabled = false;
     try {
       const p = await getJson(
-        `/api/profiles/${currentKind}?repo=${encodeURIComponent(repo)}`
+        `/api/profiles/${KIND}?repo=${encodeURIComponent(repo)}`
       );
       fillProfileSelect(profileRepoSelectEl, Object.keys(p.profiles).sort(), p.repos[repo]);
     } catch (e) {}
@@ -376,7 +363,7 @@
     const repo = profileRepoInputEl.value.trim();
     if (!repo) return;
     try {
-      await putJson(`/api/profiles/${currentKind}/repos`, {
+      await putJson(`/api/profiles/${KIND}/repos`, {
         repo,
         profile: profileRepoSelectEl.value || null,
       });

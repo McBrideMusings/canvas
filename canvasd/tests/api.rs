@@ -1077,6 +1077,10 @@ async fn profile_setters_reject_cross_origin_requests() {
     assert!(p.profiles.is_empty());
 }
 
+/// `posting-guidance` is the only kind that ships today, but the store
+/// itself is generalized to hold more than one, so a same-named profile in
+/// a different kind must not collide with it — proven here with an
+/// arbitrary second kind string, not a named feature this repo doesn't have.
 #[tokio::test]
 async fn different_kinds_keep_independent_profile_sets() {
     let app = app();
@@ -1089,8 +1093,8 @@ async fn different_kinds_keep_independent_profile_sets() {
         .unwrap();
     app.clone()
         .oneshot(put(
-            "/api/profiles/dashboard-style/definitions",
-            json!({"name": "a", "text": "dark, minimal"}),
+            "/api/profiles/some-other-kind/definitions",
+            json!({"name": "a", "text": "unrelated text"}),
         ))
         .await
         .unwrap();
@@ -1105,11 +1109,11 @@ async fn different_kinds_keep_independent_profile_sets() {
 
     let response = app
         .clone()
-        .oneshot(get("/api/profiles/dashboard-style"))
+        .oneshot(get("/api/profiles/some-other-kind"))
         .await
         .unwrap();
     let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.profiles.get("a").map(String::as_str), Some("dark, minimal"));
+    assert_eq!(p.profiles.get("a").map(String::as_str), Some("unrelated text"));
 }
 
 #[tokio::test]

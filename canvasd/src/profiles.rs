@@ -1,11 +1,14 @@
-//! Named-profile override storage, generalized so any feature that wants a
-//! "global default, overridable per repo" text setting can reuse it instead
-//! of growing its own bespoke field. A "kind" (`"posting-guidance"`,
-//! `"dashboard-style"`, …) owns its own set of named profiles plus which one
-//! is assigned globally and which repos have their own assignment.
-//! Persisted as one small JSON file — `profiles.json` — separate from
-//! `stream.jsonl`: this isn't a card or a session, and it must not age out
-//! on the 24h retention window those go through.
+//! Named-profile override storage, generalized so a future feature that
+//! wants a "global default, overridable per repo" text setting can reuse it
+//! instead of growing its own bespoke field. A "kind" owns its own set of
+//! named profiles plus which one is assigned globally and which repos have
+//! their own assignment. Persisted as one small JSON file — `profiles.json`
+//! — separate from `stream.jsonl`: this isn't a card or a session, and it
+//! must not age out on the 24h retention window those go through.
+//!
+//! `posting-guidance` is the one kind actually shipped today — the settings
+//! page has no kind switcher and never will until a second kind has a real
+//! consumer; the kind parameter exists so that day doesn't need a rewrite.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,13 +21,6 @@ pub const PROFILES_FILE: &str = "profiles.json";
 /// context — the one feature this abstraction replaces the original
 /// single-purpose `GuidanceConfig` for.
 pub const KIND_POSTING_GUIDANCE: &str = "posting-guidance";
-/// A short description of how a task's progress dashboard card should look
-/// and read — asked for once, then reused by every dashboard a session
-/// builds.
-pub const KIND_DASHBOARD_STYLE: &str = "dashboard-style";
-
-/// Every kind currently known, for the settings page's kind switcher.
-pub const KINDS: &[&str] = &[KIND_POSTING_GUIDANCE, KIND_DASHBOARD_STYLE];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSet {
