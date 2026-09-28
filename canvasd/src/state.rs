@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
+use crate::guidance::GuidanceConfig;
 use crate::store::Store;
 
 pub const CARD_RING_CAPACITY: usize = 500;
@@ -31,7 +32,9 @@ pub struct Inner {
 pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
+    pub guidance: Arc<RwLock<GuidanceConfig>>,
     store: Option<Store>,
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AppState {
@@ -49,19 +52,33 @@ impl AppState {
                 cards: VecDeque::new(),
             })),
             events: tx,
+            guidance: Arc::new(RwLock::new(GuidanceConfig::default())),
             store: None,
+            data_dir: None,
         }
     }
 
-    /// State backed by `dir/stream.jsonl`: reloads the last 24 hours from it
-    /// and appends every later change.
-    pub fn open(dir: &std::path::Path) -> Self {
+    /// State backed by `dir/stream.jsonl` for sessions and cards, and
+    /// `dir/guidance.json` for guidance overrides: reloads both on start.
+    pub async fn open(dir: &std::path::Path) -> Self {
         let (store, inner) = Store::open(dir);
+        let guidance = crate::guidance::load(dir).await;
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
+            guidance: Arc::new(RwLock::new(guidance)),
             store: Some(store),
+            data_dir: Some(dir.to_path_buf()),
+        }
+    }
+
+    /// Persist the current guidance config to `guidance.json`. No-op
+    /// without a data dir (e.g. `AppState::new()` in tests).
+    pub async fn save_guidance(&self) {
+        if let Some(dir) = &self.data_dir {
+            let config = self.guidance.read().await;
+            crate::guidance::save(dir, &config).await;
         }
     }
 
@@ -88,10 +105,7 @@ impl Inner {
             CanvasEvent::SessionUpserted(session) => {
                 self.sessions.insert(session.id.clone(), session);
             }
-            CanvasEvent::CardUpserted(card) => match self.cards.iter().position(|c| c.id == card.id) {
-                Some(idx) => self.cards[idx] = card,
-                None => self.push_card(card),
-            },
+            CanvasEvent::CardUpserted(card) => self.upsert_card(card),
             CanvasEvent::CardRemoved(id) => self.cards.retain(|c| c.id != id),
             CanvasEvent::SessionRemoved(id) => {
                 self.sessions.remove(&id);
@@ -112,6 +126,17 @@ impl Inner {
             cards.iter().any(|c| &c.session_id == id)
                 || fresh(s.ended_at.as_deref().unwrap_or(&s.started_at))
         });
+    }
+
+    /// Insert or replace a card, moving it to the front either way — an
+    /// update is a fresh touch, same as a new post, so it competes for
+    /// ring space on the same terms and doesn't sit wherever it originally
+    /// landed waiting to be evicted despite being current.
+    pub fn upsert_card(&mut self, card: Card) {
+        if let Some(idx) = self.cards.iter().position(|c| c.id == card.id) {
+            self.cards.remove(idx);
+        }
+        self.push_card(card);
     }
 
     /// Push a new card at the front, evicting the oldest if the ring is full.

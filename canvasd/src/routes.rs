@@ -3,14 +3,17 @@ use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::uri::Authority;
 use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use canvas_core::{Card, OpenRequest, PostRequest, Session, StateResponse, UpsertSessionRequest};
+use canvas_core::{
+    Card, GuidanceState, OpenRequest, PostRequest, Session, SetGlobalGuidanceRequest,
+    SetRepoGuidanceRequest, StateResponse, UpdateCardRequest, UpsertSessionRequest,
+};
 use futures::stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
@@ -226,8 +229,8 @@ fn resolve_image_placeholders(html: &str, card_id: &str) -> String {
                     .checked_sub(2)
                     .and_then(|i| rest.as_bytes().get(i))
                     .is_some_and(|&b| b == b'=');
-                let closing_quote_matches = opening_quote
-                    .is_some_and(|q| after.as_bytes().get(digits_len) == Some(&q));
+                let closing_quote_matches =
+                    opening_quote.is_some_and(|q| after.as_bytes().get(digits_len) == Some(&q));
 
                 if digits_len == 0 || !preceded_by_equals || !closing_quote_matches {
                     // Not a genuine `="canvas-image:<n>"` attribute value —
@@ -278,6 +281,37 @@ pub async fn post_explicit(
     };
 
     (StatusCode::OK, Json(card)).into_response()
+}
+
+/// Replaces an existing card's content in place — same id and session, a
+/// fresh `at` (it's the card's last-touched time, same sense `prune_before`
+/// uses it in). 404s rather than creating one: an id an agent doesn't
+/// already hold is never a valid target, unlike `post_explicit`'s session
+/// id, which a restarted daemon may legitimately not know yet.
+pub async fn update_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateCardRequest>,
+) -> Response {
+    let updated = {
+        let mut inner = state.inner.write().await;
+        let Some(idx) = inner.cards.iter().position(|c| c.id == id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let card = Card {
+            id: id.clone(),
+            session_id: inner.cards[idx].session_id.clone(),
+            at: now(),
+            html: resolve_image_placeholders(&req.html, &id),
+            images: req.images,
+            targets: req.targets,
+        };
+        inner.upsert_card(card.clone());
+        state.publish(CanvasEvent::CardUpserted(card.clone()));
+        card
+    };
+
+    (StatusCode::OK, Json(updated)).into_response()
 }
 
 pub async fn delete_card(
@@ -438,6 +472,77 @@ pub async fn get_card_image(
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// `cwd` is optional so the settings page (which has no cwd of its own) can
+/// still read the global override — pass a `repo` query param instead in
+/// that case, since the daemon already knows every repo it's seen from the
+/// sessions it's registered, with no `git` call needed.
+#[derive(serde::Deserialize)]
+pub struct GuidanceQueryFull {
+    cwd: Option<String>,
+    repo: Option<String>,
+}
+
+pub async fn get_guidance(
+    State(state): State<AppState>,
+    Query(params): Query<GuidanceQueryFull>,
+) -> impl IntoResponse {
+    let repo = match params.repo {
+        Some(repo) => Some(repo),
+        None => match params.cwd {
+            Some(cwd) => github_repo(&cwd).await,
+            None => None,
+        },
+    };
+    let config = state.guidance.read().await;
+    Json(GuidanceState {
+        global: config.global.clone(),
+        repo_override: config.repo_override(repo.as_deref()),
+        repo,
+    })
+}
+
+/// Only the settings page (a browser tab, same-origin) sets these — never
+/// the CLI — so both guidance setters get the same-origin check the delete
+/// routes use.
+pub async fn set_global_guidance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SetGlobalGuidanceRequest>,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    {
+        let mut config = state.guidance.write().await;
+        config.global = req.text.filter(|t| !t.trim().is_empty());
+    }
+    state.save_guidance().await;
+    StatusCode::OK.into_response()
+}
+
+pub async fn set_repo_guidance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SetRepoGuidanceRequest>,
+) -> Response {
+    if !is_same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    {
+        let mut config = state.guidance.write().await;
+        match req.text.filter(|t| !t.trim().is_empty()) {
+            Some(text) => {
+                config.repos.insert(req.repo, text);
+            }
+            None => {
+                config.repos.remove(&req.repo);
+            }
+        }
+    }
+    state.save_guidance().await;
+    StatusCode::OK.into_response()
 }
 
 fn is_openable(path: &str) -> bool {

@@ -42,7 +42,7 @@ async fn state_of(app: &axum::Router) -> Value {
 async fn restart(state: AppState, dir: &PathBuf) -> axum::Router {
     state.flush_store();
     drop(state);
-    build_router(AppState::open(dir))
+    build_router(AppState::open(dir).await)
 }
 
 fn line_count(dir: &PathBuf) -> usize {
@@ -52,7 +52,7 @@ fn line_count(dir: &PathBuf) -> usize {
 #[tokio::test]
 async fn restart_rebuilds_the_same_state() {
     let dir = temp_dir();
-    let state = AppState::open(&dir);
+    let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     send(&app, "POST", "/api/sessions", Some(json!({"session_id": "s1", "cwd": "/a/one"}))).await;
     send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>x</p>"}))).await;
@@ -71,7 +71,7 @@ async fn restart_rebuilds_the_same_state() {
 #[tokio::test]
 async fn deletions_stay_deleted_after_restart() {
     let dir = temp_dir();
-    let state = AppState::open(&dir);
+    let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     for s in ["keep", "gone"] {
         send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
@@ -94,7 +94,7 @@ async fn deletions_stay_deleted_after_restart() {
 #[tokio::test]
 async fn cleared_cards_stay_cleared_after_restart() {
     let dir = temp_dir();
-    let state = AppState::open(&dir);
+    let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     for s in ["cleared", "other"] {
         send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
@@ -126,7 +126,7 @@ async fn entries_older_than_24_hours_are_dropped() {
     let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
     std::fs::write(dir.join("stream.jsonl"), body).unwrap();
 
-    let app = build_router(AppState::open(&dir));
+    let app = build_router(AppState::open(&dir).await);
     let state = state_of(&app).await;
     let sessions: Vec<&str> = state["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
     assert_eq!(sessions, ["live"]);
@@ -137,7 +137,7 @@ async fn entries_older_than_24_hours_are_dropped() {
 #[tokio::test]
 async fn torn_last_line_is_skipped() {
     let dir = temp_dir();
-    let state = AppState::open(&dir);
+    let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a", "html": "<p>x</p>"}))).await;
     let before = state_of(&app).await;
@@ -146,6 +146,6 @@ async fn torn_last_line_is_skipped() {
     std::io::Write::write_all(&mut file, br#"{"op":"card_upserted","data":{"id":"torn","sess"#).unwrap();
     drop(state);
 
-    let app = build_router(AppState::open(&dir));
+    let app = build_router(AppState::open(&dir).await);
     assert_eq!(state_of(&app).await, before);
 }

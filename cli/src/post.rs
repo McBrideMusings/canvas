@@ -13,11 +13,13 @@ use crate::format::{self, Format};
 use crate::scan;
 
 /// The parsed `canvas post` arguments: the positional path (or `-`/absent
-/// for stdin) and an explicit `--format md|text|html`, when given.
+/// for stdin), an explicit `--format md|text|html`, and an optional
+/// `--update <card_id>` to replace an existing card instead of creating one.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PostArgs<'a> {
     pub arg: Option<&'a str>,
     pub format_flag: Option<&'a str>,
+    pub update_id: Option<&'a str>,
 }
 
 /// A malformed `canvas post` argument list. Carries no detail: the caller
@@ -33,6 +35,7 @@ pub struct UsageError;
 pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
     let mut arg: Option<&str> = None;
     let mut format_flag: Option<&str> = None;
+    let mut update_id: Option<&str> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -48,6 +51,18 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
                     None => return Err(UsageError),
                 }
             }
+            "--update" => {
+                if update_id.is_some() {
+                    return Err(UsageError);
+                }
+                match rest.get(i + 1) {
+                    Some(v) => {
+                        update_id = Some(v.as_str());
+                        i += 2;
+                    }
+                    None => return Err(UsageError),
+                }
+            }
             other if arg.is_none() => {
                 arg = Some(other);
                 i += 1;
@@ -55,12 +70,22 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
             _ => return Err(UsageError),
         }
     }
-    Ok(PostArgs { arg, format_flag })
+    Ok(PostArgs {
+        arg,
+        format_flag,
+        update_id,
+    })
 }
 
 /// `arg` is the file path (or `-`/absent for stdin); `format_flag` is an
-/// explicit `--format md|text|html`, when given.
-pub fn run(arg: Option<&str>, format_flag: Option<&str>) -> Result<(), String> {
+/// explicit `--format md|text|html`, when given. `update_id`, when given,
+/// replaces that card's content in place instead of creating a new one —
+/// the session/cwd that created it aren't touched.
+pub fn run(
+    arg: Option<&str>,
+    format_flag: Option<&str>,
+    update_id: Option<&str>,
+) -> Result<(), String> {
     let format = resolve_format(arg, format_flag)?;
     let input = read_html(arg, std::io::stdin())?;
     validate(&input)?;
@@ -69,15 +94,20 @@ pub fn run(arg: Option<&str>, format_flag: Option<&str>) -> Result<(), String> {
     for warning in &scanned.warnings {
         eprintln!("{warning}");
     }
-    let session_id = session_id()?;
-    let cwd = current_dir()?;
-    let card = client::post_explicit(
-        &session_id,
-        &cwd,
-        scanned.html,
-        scanned.images,
-        scanned.targets,
-    )?;
+    let card = match update_id {
+        Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
+        None => {
+            let session_id = session_id()?;
+            let cwd = current_dir()?;
+            client::post_explicit(
+                &session_id,
+                &cwd,
+                scanned.html,
+                scanned.images,
+                scanned.targets,
+            )?
+        }
+    };
     println!(
         "{}",
         serde_json::json!({
@@ -198,6 +228,7 @@ mod tests {
             PostArgs {
                 arg: Some("file.md"),
                 format_flag: None,
+                update_id: None,
             }
         );
     }
@@ -211,6 +242,7 @@ mod tests {
             PostArgs {
                 arg: Some("file.md"),
                 format_flag: Some("html"),
+                update_id: None,
             }
         );
     }
@@ -224,6 +256,7 @@ mod tests {
             PostArgs {
                 arg: Some("file.md"),
                 format_flag: Some("html"),
+                update_id: None,
             }
         );
     }
@@ -236,6 +269,30 @@ mod tests {
     #[test]
     fn duplicate_format_is_an_error() {
         assert!(parse_args(&args(&["--format", "md", "--format", "html", "x.md"])).is_err());
+    }
+
+    #[test]
+    fn update_flag_is_parsed() {
+        let rest = args(&["--update", "card-123", "file.md"]);
+        let parsed = parse_args(&rest).unwrap();
+        assert_eq!(
+            parsed,
+            PostArgs {
+                arg: Some("file.md"),
+                format_flag: None,
+                update_id: Some("card-123"),
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_update_is_an_error() {
+        assert!(parse_args(&args(&["--update", "a", "--update", "b", "x.md"])).is_err());
+    }
+
+    #[test]
+    fn update_missing_its_value_is_an_error() {
+        assert!(parse_args(&args(&["file.md", "--update"])).is_err());
     }
 
     #[test]

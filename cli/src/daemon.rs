@@ -13,7 +13,7 @@ async fn serve() {
         .unwrap_or(8229);
 
     let state = match canvasd::store::default_dir() {
-        Some(dir) => AppState::open(&dir),
+        Some(dir) => AppState::open(&dir).await,
         None => {
             eprintln!("canvasd: no data directory; the stream will not persist");
             AppState::new()

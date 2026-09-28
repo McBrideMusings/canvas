@@ -23,19 +23,29 @@ fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
 }
 
 /// Returns the guidance block on every `session-start` (Claude Code adds
-/// SessionStart stdout to the session's context) — `None` for every other
-/// event. Registering the session with canvasd is best-effort: posting only
-/// needs a running canvasd, not a registered session (`canvas post` creates
-/// one server-side if it's missing), so a session started while canvasd is
-/// unreachable — e.g. mid-restart during `admin deploy canvas` — still gets
-/// its guidance instead of losing it to a swallowed registration error.
-pub fn run(event: &str) -> Result<Option<&'static str>, Box<dyn std::error::Error>> {
+/// SessionStart stdout to the session's context, including the times it
+/// re-fires after compaction) — `None` for every other event. Registering
+/// the session with canvasd is best-effort: posting only needs a running
+/// canvasd, not a registered session (`canvas post` creates one server-side
+/// if it's missing), so a session started while canvasd is unreachable —
+/// e.g. mid-restart during `admin deploy canvas` — still gets its guidance
+/// instead of losing it to a swallowed registration error. The text itself
+/// is whichever override (repo, else global) the settings page has set for
+/// this `cwd`, falling back to the compiled-in default on any fetch failure
+/// or when neither override is set.
+pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match event {
         "session-start" => {
-            if let Ok(input) = read_input() {
-                let _ = client::upsert_session(&input.session_id, &input.cwd);
-            }
-            Ok(Some(crate::guidance::TEXT))
+            let text = match read_input() {
+                Ok(input) => {
+                    let _ = client::upsert_session(&input.session_id, &input.cwd);
+                    client::fetch_guidance(&input.cwd)
+                        .and_then(|g| g.effective().map(str::to_string))
+                        .unwrap_or_else(|| crate::guidance::TEXT.to_string())
+                }
+                Err(_) => crate::guidance::TEXT.to_string(),
+            };
+            Ok(Some(text))
         }
         "session-end" => {
             let input = read_input()?;
