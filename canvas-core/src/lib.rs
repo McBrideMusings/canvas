@@ -74,6 +74,9 @@ pub struct UpdateCardRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesState {
     pub kind: String,
+    /// `"additive"` or `"replace"`.
+    #[serde(default)]
+    pub mode: ProfileMode,
     #[serde(default)]
     pub profiles: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,17 +90,34 @@ pub struct ProfilesState {
     pub builtin: Option<String>,
 }
 
-/// What `GET /api/profiles/:kind/effective?cwd=<cwd>` reports: only the
-/// profile that applies for the repo — its own assignment, else the global
-/// one — and that profile's text. Both are `None` when nothing is assigned;
-/// a caller then wants its own compiled-in default, and canvasd never ships
-/// one of its own.
+/// How a repo's assignment combines with the global one: `Additive` sends the
+/// base (global profile, else the built-in default) then the repo's profile;
+/// `Replace` sends only the repo's profile, else the global one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProfileMode {
+    #[default]
+    Additive,
+    Replace,
+}
+
+/// Body for `PUT /api/profiles/:kind/mode`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetProfileModeRequest {
+    pub mode: ProfileMode,
+}
+
+/// What `GET /api/profiles/:kind/effective?cwd=<cwd>` reports: the text a
+/// session in that repo receives (already joined per the kind's mode) and the
+/// ordered sources it came from — profile names, with `"built-in"` for the
+/// compiled-in default. Both are empty when nothing is assigned; a caller then
+/// wants its own compiled-in default, and canvasd never ships one of its own.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveProfile {
     pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }

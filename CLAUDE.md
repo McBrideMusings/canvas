@@ -13,11 +13,17 @@ beside the terminal all day.
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
   reuse instead of growing its own bespoke override: a "kind" owns its own
-  set of named text profiles plus which one is assigned globally and which
-  repos have their own assignment — `posting-guidance` is the only kind that
-  ships today, and there's no kind switcher in Settings until a second one
-  does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`, outside the
-  24h `stream.jsonl` retention window; `AppState::open` loads it alongside the
+  set of named text profiles, which one is assigned globally, which repos
+  have their own assignment, and a mode. In `additive` mode (the default) a
+  session gets the global profile's text (the built-in default when none is
+  assigned) followed by its repo's profile, joined by a blank line and never
+  the same profile twice; in `replace` mode it gets the repo's profile alone,
+  else the global one. `ProfileSet::compose` returns the joined text and the
+  ordered source names (`"built-in"` marks the default). `posting-guidance` is
+  the only kind that ships today, and there's no kind switcher in Settings
+  until a second one does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
+  (the mode is written only when it isn't `additive`), outside the 24h
+  `stream.jsonl` retention window; `AppState::open` loads it alongside the
   stream reload, so it's async.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The windows load `canvas://localhost/`, a custom scheme `bridge.rs` answers by
@@ -88,11 +94,12 @@ beside the terminal all day.
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
   guidance text (`include_str!`), and `skills/canvas/` is the skill agents
   load to know how to post. `canvas hook session-start` and `canvas
-  guidance` call `GET /api/profiles/posting-guidance/effective?cwd=<cwd>` (only the
-  effective profile's text; `GET /api/profiles/:kind` is the settings page's
-  full read) and use, in
-  order, the profile assigned to that repo, the one assigned globally, then
-  the compiled-in default from `guidance.md`. Claude Code runs a cached copy of
+  guidance` call `GET /api/profiles/posting-guidance/effective?cwd=<cwd>`, which
+  returns the text already joined per the kind's mode plus the ordered `profiles`
+  it came from (`GET /api/profiles/:kind` is the settings page's full read; `PUT
+  /api/profiles/:kind/mode` sets the mode), and print that text; when nothing is
+  assigned the response has no text and they print the compiled-in default from
+  `guidance.md`. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a
   local `directory` marketplace (never a git remote — the repo is private) and
   installs or updates `canvas@canvas` from it. `admin deploy canvas` installs

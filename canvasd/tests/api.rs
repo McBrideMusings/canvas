@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Card, EffectiveProfile, ProfilesState, Session, StateResponse};
+use canvas_core::{Card, EffectiveProfile, ProfileMode, ProfilesState, Session, StateResponse};
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
@@ -639,7 +639,6 @@ async fn delete_session_removes_session_and_its_cards_but_not_others() {
     assert!(state.cards.iter().any(|c| c.id == card2.id));
 }
 
-
 #[tokio::test]
 async fn delete_unknown_session_is_404() {
     let app = app();
@@ -726,13 +725,6 @@ async fn clear_cards_on_an_unknown_session_is_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-
-
-
-
-
-
-
 const KIND: &str = "posting-guidance";
 
 #[tokio::test]
@@ -754,7 +746,7 @@ async fn profiles_default_to_no_assignment() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let e: EffectiveProfile = json_body(response).await;
-    assert!(e.profile.is_none());
+    assert!(e.profiles.is_empty());
     assert!(e.text.is_none());
 }
 
@@ -809,7 +801,7 @@ async fn global_profile_assignment_applies_to_every_repo() {
 }
 
 #[tokio::test]
-async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
+async fn replace_mode_repo_assignment_wins_over_global_for_that_repo_only() {
     let app = app();
     app.clone()
         .oneshot(put(
@@ -839,6 +831,15 @@ async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
         ))
         .await
         .unwrap();
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/mode"),
+            json!({"mode": "replace"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 
     let response = app
         .clone()
@@ -849,6 +850,7 @@ async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
         .unwrap();
     let e: EffectiveProfile = json_body(response).await;
     assert_eq!(e.text.as_deref(), Some("canvas-specific text"));
+    assert_eq!(e.profiles, vec!["canvas"]);
 
     let response = app
         .clone()
@@ -933,7 +935,6 @@ async fn blank_text_deletes_a_profile_and_clears_its_assignments() {
     assert!(p.global.is_none());
 }
 
-
 #[tokio::test]
 async fn different_kinds_keep_independent_profile_sets() {
     let app = app();
@@ -1008,7 +1009,6 @@ async fn assigning_a_profile_name_that_does_not_exist_is_rejected() {
     assert!(p.global.is_none());
     assert!(p.repos.is_empty());
 }
-
 
 #[tokio::test]
 async fn card_reply_round_trips() {
@@ -1141,4 +1141,52 @@ async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
 
     // The ring evicted the first card at 501; its reply shouldn't outlive it.
     assert!(state.inner.read().await.replies.is_empty());
+}
+
+/// Additive is the default: a repo's profile is appended to the global one.
+#[tokio::test]
+async fn additive_mode_joins_global_and_repo_text() {
+    let app = app();
+    for (name, text) in [("default", "global text"), ("canvas", "canvas text")] {
+        app.clone()
+            .oneshot(put(
+                &format!("/api/profiles/{KIND}/definitions"),
+                json!({"name": name, "text": text}),
+            ))
+            .await
+            .unwrap();
+    }
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "default"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/repos"),
+            json!({"repo": "o/canvas", "profile": "canvas"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/profiles/{KIND}/effective?repo=o/canvas"
+        )))
+        .await
+        .unwrap();
+    let e: EffectiveProfile = json_body(response).await;
+    assert_eq!(e.text.as_deref(), Some("global text\n\ncanvas text"));
+    assert_eq!(e.profiles, vec!["default", "canvas"]);
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert_eq!(p.mode, ProfileMode::Additive);
 }

@@ -169,7 +169,67 @@
   const profileRepoSelectEl = document.getElementById("profile-repo-select");
   const profileRepoStatusEl = document.getElementById("profile-repo-status");
   let knownRepos = [];
+  const profileModeButtons = document.querySelectorAll("[data-profile-mode]");
+  const profileModeNoteEl = document.getElementById("profile-mode-note");
+  const profileModeStatusEl = document.getElementById("profile-mode-status");
+  const profileRepoEffectiveEl = document.getElementById("profile-repo-effective");
+
   let builtinText = null;
+  let profileMode = "additive";
+
+  const MODE_NOTES = {
+    additive:
+      "A session gets the global profile (or the built-in default when none is assigned), " +
+      "then its repo's profile after it.",
+    replace:
+      "A session gets its repo's profile alone, or the global profile when its repo has none.",
+  };
+
+  function renderMode(mode) {
+    profileMode = mode;
+    for (const btn of profileModeButtons) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.profileMode === mode));
+    }
+    profileModeNoteEl.textContent = MODE_NOTES[mode];
+  }
+
+  // What a session in the typed repo receives, per the daemon's own join.
+  let effectiveSeq = 0;
+  async function renderRepoEffective() {
+    const seq = ++effectiveSeq;
+    const repo = profileRepoInputEl.value.trim();
+    if (!repo) {
+      profileRepoEffectiveEl.textContent = "";
+      return;
+    }
+    try {
+      const e = await getJson(
+        `/api/profiles/${KIND}/effective?repo=${encodeURIComponent(repo)}`
+      );
+      if (seq !== effectiveSeq) return;
+      const sources = e.profiles || [];
+      profileRepoEffectiveEl.textContent = sources.length
+        ? `Sessions in ${repo} receive: ${sources.join(" + ")}`
+        : `Sessions in ${repo} receive: built-in default (nothing assigned)`;
+    } catch (err) {
+      profileRepoEffectiveEl.textContent = "";
+    }
+  }
+
+  for (const btn of profileModeButtons) {
+    btn.addEventListener("click", async () => {
+      const mode = btn.dataset.profileMode;
+      if (mode === profileMode) return;
+      try {
+        await putJson(`/api/profiles/${KIND}/mode`, { mode });
+        renderMode(mode);
+        flashStatus(profileModeStatusEl, "saved");
+        renderRepoEffective();
+      } catch (e) {
+        flashStatus(profileModeStatusEl, "save failed");
+      }
+    });
+  }
 
   async function getJson(url) {
     const response = await fetch(url);
@@ -497,12 +557,14 @@
     try {
       const p = await getJson(`/api/profiles/${KIND}`);
       builtinText = p.builtin || null;
+      renderMode(p.mode || "additive");
       const names = Object.keys(p.profiles).sort();
       renderProfileRows(p.profiles, p.builtin);
       fillProfileSelect(profileGlobalSelectEl, names, p.global);
       const repo = profileRepoInputEl.value.trim();
       fillProfileSelect(profileRepoSelectEl, names, repo ? (p.repos || {})[repo] : "");
       profileRepoSelectEl.disabled = !repo;
+      renderRepoEffective();
     } catch (e) {
       flashStatus(profilesStatusEl, "could not reach canvasd");
     }
@@ -528,10 +590,13 @@
     textarea.className = "guidance-text";
     textarea.rows = 5;
     textarea.placeholder = "Write this profile's text…";
-    // Pre-fill from the built-in default so a new profile starts from real
-    // text to edit rather than a blank box — most profiles are a variation
-    // on the shipped guidance, not something written from nothing.
-    if (builtinText) textarea.value = builtinText;
+    // Replace mode sends a profile alone, so it starts from the built-in
+    // text to edit. Additive mode appends it to the base, so it starts blank.
+    if (profileMode === "replace" && builtinText) {
+      textarea.value = builtinText;
+    } else {
+      textarea.placeholder = "Text added after the global profile (or built-in default) for sessions in a repo that uses this profile…";
+    }
 
     const actions = document.createElement("div");
     actions.className = "guidance-actions";
@@ -561,7 +626,10 @@
       }
       // Blank text is how the definitions route deletes a profile, so an
       // empty draft needs a real starter value to actually get created.
-      const text = textarea.value.trim() || builtinText || "(write this profile's text)";
+      const text =
+        textarea.value.trim() ||
+        (profileMode === "replace" && builtinText) ||
+        "(write this profile's text)";
       try {
         await putJson(`/api/profiles/${KIND}/definitions`, { name, text });
         await loadProfilesTab(true);
@@ -577,6 +645,7 @@
         profile: profileGlobalSelectEl.value || null,
       });
       flashStatus(profileGlobalStatusEl, "saved");
+      renderRepoEffective();
     } catch (e) {
       flashStatus(profileGlobalStatusEl, "save failed");
     }
@@ -586,6 +655,7 @@
     const repo = profileRepoInputEl.value.trim();
     if (!repo) {
       profileRepoSelectEl.disabled = true;
+      renderRepoEffective();
       return;
     }
     profileRepoSelectEl.disabled = false;
@@ -593,6 +663,7 @@
       const p = await getJson(`/api/profiles/${KIND}`);
       fillProfileSelect(profileRepoSelectEl, Object.keys(p.profiles).sort(), (p.repos || {})[repo]);
     } catch (e) {}
+    renderRepoEffective();
   }
 
   profileRepoInputEl.addEventListener("change", loadRepoAssignment);
@@ -607,6 +678,7 @@
         profile: profileRepoSelectEl.value || null,
       });
       flashStatus(profileRepoStatusEl, "saved");
+      renderRepoEffective();
     } catch (e) {
       flashStatus(profileRepoStatusEl, "save failed");
     }

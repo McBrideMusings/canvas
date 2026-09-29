@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use canvas_core::ProfileMode;
 use serde::{Deserialize, Serialize};
 
 pub const PROFILES_FILE: &str = "profiles.json";
@@ -34,8 +35,24 @@ pub fn builtin_default(kind: &str) -> Option<&'static str> {
     (kind == KIND_POSTING_GUIDANCE).then_some(BUILTIN_POSTING_GUIDANCE)
 }
 
+fn is_default_mode(mode: &ProfileMode) -> bool {
+    *mode == ProfileMode::default()
+}
+
+/// Source name reported for the compiled-in default text.
+pub const BUILTIN_SOURCE: &str = "built-in";
+
+/// The text a session receives, and the ordered sources it was joined from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Composed {
+    pub text: String,
+    pub sources: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSet {
+    #[serde(default, skip_serializing_if = "is_default_mode")]
+    pub mode: ProfileMode,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub profiles: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,18 +62,46 @@ pub struct ProfileSet {
 }
 
 impl ProfileSet {
-    /// The name of the profile that applies for `repo`: its own assignment,
-    /// else the global one, else `None`.
-    pub fn effective_profile(&self, repo: Option<&str>) -> Option<&str> {
-        repo.and_then(|r| self.repos.get(r))
-            .or(self.global.as_ref())
+    /// What a session in `repo` receives for `kind`, or `None` when nothing is
+    /// assigned for it (the caller then uses its own compiled-in default).
+    pub fn compose(&self, kind: &str, repo: Option<&str>) -> Option<Composed> {
+        let repo_name = repo
+            .and_then(|r| self.repos.get(r))
             .map(String::as_str)
-    }
-
-    pub fn effective_text(&self, repo: Option<&str>) -> Option<&str> {
-        self.effective_profile(repo)
-            .and_then(|name| self.profiles.get(name))
-            .map(String::as_str)
+            .filter(|n| self.profiles.contains_key(*n));
+        let global_name = self
+            .global
+            .as_deref()
+            .filter(|n| self.profiles.contains_key(*n));
+        let mut parts: Vec<(&str, &str)> = Vec::new();
+        match self.mode {
+            ProfileMode::Replace => {
+                let name = repo_name.or(global_name)?;
+                parts.push((name, &self.profiles[name]));
+            }
+            ProfileMode::Additive => {
+                repo_name.or(global_name)?;
+                match global_name {
+                    Some(name) => parts.push((name, &self.profiles[name])),
+                    None => {
+                        if let Some(text) = builtin_default(kind) {
+                            parts.push((BUILTIN_SOURCE, text));
+                        }
+                    }
+                }
+                if let Some(name) = repo_name.filter(|n| Some(*n) != global_name) {
+                    parts.push((name, &self.profiles[name]));
+                }
+            }
+        }
+        Some(Composed {
+            text: parts
+                .iter()
+                .map(|(_, t)| t.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            sources: parts.iter().map(|(n, _)| n.to_string()).collect(),
+        })
     }
 
     /// Removes a profile and every global/repo assignment pointing at it —
@@ -96,6 +141,10 @@ impl ProfilesConfig {
         }
     }
 
+    pub fn set_mode(&mut self, kind: &str, mode: ProfileMode) {
+        self.kind_mut(kind).mode = mode;
+    }
+
     pub fn set_global(&mut self, kind: &str, profile: Option<String>) {
         self.kind_mut(kind).global = profile;
     }
@@ -128,5 +177,88 @@ pub async fn save(dir: &Path, config: &ProfilesConfig) {
     let tmp = path.with_extension("json.tmp");
     if tokio::fs::write(&tmp, bytes).await.is_ok() {
         let _ = tokio::fs::rename(&tmp, &path).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(mode: ProfileMode, global: Option<&str>, repo: Option<&str>) -> ProfileSet {
+        let mut s = ProfileSet {
+            mode,
+            ..Default::default()
+        };
+        s.profiles.insert("g".into(), "GLOBAL".into());
+        s.profiles.insert("r".into(), "REPO".into());
+        s.global = global.map(str::to_string);
+        if let Some(r) = repo {
+            s.repos.insert("o/x".into(), r.to_string());
+        }
+        s
+    }
+
+    fn compose(s: &ProfileSet) -> Option<Composed> {
+        s.compose(KIND_POSTING_GUIDANCE, Some("o/x"))
+    }
+
+    #[test]
+    fn additive_nothing_assigned_is_none() {
+        assert_eq!(compose(&set(ProfileMode::Additive, None, None)), None);
+    }
+
+    #[test]
+    fn additive_global_only_is_global_text() {
+        let c = compose(&set(ProfileMode::Additive, Some("g"), None)).unwrap();
+        assert_eq!(
+            (c.text.as_str(), c.sources),
+            ("GLOBAL", vec!["g".to_string()])
+        );
+    }
+
+    #[test]
+    fn additive_repo_only_is_builtin_then_repo() {
+        let c = compose(&set(ProfileMode::Additive, None, Some("r"))).unwrap();
+        assert_eq!(c.sources, vec!["built-in", "r"]);
+        assert!(c.text.starts_with(BUILTIN_POSTING_GUIDANCE.trim_end()));
+        assert!(c.text.ends_with("\n\nREPO"));
+    }
+
+    #[test]
+    fn additive_global_and_repo_has_no_builtin() {
+        let c = compose(&set(ProfileMode::Additive, Some("g"), Some("r"))).unwrap();
+        assert_eq!(
+            (c.text.as_str(), c.sources),
+            ("GLOBAL\n\nREPO", vec!["g".to_string(), "r".to_string()])
+        );
+    }
+
+    #[test]
+    fn additive_same_profile_is_sent_once() {
+        let c = compose(&set(ProfileMode::Additive, Some("g"), Some("g"))).unwrap();
+        assert_eq!(
+            (c.text.as_str(), c.sources),
+            ("GLOBAL", vec!["g".to_string()])
+        );
+    }
+
+    #[test]
+    fn replace_repo_wins_else_global_else_none() {
+        let c = compose(&set(ProfileMode::Replace, Some("g"), Some("r"))).unwrap();
+        assert_eq!(
+            (c.text.as_str(), c.sources),
+            ("REPO", vec!["r".to_string()])
+        );
+        let c = compose(&set(ProfileMode::Replace, Some("g"), None)).unwrap();
+        assert_eq!(c.text, "GLOBAL");
+        assert_eq!(compose(&set(ProfileMode::Replace, None, None)), None);
+    }
+
+    #[test]
+    fn default_mode_is_omitted_from_json() {
+        let json = serde_json::to_string(&set(ProfileMode::Additive, None, None)).unwrap();
+        assert!(!json.contains("mode"));
+        let json = serde_json::to_string(&set(ProfileMode::Replace, None, None)).unwrap();
+        assert!(json.contains("\"mode\":\"replace\""));
     }
 }

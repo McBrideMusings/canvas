@@ -30,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/profiles/:kind/definitions",
             put(routes::set_profile_text),
         )
+        .route("/api/profiles/:kind/mode", put(routes::set_profile_mode))
         .route(
             "/api/profiles/:kind/global",
             put(routes::set_global_profile),

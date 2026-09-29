@@ -112,6 +112,18 @@
   <main class="prefs prefs-wide" id="section-guidance" role="tabpanel" aria-labelledby="tab-guidance" hidden>
     <div class="guidance-block">
       <div class="guidance-head">
+        <span class="pref-label-wide" id="profile-mode-label">Repo profiles</span>
+        <span class="seg" role="group" aria-labelledby="profile-mode-label">
+          <button type="button" class="seg-btn" data-profile-mode="additive" aria-pressed="false">Add to global</button>
+          <button type="button" class="seg-btn" data-profile-mode="replace" aria-pressed="false">Replace global</button>
+        </span>
+        <span class="guidance-status" id="profile-mode-status"></span>
+      </div>
+      <p class="pref-note" id="profile-mode-note"></p>
+    </div>
+
+    <div class="guidance-block">
+      <div class="guidance-head">
         <span class="pref-label-wide" id="profile-global-label">Global assignment</span>
         <span class="guidance-status" id="profile-global-status"></span>
       </div>
@@ -146,6 +158,7 @@
         aria-labelledby="profile-repo-label"
         disabled
       ></select>
+      <p class="pref-note" id="profile-repo-effective"></p>
     </div>
 
     <div class="guidance-block">
