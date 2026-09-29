@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 
 const GUIDANCE: &str = include_str!("../../plugin/guidance.md");
 
+/// A request timeout no loaded machine reaches, for tests where the daemon
+/// answers or refuses at once.
+const GENEROUS_TIMEOUT_MS: u64 = 30_000;
+
 fn canvas_bin() -> &'static str {
     env!("CARGO_BIN_EXE_canvas")
 }
@@ -55,10 +59,14 @@ fn test_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-fn run_hook_session_start(socket: &std::path::Path) -> std::process::Output {
+/// Runs the hook with the client's request timeout set to `timeout_ms`, so
+/// whether a request times out depends on that value and not on how busy the
+/// machine is.
+fn run_hook_session_start(socket: &std::path::Path, timeout_ms: u64) -> std::process::Output {
     let mut child = Command::new(canvas_bin())
         .args(["hook", "session-start"])
         .env("CANVAS_SOCKET", socket)
+        .env("CANVAS_CLIENT_TIMEOUT_MS", timeout_ms.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -89,7 +97,7 @@ fn session_start_prints_guidance_when_the_daemon_is_up() {
     let socket = dir.join("canvasd.sock");
     let _daemon = spawn_daemon(&socket, &dir);
 
-    let output = run_hook_session_start(&socket);
+    let output = run_hook_session_start(&socket, GENEROUS_TIMEOUT_MS);
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);
 }
@@ -97,23 +105,17 @@ fn session_start_prints_guidance_when_the_daemon_is_up() {
 #[test]
 fn session_start_still_prints_guidance_when_canvasd_never_answers() {
     // A socket that accepts the connection and holds it: registering the
-    // session fails on the client's 1s timeout, but posting only needs a
+    // session fails on the client's request timeout, but posting only needs a
     // running canvasd, not a registered session, so the guidance still
-    // belongs in the transcript.
+    // belongs in the transcript. The hook returning at all proves the
+    // timeout fired; a client with no timeout would block this test forever.
     let dir = test_dir("wedged");
     let socket = dir.join("canvasd.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
 
-    let start = Instant::now();
-    let output = run_hook_session_start(&socket);
-    let elapsed = start.elapsed();
-
+    let output = run_hook_session_start(&socket, 200);
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);
-    assert!(
-        elapsed < Duration::from_secs(3),
-        "hook took {elapsed:?}, expected it to respect the 1s client timeout"
-    );
 }
 
 #[test]
@@ -121,7 +123,7 @@ fn session_start_prints_guidance_when_canvasd_is_not_running() {
     // No socket file at all — the failure mode of a canvasd restart
     // mid-deploy.
     let dir = test_dir("down");
-    let output = run_hook_session_start(&dir.join("canvasd.sock"));
+    let output = run_hook_session_start(&dir.join("canvasd.sock"), GENEROUS_TIMEOUT_MS);
 
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);

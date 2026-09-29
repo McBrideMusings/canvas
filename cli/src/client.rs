@@ -10,7 +10,17 @@ use canvas_core::{
     ProfilesState, SetProfileTextRequest, UpdateCardRequest, UpsertSessionRequest,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The per-request timeout: 1s, or `CANVAS_CLIENT_TIMEOUT_MS` when set, so a
+/// test can pick a value that doesn't depend on how busy the machine is.
+fn timeout() -> Duration {
+    std::env::var("CANVAS_CLIENT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_TIMEOUT)
+}
 
 /// Why a call to canvasd failed: it answered with a non-2xx status, or the
 /// request never got a complete answer (no socket, refused, timed out).
@@ -53,7 +63,7 @@ fn call_any_status(
     } else {
         &[]
     };
-    unix_http::request(&socket, method, path, headers, &payload, Some(TIMEOUT))
+    unix_http::request(&socket, method, path, headers, &payload, Some(timeout()))
         .map_err(|e| Failure::Transport(e.to_string()))
 }
 
