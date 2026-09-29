@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 canvas-core = { path = "../canvas-core" }
 axum = { version = "0.7", features = ["macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time", "net"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -15,7 +15,9 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 rust-embed = "8"
 mime_guess = "2"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
-tower = { version = "0.4", features = ["util"] }

@@ -3,18 +3,10 @@ use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+mod bridge;
 mod daemon;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
-
-// Same env var the CLI already reads (cli/src/client.rs) to point at a
-// non-default canvasd. The main window's waiting page (app/dist/index.html)
-// invokes this command to learn where to poll and, once canvasd answers,
-// where to navigate itself.
-#[tauri::command]
-fn canvas_url() -> String {
-    std::env::var("CANVAS_URL").unwrap_or_else(|_| "http://127.0.0.1:8229".to_string())
-}
 
 // Where the pin state file lives: a single byte, "1" pinned or "0" unpinned,
 // in the app's data dir. Plain text rather than serde_json — one bool isn't
@@ -40,8 +32,8 @@ fn write_pinned_state(app: &tauri::AppHandle, pinned: bool) -> Result<(), String
 }
 
 // canvasd's own page (viewer/app.js) invokes these two to toggle and read the
-// main window's always-on-top state; see capabilities/remote-pin.json for the
-// origin restriction that lets a remote page reach them at all.
+// main window's always-on-top state; see capabilities/viewer.json for the
+// window and origin scoping that lets the canvas:// page reach them.
 #[tauri::command]
 fn set_pinned(app: tauri::AppHandle, pinned: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
@@ -66,7 +58,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         window.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
-    let url: tauri::Url = format!("{}/settings.html", canvas_url().trim_end_matches('/'))
+    let url: tauri::Url = "canvas://localhost/settings.html"
         .parse()
         .map_err(|e: <tauri::Url as std::str::FromStr>::Err| e.to_string())?;
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(url))
@@ -81,7 +73,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// canvasd's page invokes this from the gear; see capabilities/remote-pin.json.
+// canvasd's page invokes this from the gear; see capabilities/viewer.json.
 // Async so the window is built off the main thread's command dispatch.
 #[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
@@ -113,8 +105,11 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("canvas", |_ctx, request, responder| {
+            // The socket read blocks, so each request gets its own thread.
+            std::thread::spawn(move || responder.respond(bridge::proxy(request)));
+        })
         .invoke_handler(tauri::generate_handler![
-            canvas_url,
             set_pinned,
             get_pinned,
             open_settings,
@@ -128,6 +123,8 @@ pub fn run() {
             } else {
                 None
             };
+            let handle = app.handle().clone();
+            std::thread::spawn(move || bridge::forward_events(handle));
             app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
 
             if cfg!(debug_assertions) {

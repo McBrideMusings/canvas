@@ -16,63 +16,38 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::response::Res
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// The `Host` every real client sends: the CLI, hooks and app all default to
-/// `http://127.0.0.1:8229`. `oneshot` never opens a socket, so nothing else
-/// sets it.
-const HOST: &str = "127.0.0.1:8229";
-
 fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
-        .header("host", HOST)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
 fn put(uri: &str, body: serde_json::Value) -> Request<Body> {
-    put_with_origin(uri, body, None)
-}
-
-fn put_with_origin(uri: &str, body: serde_json::Value, origin: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder()
+    Request::builder()
         .method("PUT")
         .uri(uri)
-        .header("host", HOST)
-        .header("content-type", "application/json");
-    if let Some(origin) = origin {
-        builder = builder.header("origin", origin);
-    }
-    builder.body(Body::from(body.to_string())).unwrap()
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 fn get(uri: &str) -> Request<Body> {
-    get_with_host(uri, HOST)
-}
-
-fn get_with_host(uri: &str, host: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
-        .header("host", host)
         .body(Body::empty())
         .unwrap()
 }
 
-/// `host` simulates the `Host` header a real connection would carry (the
-/// `oneshot` test harness never opens a real socket, so nothing sets it for
-/// us). Every real request to canvasd carries one at whichever of
-/// `127.0.0.1:<port>` or `localhost:<port>` the client connected to.
-fn delete(uri: &str, origin: Option<&str>, host: &str) -> Request<Body> {
-    let mut builder = Request::builder()
+fn delete(uri: &str) -> Request<Body> {
+    Request::builder()
         .method("DELETE")
         .uri(uri)
-        .header("host", host);
-    if let Some(origin) = origin {
-        builder = builder.header("origin", origin);
-    }
-    builder.body(Body::empty()).unwrap()
+        .body(Body::empty())
+        .unwrap()
 }
 
 #[tokio::test]
@@ -622,11 +597,7 @@ async fn delete_card_removes_it_from_state() {
 
     let response = app
         .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card.id),
-            None,
-            "127.0.0.1:8242",
-        ))
+        .oneshot(delete(&format!("/api/cards/{}", card.id)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -641,7 +612,7 @@ async fn delete_unknown_card_is_404() {
     let app = app();
     let response = app
         .clone()
-        .oneshot(delete("/api/cards/nope", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/cards/nope"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -655,7 +626,7 @@ async fn delete_session_removes_session_and_its_cards_but_not_others() {
 
     let response = app
         .clone()
-        .oneshot(delete("/api/sessions/s1", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/sessions/s1"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -668,44 +639,13 @@ async fn delete_session_removes_session_and_its_cards_but_not_others() {
     assert!(state.cards.iter().any(|c| c.id == card2.id));
 }
 
-#[tokio::test]
-async fn delete_session_rejects_cross_origin_and_removes_nothing() {
-    let app = app();
-    seed_card(&app, "s1", "/tmp/proj").await;
-
-    let response = app
-        .clone()
-        .oneshot(delete(
-            "/api/sessions/s1",
-            Some("https://evil.example"),
-            "127.0.0.1:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert!(state.sessions.iter().any(|s| s.id == "s1"));
-
-    let response = app
-        .clone()
-        .oneshot(delete(
-            "/api/sessions/s1",
-            Some("http://127.0.0.1:8242"),
-            "127.0.0.1:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-}
 
 #[tokio::test]
 async fn delete_unknown_session_is_404() {
     let app = app();
     let response = app
         .clone()
-        .oneshot(delete("/api/sessions/nope", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/sessions/nope"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -722,7 +662,7 @@ async fn clear_cards_removes_only_that_sessions_cards_and_keeps_it_registered() 
 
     let response = app
         .clone()
-        .oneshot(delete("/api/sessions/s1/cards", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/sessions/s1/cards"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -768,7 +708,7 @@ async fn clear_cards_on_a_session_with_no_cards_is_204_with_no_events() {
 
     let response = app
         .clone()
-        .oneshot(delete("/api/sessions/s1/cards", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/sessions/s1/cards"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -780,149 +720,18 @@ async fn clear_cards_on_an_unknown_session_is_404() {
     let app = app();
     let response = app
         .clone()
-        .oneshot(delete("/api/sessions/nope/cards", None, "127.0.0.1:8242"))
+        .oneshot(delete("/api/sessions/nope/cards"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn delete_card_rejects_cross_origin_and_removes_nothing() {
-    let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj").await;
 
-    let response = app
-        .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card.id),
-            Some("https://evil.example"),
-            "127.0.0.1:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert!(state.cards.iter().any(|c| c.id == card.id));
-}
 
-#[tokio::test]
-async fn delete_card_rejects_https_origin_even_with_matching_host_and_port() {
-    let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj").await;
 
-    let response = app
-        .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card.id),
-            Some("https://127.0.0.1:8242"),
-            "127.0.0.1:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert!(state.cards.iter().any(|c| c.id == card.id));
-}
 
-#[tokio::test]
-async fn delete_card_accepts_same_origin_127_and_localhost() {
-    let app = app();
-    let card1 = seed_card(&app, "s1", "/tmp/proj").await;
-    let card2 = seed_card(&app, "s2", "/tmp/proj2").await;
-
-    let response = app
-        .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card1.id),
-            Some("http://127.0.0.1:8242"),
-            "127.0.0.1:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app
-        .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card2.id),
-            Some("http://localhost:8242"),
-            "localhost:8242",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert!(state.cards.is_empty());
-}
-
-const REBOUND: &str = "rebind.example.com:8229";
-
-#[tokio::test]
-async fn rebound_host_is_refused_on_every_route() {
-    let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj").await;
-
-    for uri in [
-        "/".to_string(),
-        "/app.js".to_string(),
-        "/api/state".to_string(),
-        "/api/events".to_string(),
-        format!("/api/cards/{}/images/0", card.id),
-    ] {
-        let response = app
-            .clone()
-            .oneshot(get_with_host(&uri, REBOUND))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST, "{uri}");
-    }
-}
-
-#[tokio::test]
-async fn rebound_host_cannot_delete_even_with_matching_origin() {
-    let app = app();
-    let card = seed_card(&app, "s1", "/tmp/proj").await;
-
-    let response = app
-        .clone()
-        .oneshot(delete(
-            &format!("/api/cards/{}", card.id),
-            Some("http://rebind.example.com:8229"),
-            REBOUND,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
-
-    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
-    let state: StateResponse = json_body(response).await;
-    assert!(state.cards.iter().any(|c| c.id == card.id));
-}
-
-#[tokio::test]
-async fn host_with_userinfo_is_refused() {
-    let response = app()
-        .oneshot(get_with_host("/api/state", "evil@127.0.0.1:8229"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
-}
-
-#[tokio::test]
-async fn missing_host_is_refused() {
-    let request = Request::builder()
-        .uri("/api/state")
-        .body(Body::empty())
-        .unwrap();
-    let response = app().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
-}
 
 const KIND: &str = "posting-guidance";
 
@@ -1124,33 +933,7 @@ async fn blank_text_deletes_a_profile_and_clears_its_assignments() {
     assert!(p.global.is_none());
 }
 
-#[tokio::test]
-async fn profile_setters_reject_cross_origin_requests() {
-    let app = app();
-    let response = app
-        .clone()
-        .oneshot(put_with_origin(
-            &format!("/api/profiles/{KIND}/definitions"),
-            json!({"name": "chatty", "text": "x"}),
-            Some("http://evil.example"),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let response = app
-        .clone()
-        .oneshot(get(&format!("/api/profiles/{KIND}")))
-        .await
-        .unwrap();
-    let p: ProfilesState = json_body(response).await;
-    assert!(p.profiles.is_empty());
-}
-
-/// `posting-guidance` is the only kind that ships today, but the store
-/// itself is generalized to hold more than one, so a same-named profile in
-/// a different kind must not collide with it — proven here with an
-/// arbitrary second kind string, not a named feature this repo doesn't have.
 #[tokio::test]
 async fn different_kinds_keep_independent_profile_sets() {
     let app = app();
@@ -1226,21 +1009,6 @@ async fn assigning_a_profile_name_that_does_not_exist_is_rejected() {
     assert!(p.repos.is_empty());
 }
 
-#[tokio::test]
-async fn loopback_hosts_are_served_at_any_port() {
-    for host in [
-        "127.0.0.1:8229",
-        "localhost:8229",
-        "localhost:9001",
-        "localhost",
-    ] {
-        let response = app()
-            .oneshot(get_with_host("/api/state", host))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{host}");
-    }
-}
 
 #[tokio::test]
 async fn card_reply_round_trips() {

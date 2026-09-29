@@ -1,4 +1,4 @@
-Canvas (http://127.0.0.1:8229) is the rich-media side of this chat, and posting to it is a normal part of finishing a turn — not an optional extra you get to if there's time. Chat keeps the answer; Canvas shows what plain Markdown can't render well. Before you consider a turn done, check it against this list, and if it matches, run `canvas post` (HTML, Markdown or text):
+Canvas is the rich-media side of this chat, and posting to it is a normal part of finishing a turn — not an optional extra you get to if there's time. Chat keeps the answer; Canvas shows what plain Markdown can't render well. Before you consider a turn done, check it against this list, and if it matches, run `canvas post` (HTML, Markdown or text):
 - a file you created or changed that the user may want to open
 - a screenshot or other image
 - numbers that read better as a chart or table

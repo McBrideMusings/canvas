@@ -3,10 +3,8 @@ use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, Request, State};
-use axum::http::uri::Authority;
-use axum::http::{header, HeaderMap, StatusCode, Uri};
-use axum::middleware::Next;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -32,78 +30,6 @@ fn cwd_basename(cwd: &str) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.to_string())
-}
-
-/// Router-wide layer: answer only requests addressed to `127.0.0.1` or
-/// `localhost`, at any port.
-///
-/// The daemon binds loopback only, but that alone doesn't keep browser pages
-/// out: a DNS-rebinding page on an attacker's domain re-resolves that domain
-/// to 127.0.0.1, which makes it same-origin with the daemon in the browser's
-/// eyes. Its requests still carry the attacker's name in `Host`, so rejecting
-/// every other `Host` (or none) shuts it out of every route at once.
-pub async fn require_loopback_host(request: Request, next: Next) -> Response {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        // `Authority` accepts and drops userinfo (`evil@127.0.0.1`), which a
-        // `Host` header never legitimately carries.
-        .filter(|v| !v.contains('@'))
-        .and_then(|v| v.parse::<Authority>().ok());
-    match host {
-        Some(authority)
-            if authority.host() == "127.0.0.1"
-                || authority.host().eq_ignore_ascii_case("localhost") =>
-        {
-            next.run(request).await
-        }
-        _ => StatusCode::MISDIRECTED_REQUEST.into_response(),
-    }
-}
-
-/// Same-origin check for the delete endpoints.
-///
-/// A request with no `Origin` header (curl, the CLI) is allowed — only a
-/// browser sets `Origin`, and canvasd never knows the port it's bound to
-/// ahead of time in a way that's easy to plumb into every handler. Instead
-/// of comparing against a configured port, this compares the `Origin`
-/// header's host and port against the request's own `Host` header: the
-/// `Host` header is always whichever of `127.0.0.1` or `localhost` the
-/// client actually connected to, at the actual bound port, so matching the
-/// `Origin`'s port against it is equivalent to checking against the real
-/// port without canvasd ever needing to know it. The `Origin`'s hostname
-/// still has to be `127.0.0.1` or `localhost` — a cross-origin page loaded
-/// from a real domain but proxied so its `Host` header matches must not
-/// pass just because the ports line up.
-fn is_same_origin(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
-        return true;
-    };
-
-    let Ok(origin_uri) = origin.parse::<Uri>() else {
-        return false;
-    };
-    if origin_uri.scheme_str() != Some("http") {
-        return false;
-    }
-    let Some(origin_host) = origin_uri.host() else {
-        return false;
-    };
-    if origin_host != "127.0.0.1" && origin_host != "localhost" {
-        return false;
-    }
-
-    let Some(host_header) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    let host_port = host_header.rsplit_once(':').map(|(_, port)| port);
-    let origin_port = origin_uri.port_u16().map(|p| p.to_string());
-
-    match (origin_port.as_deref(), host_port) {
-        (Some(op), Some(hp)) => op == hp,
-        _ => false,
-    }
 }
 
 pub async fn upsert_session(
@@ -356,12 +282,7 @@ pub async fn get_card_reply(State(state): State<AppState>, Path(id): Path<String
 pub async fn delete_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-
     let removed = {
         let mut inner = state.inner.write().await;
         let before = inner.cards.len();
@@ -385,12 +306,7 @@ pub async fn delete_card(
 pub async fn clear_session_cards(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-
     let mut inner = state.inner.write().await;
     if !inner.sessions.contains_key(&id) {
         return StatusCode::NOT_FOUND.into_response();
@@ -411,12 +327,7 @@ pub async fn clear_session_cards(
 pub async fn delete_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-
     let removed = {
         let mut inner = state.inner.write().await;
         if inner.sessions.remove(&id).is_none() {
@@ -587,12 +498,8 @@ fn unknown_profile_response(name: &str) -> Response {
 pub async fn set_profile_text(
     State(state): State<AppState>,
     Path(kind): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<SetProfileTextRequest>,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     {
         let mut config = state.profiles.write().await;
         config.set_profile_text(&kind, &req.name, req.text);
@@ -604,12 +511,8 @@ pub async fn set_profile_text(
 pub async fn set_global_profile(
     State(state): State<AppState>,
     Path(kind): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<AssignGlobalProfileRequest>,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     {
         let mut config = state.profiles.write().await;
         if let Some(name) = &req.profile {
@@ -626,12 +529,8 @@ pub async fn set_global_profile(
 pub async fn set_repo_profile(
     State(state): State<AppState>,
     Path(kind): Path<String>,
-    headers: HeaderMap,
     Json(req): Json<AssignRepoProfileRequest>,
 ) -> Response {
-    if !is_same_origin(&headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     {
         let mut config = state.profiles.write().await;
         if let Some(name) = &req.profile {

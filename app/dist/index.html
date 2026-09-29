@@ -1,13 +1,12 @@
 <!doctype html>
-<!-- Loaded first by the main window (see tauri.conf.json) instead of
-     pointing straight at canvasd. WKWebView shows a dead error page and
-     never retries if the very first navigation fails, so this page polls
-     canvasd itself and only navigates the window once canvasd answers —
-     covering canvasd not being up yet at login, or being mid-restart
-     during `admin deploy`. -->
+<!-- Served by Canvas.app's canvas:// scheme handler (src/bridge.rs) with a 503
+     whenever canvasd's socket doesn't answer: not started yet at login, or
+     mid-restart during `admin deploy`. WKWebView never retries a failed first
+     navigation, so this page reloads itself until canvasd is back. -->
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="refresh" content="1" />
     <style>
       html, body {
         height: 100%;
@@ -21,44 +20,5 @@
       }
     </style>
   </head>
-  <body>
-    <div id="status">Waiting for canvasd&hellip;</div>
-    <script>
-      const { invoke } = window.__TAURI__.core;
-      const POLL_MS = 500;
-
-      async function poll() {
-        let url;
-        try {
-          url = await invoke("canvas_url");
-        } catch (err) {
-          setTimeout(poll, POLL_MS);
-          return;
-        }
-        try {
-          // no-cors: we only care whether the request reaches a server at
-          // all, not the response body or headers. A hard timeout matters
-          // here too — a listener that accepts the TCP connection but never
-          // answers (a wedged handler mid-restart) would otherwise leave
-          // fetch pending forever and the poll loop never retries.
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 2000);
-          try {
-            await fetch(url, {
-              mode: "no-cors",
-              cache: "no-store",
-              signal: controller.signal,
-            });
-          } finally {
-            clearTimeout(timeout);
-          }
-          window.location.href = url;
-        } catch (err) {
-          setTimeout(poll, POLL_MS);
-        }
-      }
-
-      poll();
-    </script>
-  </body>
+  <body>Waiting for canvasd&hellip;</body>
 </html>

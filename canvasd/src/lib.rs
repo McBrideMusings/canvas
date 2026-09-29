@@ -6,7 +6,7 @@ pub mod store;
 pub mod viewer;
 
 use axum::routing::{any, delete, get, post, put};
-use axum::{middleware, Router};
+use axum::Router;
 use state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
@@ -47,6 +47,33 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/open", post(routes::open_path))
         .route("/*path", any(viewer::asset))
-        .layer(middleware::from_fn(routes::require_loopback_host))
         .with_state(state)
+}
+
+/// Serve `app` on a Unix socket until the process exits. axum's own `serve`
+/// only takes a TCP listener, so this runs the accept loop itself.
+pub async fn serve_unix(listener: tokio::net::UnixListener, app: Router) {
+    use hyper::body::Incoming;
+    use hyper_util::rt::TokioIo;
+    use tower::ServiceExt;
+
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                eprintln!("canvasd: accept failed: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let app = app.clone();
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
+                app.clone().oneshot(request)
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        });
+    }
 }

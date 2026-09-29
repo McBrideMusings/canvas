@@ -1416,7 +1416,7 @@
       "script-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com 'unsafe-inline'; " +
       "style-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com; " +
       "font-src https://fonts.gstatic.com data:; " +
-      "img-src * data:;";
+      "img-src * data: canvas:;";
     // Measure the content wrapper, not documentElement: documentElement's
     // scrollHeight is clamped to at least the iframe's own current viewport
     // height, so once the parent sets a height it can never report a
@@ -2185,28 +2185,34 @@
     bootstrapRender();
   }
 
+  // canvasd has no TCP port, so there is no EventSource here: Canvas.app holds
+  // the one /api/events stream and re-emits it as `canvas-event` (one per
+  // server-sent event) and `canvas-stream` ("open" / "closed").
   function connectEvents() {
-    const source = new EventSource("/api/events");
-    let hasConnectedOnce = false;
+    const { listen } = window.__TAURI__.event;
+    // Listeners are up before the first loadState, so nothing published in
+    // between is lost. Every "open" re-fetches the full snapshot: events
+    // published while the stream was down (including the up-to-1s gap between
+    // this page loading and the app's stream connecting) went to no
+    // subscriber and are gone, so the snapshot is how the view catches up.
+    const handlers = {};
 
-    source.addEventListener("open", () => {
-      bannerEl.hidden = true;
-      // A reconnect (not the first connection) means events published while
-      // this browser was disconnected went to a broadcast channel with no
-      // subscriber and are gone for good — re-fetch the full snapshot so the
-      // view catches back up instead of silently missing them forever.
-      if (hasConnectedOnce) {
-        loadState();
-      }
-      hasConnectedOnce = true;
-    });
+    const registered = [
+      listen("canvas-stream", (event) => {
+        if (event.payload === "closed") {
+          bannerEl.hidden = false;
+        } else {
+          bannerEl.hidden = true;
+          loadState();
+        }
+      }),
+      listen("canvas-event", (event) => {
+        const handle = handlers[event.payload.event];
+        if (handle) handle(JSON.parse(event.payload.data));
+      }),
+    ];
 
-    source.addEventListener("error", () => {
-      bannerEl.hidden = false;
-    });
-
-    source.addEventListener("session-upserted", (event) => {
-      const session = JSON.parse(event.data);
+    handlers["session-upserted"] = (session) => {
       const before = sessions.get(session.id);
       sessions.set(session.id, session);
       sessionColour(session);
@@ -2220,23 +2226,16 @@
           showSession(session.id)
         );
       }
-    });
+    };
 
-    source.addEventListener("card-upserted", (event) => {
-      const card = JSON.parse(event.data);
-      upsertCard(card);
-    });
+    handlers["card-upserted"] = (card) => upsertCard(card);
 
-    source.addEventListener("card-removed", (event) => {
-      const { id } = JSON.parse(event.data);
-      removeCard(id);
-    });
+    handlers["card-removed"] = ({ id }) => removeCard(id);
 
-    source.addEventListener("session-removed", (event) => {
-      const { id } = JSON.parse(event.data);
-      removeSession(id);
-    });
+    handlers["session-removed"] = ({ id }) => removeSession(id);
+
+    return Promise.all(registered);
   }
 
-  loadState().then(connectEvents);
+  connectEvents().then(loadState);
 })();

@@ -20,9 +20,16 @@ beside the terminal all day.
   24h `stream.jsonl` retention window; `AppState::open` loads it alongside the
   stream reload, so it's async.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
-  The window loads a local waiting page (`app/dist/index.html`) that polls
-  the daemon and navigates to it once it answers, so a not-yet-started or
-  restarting daemon never leaves the window on a dead error page. Its own
+  The windows load `canvas://localhost/`, a custom scheme `bridge.rs` answers by
+  proxying each request to canvasd's Unix socket (a request that can't reach it
+  gets a 503 carrying `app/dist/index.html`, a page that reloads itself, so a
+  not-yet-started or restarting daemon never leaves the window on a dead error
+  page). A custom scheme response is one whole body, so it can't carry SSE:
+  `bridge::forward_events` holds the one `/api/events` stream and re-emits it
+  as `canvas-event` and `canvas-stream` Tauri events, which the viewer listens
+  for. Tauri counts a custom scheme as a local URL, so
+  `capabilities/viewer.json` is `local: true`; a card's sandboxed iframe still
+  gets no `window.__TAURI__` and can't invoke any command (probed in the app). Its own
   Cargo workspace, outside the root one. It holds no persisted state;
   quitting it loses nothing. `daemon.rs` makes the app self-installing: on a
   release build's `setup()`, `ensure_daemon` copies the `canvas` binary
@@ -33,14 +40,18 @@ beside the terminal all day.
   debug build skips this — `admin dev canvas` runs the daemon separately.
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
-- `viewer/` — plain `index.html` + JS, no build step. A toolbar (search field,
+- `viewer/` — plain `index.html` + JS, no build step, loaded only by
+  Canvas.app (there is no browser-reachable port). A toolbar (search field,
   row of session chips) below the title bar, stream of cards, one per post.
   Session chips and the drawer's per-row eye toggle add/remove sessions from a
   multi-select visible set (everything visible by default) rather than
   picking one session at a time.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
-  `canvasd`'s router and serves it on `127.0.0.1:8229` (`CANVAS_PORT` to
-  override), and runs as a launchd agent (`com.piercemakes.canvasd`).
+  `canvasd`'s router and serves it on a Unix socket, `canvasd.sock` in
+  `CANVAS_DATA_DIR` (`CANVAS_SOCKET` to override), mode 0600 — there is no TCP
+  port. The CLI, hooks and app reach it through `canvas-core`'s `unix_http`
+  client; `canvas daemon` refuses to start when something already answers on
+  the socket. It runs as a launchd agent (`com.piercemakes.canvasd`).
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
   stdin and registers or ends a session; `session-start` always prints the
   guidance block to stdout (Claude Code adds SessionStart stdout to the
@@ -94,10 +105,10 @@ beside the terminal all day.
   (canvas-17z), but only by posting it up to the viewer, never by fetching
   anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
-- canvasd answers only requests whose `Host` is `127.0.0.1` or `localhost` (any
-  port); anything else, or no `Host`, gets 421. That router-wide layer is the
-  DNS-rebinding defence: add routes inside `build_router`, never around it, and
-  point clients at one of those two names.
+- canvasd has no TCP listener, so nothing reaches it except a process that can
+  open its 0600 socket, and its routes carry no Host or Origin checks. Never add
+  a TCP or other network listener to it; a client that needs it goes through the
+  socket (Canvas.app's `canvas://` proxy is the only bridge for a webview).
 
 ## Commands
 

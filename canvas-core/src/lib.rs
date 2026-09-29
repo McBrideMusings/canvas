@@ -141,3 +141,6 @@ pub struct StateResponse {
     /// Newest first.
     pub cards: Vec<Card>,
 }
+
+pub mod paths;
+pub mod unix_http;

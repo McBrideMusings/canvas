@@ -4,51 +4,84 @@
 
 use std::time::Duration;
 
+use canvas_core::unix_http::{self, Response};
 use canvas_core::{Card, EffectiveProfile, PostRequest, UpdateCardRequest, UpsertSessionRequest};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 
-fn base_url() -> String {
-    std::env::var("CANVAS_URL").unwrap_or_else(|_| "http://127.0.0.1:8229".to_string())
+/// Why a call to canvasd failed: it answered with a non-2xx status, or the
+/// request never got a complete answer (no socket, refused, timed out).
+#[derive(Debug)]
+enum Failure {
+    Status(u16),
+    Transport(String),
 }
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(TIMEOUT)
-        .timeout(TIMEOUT)
-        .build()
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Status(code) => write!(f, "canvasd returned HTTP {code}"),
+            Failure::Transport(e) => write!(f, "could not reach canvasd: {e}"),
+        }
+    }
 }
 
-/// Serialize `body` and POST it to `path` under `base_url()`. A body that
-/// fails to serialize still gets sent (as `null`) rather than panicking or
-/// short-circuiting the request. The raw `ureq::Result` is returned unchanged
-/// so each caller keeps its own handling: the hook calls just propagate it,
-/// while `post_explicit` inspects it to build its one-line error messages.
-fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<ureq::Response, ureq::Error> {
-    agent()
-        .post(&format!("{}{}", base_url(), path))
-        .send_json(serde_json::to_value(body).unwrap_or_default())
+impl std::error::Error for Failure {}
+
+fn call(method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Response, Failure> {
+    let socket = canvas_core::paths::socket_path()
+        .ok_or_else(|| Failure::Transport("no HOME to place the socket".to_string()))?;
+    let payload = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
+    let headers: &[(&str, &str)] = if body.is_some() {
+        &[("Content-Type", "application/json")]
+    } else {
+        &[]
+    };
+    let response = unix_http::request(&socket, method, path, headers, &payload, Some(TIMEOUT))
+        .map_err(|e| Failure::Transport(e.to_string()))?;
+    if (200..300).contains(&response.status) {
+        Ok(response)
+    } else {
+        Err(Failure::Status(response.status))
+    }
 }
 
-pub fn upsert_session(session_id: &str, cwd: &str) -> Result<(), ureq::Error> {
+/// Serialize `body` and POST it to `path`. A body that fails to serialize
+/// still gets sent (as `null`) rather than panicking or short-circuiting the
+/// request. The raw result is returned unchanged so each caller keeps its own
+/// handling: the hook calls just propagate it, while `post_explicit` maps it
+/// to its one-line error messages.
+fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<Response, Failure> {
+    call("POST", path, Some(&serde_json::to_value(body).unwrap_or_default()))
+}
+
+fn into_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
+    serde_json::from_slice(&response.body)
+        .map_err(|e| format!("canvasd returned malformed JSON: {e}"))
+}
+
+pub fn upsert_session(session_id: &str, cwd: &str) -> Result<(), String> {
     let body = UpsertSessionRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
     };
-    post_json("/api/sessions", body)?;
+    post_json("/api/sessions", body).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn end_session(session_id: &str) -> Result<(), ureq::Error> {
-    agent()
-        .post(&format!("{}/api/sessions/{}/end", base_url(), session_id))
-        .send_json(serde_json::json!({}))?;
+pub fn end_session(session_id: &str) -> Result<(), String> {
+    call(
+        "POST",
+        &format!("/api/sessions/{session_id}/end"),
+        Some(&serde_json::json!({})),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Unlike the hook calls above, `canvas post` is meant to be seen by the
 /// agent that ran it, so this returns a one-line, human-readable message on
-/// every failure instead of the raw `ureq::Error`, and returns the card the
+/// every failure instead of the raw `Failure`, and returns the card the
 /// daemon created on success so the caller can report its id.
 pub fn post_explicit(
     session_id: &str,
@@ -83,9 +116,11 @@ pub fn update_card(
         images,
         targets,
     };
-    let result = agent()
-        .put(&format!("{}/api/cards/{}", base_url(), card_id))
-        .send_json(serde_json::to_value(body).unwrap_or_default());
+    let result = call(
+        "PUT",
+        &format!("/api/cards/{card_id}"),
+        Some(&serde_json::to_value(body).unwrap_or_default()),
+    );
     handle_card_response(result)
 }
 
@@ -94,12 +129,16 @@ pub fn update_card(
 /// is assigned — every caller falls back to its own compiled-in default in
 /// both cases, same as every other client.rs call in a hook's path.
 pub fn fetch_profile_text(kind: &str, cwd: &str) -> Option<String> {
-    let response = agent()
-        .get(&format!("{}/api/profiles/{}/effective", base_url(), kind))
-        .query("cwd", cwd)
-        .call()
-        .ok()?;
-    response.into_json::<EffectiveProfile>().ok()?.text
+    let response = call(
+        "GET",
+        &format!(
+            "/api/profiles/{kind}/effective?cwd={}",
+            percent_encode(cwd)
+        ),
+        None,
+    )
+    .ok()?;
+    into_json::<EffectiveProfile>(response).ok()?.text
 }
 
 /// `canvas wait`: polls `GET /api/cards/:id/reply` every 250ms until a reply
@@ -125,29 +164,33 @@ pub fn wait_for_reply(card_id: &str, timeout: Duration) -> Result<serde_json::Va
 /// `Ok(None)` means the card hasn't been answered yet — not an error, since
 /// checking back later without blocking is the whole point of this call.
 pub fn get_reply(card_id: &str) -> Result<Option<serde_json::Value>, String> {
-    let result = agent()
-        .get(&format!("{}/api/cards/{}/reply", base_url(), card_id))
-        .call();
-    match result {
-        Ok(response) => response
-            .into_json::<serde_json::Value>()
-            .map(Some)
-            .map_err(|e| format!("canvasd returned malformed JSON: {e}")),
-        Err(ureq::Error::Status(404, _)) => Ok(None),
-        Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
-        Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
+    match call("GET", &format!("/api/cards/{card_id}/reply"), None) {
+        Ok(response) => into_json(response).map(Some),
+        Err(Failure::Status(404)) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 
-fn handle_card_response(result: Result<ureq::Response, ureq::Error>) -> Result<Card, String> {
+fn handle_card_response(result: Result<Response, Failure>) -> Result<Card, String> {
     match result {
-        Ok(response) => response
-            .into_json::<Card>()
-            .map_err(|e| format!("canvasd returned malformed JSON: {e}")),
-        Err(ureq::Error::Status(404, _)) => {
+        Ok(response) => into_json(response),
+        Err(Failure::Status(404)) => {
             Err("canvasd returned HTTP 404 (no card with that id)".to_string())
         }
-        Err(ureq::Error::Status(code, _)) => Err(format!("canvasd returned HTTP {code}")),
-        Err(ureq::Error::Transport(t)) => Err(format!("could not reach canvasd: {t}")),
+        Err(e) => Err(e.to_string()),
     }
+}
+
+/// Percent-encodes everything but unreserved characters, for a query value.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }

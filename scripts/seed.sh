@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# admin seed <port> — load a fixed fixture of sessions and posts into the
-# canvas daemon listening on 127.0.0.1:<port>. The live daemon's port
-# ($CANVAS_PORT, default 8229) is refused, since the clear step below would
-# delete that stream's seed-* sessions.
+# admin seed <socket> — load a fixed fixture of sessions and posts into the
+# canvas daemon listening on the Unix socket at <socket>. The live daemon's
+# socket (canvasd.sock in ~/Library/Application Support/canvas) is refused, since the clear step below would delete that
+# stream's seed-* sessions.
 #
 # It clears first: every fixture session (ids seed-*) is deleted, taking its
 # cards with it, then recreated, so a second run leaves the same sessions and
@@ -15,23 +15,21 @@
 # session's repo.
 set -euo pipefail
 
-port="${1:?usage: admin seed <port>}"
+socket="${1:?usage: admin seed <socket>}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-base="http://127.0.0.1:${port}"
 root=/tmp/canvas-seed
 ids=(seed-storefront seed-billing seed-docs seed-scratch seed-legacy)
 
-case "${port}" in
-  ''|*[!0-9]*) echo "seed: port must be a number, got '${port}'" >&2; exit 1 ;;
-esac
-live=$((10#${CANVAS_PORT:-8229}))
-if [ $((10#${port})) -eq "${live}" ]; then
-  echo "seed: refusing port ${live}, the live daemon's port; seed a spare port" >&2
+live="${HOME}/Library/Application Support/canvas/canvasd.sock"
+if [ "${socket}" = "${live}" ]; then
+  echo "seed: refusing ${live}, the live daemon's socket; seed a spare daemon" >&2
   exit 1
 fi
 
-if ! curl -s -o /dev/null --max-time 2 "${base}/api/state"; then
-  echo "seed: no canvas daemon answering on ${base}" >&2
+api() { curl -s --unix-socket "${socket}" "$@"; }
+
+if ! api -o /dev/null --max-time 2 "http://localhost/api/state"; then
+  echo "seed: no canvas daemon answering on ${socket}" >&2
   exit 1
 fi
 
@@ -39,7 +37,7 @@ cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
 canvas="${repo_root}/target/debug/canvas"
 
 for id in "${ids[@]}"; do
-  curl -s -o /dev/null -X DELETE "${base}/api/sessions/${id}"
+  api -o /dev/null -X DELETE "http://localhost/api/sessions/${id}"
 done
 
 rm -rf "${root}"
@@ -80,7 +78,7 @@ PY
 
 # post <session id> <dir> <format> — the post body comes on stdin.
 post() {
-  (cd "${root}/$2" && CANVAS_URL="${base}" CLAUDE_CODE_SESSION_ID="$1" "${canvas}" post - --format "$3" > /dev/null)
+  (cd "${root}/$2" && CANVAS_SOCKET="${socket}" CLAUDE_CODE_SESSION_ID="$1" "${canvas}" post - --format "$3" > /dev/null)
 }
 
 post seed-legacy legacy-cli md <<'MD'
@@ -88,7 +86,7 @@ post seed-legacy legacy-cli md <<'MD'
 
 The 2.x line is frozen. Last tag cut: `v2.9.4`.
 MD
-curl -s -o /dev/null -X POST "${base}/api/sessions/seed-legacy/end"
+api -o /dev/null -X POST "http://localhost/api/sessions/seed-legacy/end"
 
 post seed-scratch scratch text <<'TXT'
 Scratch notes — no repo here.
@@ -160,4 +158,4 @@ The primary button now uses the accent token:
 ```
 MD
 
-echo "seed: ${#ids[@]} sessions, 7 posts on ${base} (fixture dirs in ${root})"
+echo "seed: ${#ids[@]} sessions, 7 posts on ${socket} (fixture dirs in ${root})"

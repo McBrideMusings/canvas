@@ -7,12 +7,20 @@ pub fn run() {
 }
 
 async fn serve() {
-    let port: u16 = std::env::var("CANVAS_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8229);
+    let socket = canvas_core::paths::socket_path().expect("no HOME: cannot place the canvasd socket");
+    if let Some(dir) = socket.parent() {
+        std::fs::create_dir_all(dir).expect("failed to create the canvasd socket directory");
+    }
+    // A socket file outlives the process that made it, so a leftover file
+    // means nothing until something answers on it. Only replace one nobody
+    // answers, or a second daemon would steal the first one's clients.
+    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        eprintln!("canvasd: already running on {}", socket.display());
+        std::process::exit(1);
+    }
+    let _ = std::fs::remove_file(&socket);
 
-    let state = match canvasd::store::default_dir() {
+    let state = match canvas_core::paths::data_dir() {
         Some(dir) => AppState::open(&dir).await,
         None => {
             eprintln!("canvasd: no data directory; the stream will not persist");
@@ -21,13 +29,12 @@ async fn serve() {
     };
     let app = build_router(state);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    println!("canvasd listening on http://{addr}");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind canvasd port");
-    axum::serve(listener, app)
-        .await
-        .expect("canvasd server error");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("failed to bind the canvasd socket");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+            .expect("failed to restrict the canvasd socket to its owner");
+    }
+    println!("canvasd listening on {}", socket.display());
+    canvasd::serve_unix(listener, app).await;
 }

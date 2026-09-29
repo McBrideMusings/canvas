@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "viewer",
+  "description": "Grants canvasd's own pages, served through the canvas:// scheme into the main and settings windows, access to set_pinned, get_pinned, open_settings, daemon_status, listening for the canvas-event and canvas-stream events the daemon bridge emits, and starting a window drag from a title bar. Tauri treats a custom scheme as local, so local is true; nothing else core:default or any other capability would imply is granted.",
+  "windows": ["main", "settings"],
+  "local": true,
+  "permissions": [
+    "allow-set-pinned",
+    "allow-get-pinned",
+    "allow-open-settings",
+    "allow-daemon-status",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
+  ]
+}

@@ -5,7 +5,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -14,15 +14,6 @@ use crate::state::{CanvasEvent, Inner};
 
 pub const STREAM_FILE: &str = "stream.jsonl";
 const RETENTION_HOURS: i64 = 24;
-
-/// `CANVAS_DATA_DIR`, else `~/Library/Application Support/canvas`.
-pub fn default_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CANVAS_DATA_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Application Support/canvas"))
-}
 
 enum Msg {
     Line(String),
