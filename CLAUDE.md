@@ -59,7 +59,12 @@ beside the terminal all day.
   succeeds — posting only needs a running canvasd, not a registered session
   (`canvas post` creates one server-side if it's missing).
   `canvas guidance` prints that same block unconditionally, for a person or
-  agent to read on demand. `canvas post <file|-> [--format md|text|html]`
+  agent to read on demand.
+  `canvas profile list|show|set|delete|assign|unassign` reads and changes the
+  named profiles from the shell, globally or per repo (`--repo owner/name`, or
+  `--here` for the current directory's GitHub repo, resolved by canvasd's own
+  `repo::github_repo_blocking`), failing loudly like `canvas post`.
+  `canvas post <file|-> [--format md|text|html]`
   reads the session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in
   every Bash tool shell) and creates a new card from Markdown, text or HTML
   read from a file or stdin — format picked by `--format`, else the file

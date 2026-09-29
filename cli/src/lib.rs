@@ -5,4 +5,5 @@ pub mod guidance;
 pub mod hook;
 pub mod install;
 pub mod post;
+pub mod profile;
 pub mod scan;

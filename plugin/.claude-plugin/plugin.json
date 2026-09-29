@@ -1,6 +1,6 @@
 {
   "name": "canvas",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "author": { "name": "pierce" },
   "description": "Session hooks that feed canvasd and inject posting guidance, plus the canvas skill for posting HTML, Markdown or text."
 }

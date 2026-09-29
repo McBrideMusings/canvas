@@ -492,9 +492,8 @@ fn unknown_profile_response(name: &str) -> Response {
         .into_response()
 }
 
-/// Only the settings page (a browser tab, same-origin) mutates a kind's
-/// profiles or assignments — never the CLI — so every one of these gets the
-/// same-origin check the delete routes use.
+/// The settings page and `canvas profile` write a kind's profiles and
+/// assignments through these three routes.
 pub async fn set_profile_text(
     State(state): State<AppState>,
     Path(kind): Path<String>,
