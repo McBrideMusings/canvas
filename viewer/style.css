@@ -546,10 +546,17 @@ body {
   border-color: #e2e0d8;
 }
 
-.drawer-action-btn.confirming {
-  background: #fee2e2;
-  border-color: #f3c9c9;
-  color: #b91c1c;
+/* "Clear all" and its armed "Confirm" share one width so the button doesn't
+   jump when it arms. */
+.drawer-action-btn.danger {
+  min-width: 72px;
+}
+
+.drawer-action-btn.confirming,
+.drawer-action-btn.confirming:hover:not(:disabled) {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
 }
 
 .icon-btn.danger {
@@ -768,46 +775,6 @@ body {
   border: none;
   display: block;
   margin-bottom: 8px;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.link-row:hover {
-  background: #f4f3ef;
-}
-
-.row .row-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #2563eb;
-}
-
-.row.path-row {
-  cursor: default;
-}
-
-.row.path-row .row-text {
-  color: #1a1a1a;
-  flex: 1;
-  min-width: 0;
-  cursor: text;
-  user-select: text;
-}
-
-.path-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  margin-left: 8px;
 }
 
 .image-overlay {

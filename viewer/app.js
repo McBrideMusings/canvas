@@ -863,7 +863,7 @@
         armConfirm(clearAll, {
           idleLabel: "Clear all",
           idleIcon: null,
-          confirmLabel: "Confirm clear all",
+          confirmLabel: "Confirm",
           confirmIcon: null,
           withText: true,
           onConfirm: () => {
