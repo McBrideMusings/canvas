@@ -107,3 +107,7 @@ launchctl bootout gui/$(id -u)/com.piercemakes.canvasd
 rm ~/Library/LaunchAgents/com.piercemakes.canvasd.plist ~/.local/bin/canvas
 rm -rf ~/Library/Application\ Support/canvas
 ```
+
+## License
+
+[MIT](LICENSE)
