@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
     AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, OpenRequest,
-    PostRequest, ProfilesState, Session, SetProfileTextRequest, StateResponse, UpdateCardRequest,
-    UpsertSessionRequest,
+    PostRequest, ProfilesState, Session, SetProfileModeRequest, SetProfileTextRequest,
+    StateResponse, UpdateCardRequest, UpsertSessionRequest,
 };
 use futures::stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
@@ -437,6 +437,7 @@ pub async fn get_profiles(
     let builtin = crate::profiles::builtin_default(&kind).map(str::to_string);
     Json(ProfilesState {
         kind,
+        mode: set.mode,
         profiles: set.profiles,
         global: set.global,
         repos: set.repos,
@@ -452,9 +453,9 @@ pub struct EffectiveProfileQuery {
     repo: Option<String>,
 }
 
-/// The session/CLI read: only the profile that applies for the repo, with its
-/// text. `profile`/`text` are absent when nothing is assigned, and the caller
-/// falls back to its own compiled-in default.
+/// The session/CLI read: the text a session in the repo receives, joined per
+/// the kind's mode, and the sources it came from. Both are absent when nothing
+/// is assigned, and the caller falls back to its own compiled-in default.
 pub async fn get_effective_profile(
     State(state): State<AppState>,
     Path(kind): Path<String>,
@@ -469,15 +470,14 @@ pub async fn get_effective_profile(
     };
     let config = state.profiles.read().await;
     let set = config.kind(&kind);
-    let profile = set.effective_profile(repo.as_deref()).map(str::to_string);
-    let text = profile
-        .as_ref()
-        .and_then(|name| set.profiles.get(name))
-        .cloned();
+    let composed = set.compose(&kind, repo.as_deref());
     Json(EffectiveProfile {
         kind,
-        profile,
-        text,
+        profiles: composed
+            .as_ref()
+            .map(|c| c.sources.clone())
+            .unwrap_or_default(),
+        text: composed.map(|c| c.text),
     })
 }
 
@@ -503,6 +503,19 @@ pub async fn set_profile_text(
     {
         let mut config = state.profiles.write().await;
         config.set_profile_text(&kind, &req.name, req.text);
+    }
+    state.save_profiles().await;
+    StatusCode::OK.into_response()
+}
+
+pub async fn set_profile_mode(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+    Json(req): Json<SetProfileModeRequest>,
+) -> Response {
+    {
+        let mut config = state.profiles.write().await;
+        config.set_mode(&kind, req.mode);
     }
     state.save_profiles().await;
     StatusCode::OK.into_response()
