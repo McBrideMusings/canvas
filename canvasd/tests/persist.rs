@@ -61,28 +61,28 @@ async fn restart_rebuilds_the_same_state() {
         &app,
         "POST",
         "/api/sessions",
-        Some(json!({"session_id": "s1", "cwd": "/a/one"})),
+        Some(json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code"})),
     )
     .await;
     send(
         &app,
         "POST",
         "/api/posts",
-        Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>x</p>"})),
+        Some(json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code", "html": "<p>x</p>"})),
     )
     .await;
     send(
         &app,
         "POST",
         "/api/posts",
-        Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>y</p>"})),
+        Some(json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code", "html": "<p>y</p>"})),
     )
     .await;
     send(
         &app,
         "POST",
         "/api/posts",
-        Some(json!({"session_id": "s2", "cwd": "/a/two", "html": "<p>z</p>"})),
+        Some(json!({"session_id": "s2", "cwd": "/a/two", "agent": "claude-code", "html": "<p>z</p>"})),
     )
     .await;
     send(&app, "POST", "/api/sessions/s2/end", None).await;
@@ -105,7 +105,7 @@ async fn deletions_stay_deleted_after_restart() {
             &app,
             "POST",
             "/api/posts",
-            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"})),
+            Some(json!({"session_id": s, "cwd": "/a", "agent": "claude-code", "html": "<p>x</p>"})),
         )
         .await;
     }
@@ -113,7 +113,7 @@ async fn deletions_stay_deleted_after_restart() {
         &app,
         "POST",
         "/api/posts",
-        Some(json!({"session_id": "third", "cwd": "/a", "html": "h"})),
+        Some(json!({"session_id": "third", "cwd": "/a", "agent": "claude-code", "html": "h"})),
     )
     .await;
     let all: StateResponse =
@@ -152,14 +152,14 @@ async fn cleared_cards_stay_cleared_after_restart() {
             &app,
             "POST",
             "/api/posts",
-            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"})),
+            Some(json!({"session_id": s, "cwd": "/a", "agent": "claude-code", "html": "<p>x</p>"})),
         )
         .await;
         send(
             &app,
             "POST",
             "/api/posts",
-            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>y</p>"})),
+            Some(json!({"session_id": s, "cwd": "/a", "agent": "claude-code", "html": "<p>y</p>"})),
         )
         .await;
     }
@@ -198,6 +198,8 @@ async fn entries_older_than_24_hours_are_dropped() {
         .map(|s| s["id"].as_str().unwrap())
         .collect();
     assert_eq!(sessions, ["live"]);
+    // Written before sessions carried an agent; every such session was Claude Code.
+    assert_eq!(state["sessions"][0]["agent"], "claude-code");
     assert_eq!(state["cards"][0]["id"], "c-live");
     assert_eq!(line_count(&dir), 2);
 }
@@ -211,7 +213,7 @@ async fn torn_last_line_is_skipped() {
         &app,
         "POST",
         "/api/posts",
-        Some(json!({"session_id": "s1", "cwd": "/a", "html": "<p>x</p>"})),
+        Some(json!({"session_id": "s1", "cwd": "/a", "agent": "claude-code", "html": "<p>x</p>"})),
     )
     .await;
     let before = state_of(&app).await;

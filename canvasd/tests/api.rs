@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Card, EffectiveProfile, ProfileMode, ProfilesState, Session, StateResponse};
+use canvas_core::{
+    Agent, Card, EffectiveProfile, ProfileMode, ProfilesState, Session, StateResponse,
+};
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
@@ -67,13 +69,14 @@ async fn upsert_and_end_session() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas"}),
+            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let session: Session = json_body(response).await;
     assert_eq!(session.name, "canvas");
+    assert_eq!(session.agent, Agent::ClaudeCode);
     assert!(session.ended_at.is_none());
 
     let response = app
@@ -132,7 +135,7 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "r1", "cwd": main}),
+            json!({"session_id": "r1", "cwd": main, "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -143,7 +146,7 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
     app.clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "r2", "cwd": linked, "html": "<p>x</p>"}),
+            json!({"session_id": "r2", "cwd": linked, "agent": "claude-code", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
@@ -152,7 +155,7 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "r3", "cwd": "/"}),
+            json!({"session_id": "r3", "cwd": "/", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -195,7 +198,7 @@ async fn each_post_creates_its_own_card() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -204,7 +207,7 @@ async fn each_post_creates_its_own_card() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>hello</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>hello</p>"}),
         ))
         .await
         .unwrap();
@@ -219,7 +222,7 @@ async fn each_post_creates_its_own_card() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>again</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>again</p>"}),
         ))
         .await
         .unwrap();
@@ -242,7 +245,7 @@ async fn post_for_unknown_session_creates_it_named_from_cwd() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s9", "cwd": "/tmp/unregistered-proj", "html": "<p>x</p>"}),
+            json!({"session_id": "s9", "cwd": "/tmp/unregistered-proj", "agent": "claude-code", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
@@ -256,6 +259,29 @@ async fn post_for_unknown_session_creates_it_named_from_cwd() {
     let session = state.sessions.iter().find(|s| s.id == "s9").unwrap();
     assert_eq!(session.cwd, "/tmp/unregistered-proj");
     assert_eq!(session.name, "unregistered-proj");
+    assert_eq!(session.agent, Agent::ClaudeCode);
+}
+
+#[tokio::test]
+async fn a_session_request_without_an_agent_is_rejected() {
+    let app = app();
+    for (uri, body) in [
+        (
+            "/api/sessions",
+            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+        ),
+        (
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>x</p>"}),
+        ),
+    ] {
+        let response = app.clone().oneshot(post(uri, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+    }
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.is_empty());
 }
 
 #[tokio::test]
@@ -265,7 +291,7 @@ async fn update_card_replaces_content_in_place_and_keeps_its_id_and_session() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>v1</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>v1</p>"}),
         ))
         .await
         .unwrap();
@@ -312,7 +338,7 @@ async fn ring_evicts_oldest_at_501() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -321,7 +347,7 @@ async fn ring_evicts_oldest_at_501() {
         app.clone()
             .oneshot(post(
                 "/api/posts",
-                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": format!("<p>{i}</p>")}),
             ))
             .await
             .unwrap();
@@ -342,7 +368,7 @@ async fn updating_a_card_moves_it_to_the_front_so_it_survives_eviction() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>status</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>status</p>"}),
         ))
         .await
         .unwrap();
@@ -353,7 +379,7 @@ async fn updating_a_card_moves_it_to_the_front_so_it_survives_eviction() {
         app.clone()
             .oneshot(post(
                 "/api/posts",
-                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": format!("<p>{i}</p>")}),
             ))
             .await
             .unwrap();
@@ -370,7 +396,7 @@ async fn updating_a_card_moves_it_to_the_front_so_it_survives_eviction() {
     app.clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>499</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>499</p>"}),
         ))
         .await
         .unwrap();
@@ -392,7 +418,7 @@ async fn card_with_images(app: &axum::Router, images: Vec<String>) -> Card {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>x</p>", "images": images}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>x</p>", "images": images}),
         ))
         .await
         .unwrap();
@@ -456,6 +482,7 @@ async fn image_placeholder_is_resolved_to_the_cards_image_route_and_serves() {
             json!({
                 "session_id": "s1",
                 "cwd": "/tmp/proj",
+                "agent": "claude-code",
                 "html": r#"<img src="canvas-image:0">"#,
                 "images": [png],
             }),
@@ -487,7 +514,7 @@ async fn image_placeholder_text_outside_an_attribute_value_is_left_alone() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": html}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": html}),
         ))
         .await
         .unwrap();
@@ -515,7 +542,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -535,7 +562,7 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
         .clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -574,7 +601,7 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> Card {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": session_id, "cwd": cwd}),
+            json!({"session_id": session_id, "cwd": cwd, "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -583,7 +610,7 @@ async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> Card {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": session_id, "cwd": cwd, "html": "<p>x</p>"}),
+            json!({"session_id": session_id, "cwd": cwd, "agent": "claude-code", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
@@ -699,7 +726,7 @@ async fn clear_cards_on_a_session_with_no_cards_is_204_with_no_events() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -1109,7 +1136,7 @@ async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
     app.clone()
         .oneshot(post(
             "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
         ))
         .await
         .unwrap();
@@ -1118,7 +1145,7 @@ async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
         .clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>0</p>"}),
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>0</p>"}),
         ))
         .await
         .unwrap();
@@ -1133,7 +1160,7 @@ async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
         app.clone()
             .oneshot(post(
                 "/api/posts",
-                json!({"session_id": "s1", "cwd": "/tmp/proj", "html": format!("<p>{i}</p>")}),
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": format!("<p>{i}</p>")}),
             ))
             .await
             .unwrap();

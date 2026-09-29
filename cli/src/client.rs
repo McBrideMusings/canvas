@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use canvas_core::unix_http::{self, Response};
 use canvas_core::{
-    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, PostRequest,
-    ProfilesState, SetProfileTextRequest, UpdateCardRequest, UpsertSessionRequest,
+    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
+    PostRequest, ProfilesState, SetProfileTextRequest, UpdateCardRequest, UpsertSessionRequest,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -89,6 +89,7 @@ pub fn upsert_session(session_id: &str, cwd: &str) -> Result<(), String> {
     let body = UpsertSessionRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
+        agent: Agent::ClaudeCode,
     };
     post_json("/api/sessions", body).map_err(|e| e.to_string())?;
     Ok(())
@@ -118,6 +119,7 @@ pub fn post_explicit(
     let body = PostRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
+        agent: Agent::ClaudeCode,
         html,
         images,
         targets,

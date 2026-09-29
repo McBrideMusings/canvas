@@ -9,8 +9,8 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
-    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, OpenRequest,
-    PostRequest, ProfilesState, Session, SetProfileModeRequest, SetProfileTextRequest,
+    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
+    OpenRequest, PostRequest, ProfilesState, Session, SetProfileModeRequest, SetProfileTextRequest,
     StateResponse, UpdateCardRequest, UpsertSessionRequest,
 };
 use futures::stream::Stream;
@@ -43,14 +43,19 @@ pub async fn upsert_session(
         let mut inner = state.inner.write().await;
         // A genuine upsert: a retried or re-fired registration for an id that
         // already exists must not reset when it started or resurrect an
-        // already-ended session.
-        let (started_at, ended_at) = match inner.sessions.get(&req.session_id) {
-            Some(existing) => (existing.started_at.clone(), existing.ended_at.clone()),
-            None => (now(), None),
+        // already-ended session, or change which agent started it.
+        let (started_at, ended_at, agent) = match inner.sessions.get(&req.session_id) {
+            Some(existing) => (
+                existing.started_at.clone(),
+                existing.ended_at.clone(),
+                existing.agent,
+            ),
+            None => (now(), None, req.agent),
         };
         let session = Session {
             id: req.session_id.clone(),
             cwd: req.cwd.clone(),
+            agent,
             name: cwd_basename(&req.cwd),
             repo,
             started_at,
@@ -76,6 +81,7 @@ fn ensure_session(
     inner: &mut crate::state::Inner,
     session_id: &str,
     cwd: &str,
+    agent: Agent,
     repo: Option<String>,
 ) -> Option<Session> {
     if inner.sessions.contains_key(session_id) {
@@ -84,6 +90,7 @@ fn ensure_session(
     let session = Session {
         id: session_id.to_string(),
         cwd: cwd.to_string(),
+        agent,
         name: cwd_basename(cwd),
         repo,
         started_at: now(),
@@ -187,7 +194,8 @@ pub async fn post_explicit(
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
-        let created_session = ensure_session(&mut inner, &req.session_id, &req.cwd, repo);
+        let created_session =
+            ensure_session(&mut inner, &req.session_id, &req.cwd, req.agent, repo);
         let id = Uuid::new_v4().to_string();
         let card = Card {
             html: resolve_image_placeholders(&req.html, &id),

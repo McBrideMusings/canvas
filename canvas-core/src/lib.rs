@@ -2,12 +2,26 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One main Claude Code conversation on this Mac, from SessionStart to SessionEnd.
+/// The coding agent a session belongs to. Serialized kebab-case
+/// (`"claude-code"`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Agent {
+    /// Every session `stream.jsonl` holds from before this field existed
+    /// came from Claude Code, so a stored session missing it reloads as one.
+    #[default]
+    ClaudeCode,
+}
+
+/// One main agent conversation on this Mac, from SessionStart to SessionEnd.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub cwd: String,
+    /// Which agent started the session, set by whoever registered it.
+    #[serde(default)]
+    pub agent: Agent,
     /// cwd basename, computed on upsert.
     pub name: String,
     /// `owner/repo` of the cwd's `origin` remote when it points at
@@ -39,6 +53,7 @@ pub struct Card {
 pub struct UpsertSessionRequest {
     pub session_id: String,
     pub cwd: String,
+    pub agent: Agent,
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
@@ -47,6 +62,8 @@ pub struct UpsertSessionRequest {
 pub struct PostRequest {
     pub session_id: String,
     pub cwd: String,
+    /// Recorded on the session only when this post creates it.
+    pub agent: Agent,
     pub html: String,
     #[serde(default)]
     pub images: Vec<String>,
