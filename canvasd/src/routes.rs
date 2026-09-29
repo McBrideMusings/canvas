@@ -288,10 +288,7 @@ pub async fn get_card_reply(State(state): State<AppState>, Path(id): Path<String
     }
 }
 
-pub async fn delete_card(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn delete_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let removed = {
         let mut inner = state.inner.write().await;
         let before = inner.cards.len();
@@ -333,10 +330,7 @@ pub async fn clear_session_cards(
     StatusCode::NO_CONTENT.into_response()
 }
 
-pub async fn delete_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let removed = {
         let mut inner = state.inner.write().await;
         if inner.sessions.remove(&id).is_none() {

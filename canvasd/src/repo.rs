@@ -79,7 +79,11 @@ mod tests {
             "https://github.com/octo/hello.git",
             "https://github.com/octo/hello/",
         ] {
-            assert_eq!(parse_github_remote(url).as_deref(), Some("octo/hello"), "{url}");
+            assert_eq!(
+                parse_github_remote(url).as_deref(),
+                Some("octo/hello"),
+                "{url}"
+            );
         }
     }
 

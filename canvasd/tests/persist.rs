@@ -16,9 +16,7 @@ fn temp_dir() -> PathBuf {
 }
 
 async fn send(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> Vec<u8> {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri);
+    let mut req = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(b) => {
             req = req.header("content-type", "application/json");
@@ -33,7 +31,10 @@ async fn send(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) 
 async fn state_of(app: &axum::Router) -> Value {
     let bytes = send(app, "GET", "/api/state", None).await;
     let mut v: Value = serde_json::from_slice(&bytes).unwrap();
-    v["sessions"].as_array_mut().unwrap().sort_by_key(|s| s["id"].to_string());
+    v["sessions"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|s| s["id"].to_string());
     v
 }
 
@@ -45,7 +46,10 @@ async fn restart(state: AppState, dir: &Path) -> axum::Router {
 }
 
 fn line_count(dir: &Path) -> usize {
-    std::fs::read_to_string(dir.join("stream.jsonl")).unwrap().lines().count()
+    std::fs::read_to_string(dir.join("stream.jsonl"))
+        .unwrap()
+        .lines()
+        .count()
 }
 
 #[tokio::test]
@@ -53,10 +57,34 @@ async fn restart_rebuilds_the_same_state() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
-    send(&app, "POST", "/api/sessions", Some(json!({"session_id": "s1", "cwd": "/a/one"}))).await;
-    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>x</p>"}))).await;
-    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>y</p>"}))).await;
-    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s2", "cwd": "/a/two", "html": "<p>z</p>"}))).await;
+    send(
+        &app,
+        "POST",
+        "/api/sessions",
+        Some(json!({"session_id": "s1", "cwd": "/a/one"})),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>x</p>"})),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "s1", "cwd": "/a/one", "html": "<p>y</p>"})),
+    )
+    .await;
+    send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "s2", "cwd": "/a/two", "html": "<p>z</p>"})),
+    )
+    .await;
     send(&app, "POST", "/api/sessions/s2/end", None).await;
     let before = state_of(&app).await;
     assert_eq!(before["cards"].as_array().unwrap().len(), 3);
@@ -73,11 +101,30 @@ async fn deletions_stay_deleted_after_restart() {
     let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     for s in ["keep", "gone"] {
-        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
+        send(
+            &app,
+            "POST",
+            "/api/posts",
+            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"})),
+        )
+        .await;
     }
-    send(&app, "POST", "/api/posts", Some(json!({"session_id": "third", "cwd": "/a", "html": "h"}))).await;
-    let all: StateResponse = serde_json::from_slice(&send(&app, "GET", "/api/state", None).await).unwrap();
-    let third_card = all.cards.iter().find(|c| c.session_id == "third").unwrap().id.clone();
+    send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "third", "cwd": "/a", "html": "h"})),
+    )
+    .await;
+    let all: StateResponse =
+        serde_json::from_slice(&send(&app, "GET", "/api/state", None).await).unwrap();
+    let third_card = all
+        .cards
+        .iter()
+        .find(|c| c.session_id == "third")
+        .unwrap()
+        .id
+        .clone();
     send(&app, "DELETE", &format!("/api/cards/{third_card}"), None).await;
     send(&app, "DELETE", "/api/sessions/gone", None).await;
     let before = state_of(&app).await;
@@ -85,7 +132,12 @@ async fn deletions_stay_deleted_after_restart() {
     let app = restart(state, &dir).await;
     let after = state_of(&app).await;
     assert_eq!(after, before);
-    let ids: Vec<&str> = after["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = after["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, ["keep", "third"]);
     assert_eq!(after["cards"].as_array().unwrap().len(), 1);
 }
@@ -96,8 +148,20 @@ async fn cleared_cards_stay_cleared_after_restart() {
     let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
     for s in ["cleared", "other"] {
-        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"}))).await;
-        send(&app, "POST", "/api/posts", Some(json!({"session_id": s, "cwd": "/a", "html": "<p>y</p>"}))).await;
+        send(
+            &app,
+            "POST",
+            "/api/posts",
+            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>x</p>"})),
+        )
+        .await;
+        send(
+            &app,
+            "POST",
+            "/api/posts",
+            Some(json!({"session_id": s, "cwd": "/a", "html": "<p>y</p>"})),
+        )
+        .await;
     }
     send(&app, "DELETE", "/api/sessions/cleared/cards", None).await;
     let before = state_of(&app).await;
@@ -127,7 +191,12 @@ async fn entries_older_than_24_hours_are_dropped() {
 
     let app = build_router(AppState::open(&dir).await);
     let state = state_of(&app).await;
-    let sessions: Vec<&str> = state["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    let sessions: Vec<&str> = state["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
     assert_eq!(sessions, ["live"]);
     assert_eq!(state["cards"][0]["id"], "c-live");
     assert_eq!(line_count(&dir), 2);
@@ -138,11 +207,24 @@ async fn torn_last_line_is_skipped() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;
     let app = build_router(state.clone());
-    send(&app, "POST", "/api/posts", Some(json!({"session_id": "s1", "cwd": "/a", "html": "<p>x</p>"}))).await;
+    send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "s1", "cwd": "/a", "html": "<p>x</p>"})),
+    )
+    .await;
     let before = state_of(&app).await;
     state.flush_store();
-    let mut file = std::fs::OpenOptions::new().append(true).open(dir.join("stream.jsonl")).unwrap();
-    std::io::Write::write_all(&mut file, br#"{"op":"card_upserted","data":{"id":"torn","sess"#).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("stream.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(
+        &mut file,
+        br#"{"op":"card_upserted","data":{"id":"torn","sess"#,
+    )
+    .unwrap();
     drop(state);
 
     let app = build_router(AppState::open(&dir).await);

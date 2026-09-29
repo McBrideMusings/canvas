@@ -37,9 +37,11 @@ pub fn run(arg: Option<&str>) -> Result<(), String> {
         claude(&["plugin", "install", PLUGIN])?;
     }
 
-    let version = installed_version()?
-        .ok_or_else(|| format!("{PLUGIN} is not installed after install"))?;
-    println!("{PLUGIN} {version} installed from {repo_str}; restart Claude Code sessions to load it");
+    let version =
+        installed_version()?.ok_or_else(|| format!("{PLUGIN} is not installed after install"))?;
+    println!(
+        "{PLUGIN} {version} installed from {repo_str}; restart Claude Code sessions to load it"
+    );
     Ok(())
 }
 

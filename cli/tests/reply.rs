@@ -28,7 +28,11 @@ impl Drop for Daemon {
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn spawn_daemon() -> Daemon {
-    let data_dir = std::env::temp_dir().join(format!("canvas-reply-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
+    let data_dir = std::env::temp_dir().join(format!(
+        "canvas-reply-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
     let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::create_dir_all(&data_dir).unwrap();
     let socket = data_dir.join("canvasd.sock");
@@ -94,7 +98,11 @@ fn reply_as_viewer(daemon: &Daemon, card_id: &str, value: &str) {
         Some(Duration::from_secs(2)),
     )
     .expect("viewer's reply POST failed");
-    assert!((200..300).contains(&response.status), "status {}", response.status);
+    assert!(
+        (200..300).contains(&response.status),
+        "status {}",
+        response.status
+    );
 }
 
 #[test]

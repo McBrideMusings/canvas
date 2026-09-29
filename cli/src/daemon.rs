@@ -7,7 +7,8 @@ pub fn run() {
 }
 
 async fn serve() {
-    let socket = canvas_core::paths::socket_path().expect("no HOME: cannot place the canvasd socket");
+    let socket =
+        canvas_core::paths::socket_path().expect("no HOME: cannot place the canvasd socket");
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir).expect("failed to create the canvasd socket directory");
     }
@@ -29,7 +30,8 @@ async fn serve() {
     };
     let app = build_router(state);
 
-    let listener = tokio::net::UnixListener::bind(&socket).expect("failed to bind the canvasd socket");
+    let listener =
+        tokio::net::UnixListener::bind(&socket).expect("failed to bind the canvasd socket");
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))

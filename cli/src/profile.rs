@@ -53,7 +53,11 @@ pub fn parse_args(rest: &[String]) -> Result<Parsed, UsageError> {
     while i < rest.len() {
         match rest[i].as_str() {
             "--kind" | "--repo" => {
-                let slot = if rest[i] == "--kind" { &mut kind } else { &mut repo };
+                let slot = if rest[i] == "--kind" {
+                    &mut kind
+                } else {
+                    &mut repo
+                };
                 if slot.is_some() {
                     return Err(UsageError);
                 }
@@ -143,8 +147,8 @@ fn read_text(source: &str, mut stdin: impl Read) -> Result<String, String> {
             .read_to_string(&mut text)
             .map_err(|e| format!("could not read stdin: {e}"))?;
     } else {
-        text = std::fs::read_to_string(source)
-            .map_err(|e| format!("could not read {source}: {e}"))?;
+        text =
+            std::fs::read_to_string(source).map_err(|e| format!("could not read {source}: {e}"))?;
     }
     if text.trim().is_empty() {
         return Err("profile text is empty".to_string());

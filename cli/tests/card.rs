@@ -75,7 +75,11 @@ fn run(daemon: &Daemon, args: &[&str], stdin: Option<&[u8]>) -> std::process::Ou
 #[test]
 fn card_prints_the_posted_html_and_ids() {
     let daemon = spawn_daemon();
-    let posted = run(&daemon, &["post", "-", "--format", "html"], Some(b"<p id=\"x\">hello</p>"));
+    let posted = run(
+        &daemon,
+        &["post", "-", "--format", "html"],
+        Some(b"<p id=\"x\">hello</p>"),
+    );
     assert!(posted.status.success(), "{:?}", posted);
     let posted: serde_json::Value = serde_json::from_slice(&posted.stdout).unwrap();
     let card_id = posted["card_id"].as_str().unwrap();
@@ -85,7 +89,10 @@ fn card_prints_the_posted_html_and_ids() {
     let card: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(card["id"], card_id);
     assert_eq!(card["sessionId"], "card-test");
-    assert!(card["html"].as_str().unwrap().contains("<p id=\"x\">hello</p>"));
+    assert!(card["html"]
+        .as_str()
+        .unwrap()
+        .contains("<p id=\"x\">hello</p>"));
 }
 
 #[test]

@@ -73,7 +73,11 @@ fn call_any_status(
 /// handling: the hook calls just propagate it, while `post_explicit` maps it
 /// to its one-line error messages.
 fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<Response, Failure> {
-    call("POST", path, Some(&serde_json::to_value(body).unwrap_or_default()))
+    call(
+        "POST",
+        path,
+        Some(&serde_json::to_value(body).unwrap_or_default()),
+    )
 }
 
 fn into_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
@@ -152,10 +156,7 @@ pub fn update_card(
 pub fn fetch_profile_text(kind: &str, cwd: &str) -> Option<String> {
     let response = call(
         "GET",
-        &format!(
-            "/api/profiles/{kind}/effective?cwd={}",
-            percent_encode(cwd)
-        ),
+        &format!("/api/profiles/{kind}/effective?cwd={}", percent_encode(cwd)),
         None,
     )
     .ok()?;

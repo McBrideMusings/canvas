@@ -50,7 +50,12 @@ fn spawn_daemon() -> Daemon {
     daemon
 }
 
-fn canvas(daemon: &Daemon, args: &[&str], stdin: Option<&str>, cwd: Option<&std::path::Path>) -> Output {
+fn canvas(
+    daemon: &Daemon,
+    args: &[&str],
+    stdin: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) -> Output {
     let mut cmd = Command::new(canvas_bin());
     cmd.arg("profile")
         .args(args)
@@ -104,22 +109,39 @@ fn list_names_profiles_assignments_and_the_builtin() {
 fn delete_removes_the_profile_and_an_unknown_name_fails() {
     let d = spawn_daemon();
     canvas(&d, &["set", "terse", "-"], Some("x"), None);
-    assert!(canvas(&d, &["delete", "terse"], None, None).status.success());
+    assert!(canvas(&d, &["delete", "terse"], None, None)
+        .status
+        .success());
     let show = canvas(&d, &["show", "terse"], None, None);
     assert_eq!(show.status.code(), Some(1));
     assert!(err(&show).contains("no profile named \"terse\""));
-    assert_eq!(canvas(&d, &["delete", "terse"], None, None).status.code(), Some(1));
+    assert_eq!(
+        canvas(&d, &["delete", "terse"], None, None).status.code(),
+        Some(1)
+    );
 }
 
 #[test]
 fn assign_global_is_what_effective_returns_and_unassign_clears_it() {
     let d = spawn_daemon();
     canvas(&d, &["set", "terse", "-"], Some("Post rarely.\n"), None);
-    assert!(canvas(&d, &["assign", "terse"], None, None).status.success());
-    let eff = canvas(&d, &["show", "--effective", "--repo", "octo/hello"], None, None);
+    assert!(canvas(&d, &["assign", "terse"], None, None)
+        .status
+        .success());
+    let eff = canvas(
+        &d,
+        &["show", "--effective", "--repo", "octo/hello"],
+        None,
+        None,
+    );
     assert_eq!(out(&eff), "Post rarely.");
     assert!(canvas(&d, &["unassign"], None, None).status.success());
-    let eff = out(&canvas(&d, &["show", "--effective", "--repo", "octo/hello"], None, None));
+    let eff = out(&canvas(
+        &d,
+        &["show", "--effective", "--repo", "octo/hello"],
+        None,
+        None,
+    ));
     assert_ne!(eff, "Post rarely.");
     assert!(!eff.is_empty(), "falls back to the built-in default");
 }
@@ -129,7 +151,10 @@ fn assign_to_an_unknown_profile_fails_loudly() {
     let d = spawn_daemon();
     let o = canvas(&d, &["assign", "nope", "--repo", "octo/hello"], None, None);
     assert_eq!(o.status.code(), Some(1));
-    assert_eq!(err(&o).trim(), "canvasd returned HTTP 400: no profile named \"nope\"");
+    assert_eq!(
+        err(&o).trim(),
+        "canvasd returned HTTP 400: no profile named \"nope\""
+    );
 }
 
 #[test]
@@ -141,7 +166,12 @@ fn here_assigns_the_repo_the_hook_reads_with_cwd() {
         vec!["init", "-q"],
         vec!["remote", "add", "origin", "git@github.com:octo/hello.git"],
     ] {
-        let status = Command::new("git").arg("-C").arg(&repo).args(&args).status().unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(&args)
+            .status()
+            .unwrap();
         assert!(status.success());
     }
     canvas(&d, &["set", "terse", "-"], Some("Repo text.\n"), None);
@@ -152,7 +182,9 @@ fn here_assigns_the_repo_the_hook_reads_with_cwd() {
     // Additive is the default mode, so a repo-only assignment is the built-in text then the repo's.
     let eff = out(&canvas(&d, &["show", "--effective"], None, Some(&repo)));
     assert!(eff.ends_with("\n\nRepo text."), "{eff}");
-    assert!(canvas(&d, &["unassign", "--here"], None, Some(&repo)).status.success());
+    assert!(canvas(&d, &["unassign", "--here"], None, Some(&repo))
+        .status
+        .success());
     assert!(!out(&canvas(&d, &["show", "--effective"], None, Some(&repo))).contains("Repo text."));
 }
 

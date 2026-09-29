@@ -98,7 +98,10 @@ fn load(path: &Path, now: DateTime<Utc>) -> Inner {
         }
     }
     if skipped > 0 {
-        eprintln!("canvasd: skipped {skipped} unparsable line(s) in {}", path.display());
+        eprintln!(
+            "canvasd: skipped {skipped} unparsable line(s) in {}",
+            path.display()
+        );
     }
     inner.prune_before(now - Duration::hours(RETENTION_HOURS));
     inner
@@ -113,7 +116,14 @@ fn write_snapshot(path: &Path, inner: &Inner) -> std::io::Result<()> {
         .values()
         .cloned()
         .map(CanvasEvent::SessionUpserted)
-        .chain(inner.cards.iter().rev().cloned().map(CanvasEvent::CardUpserted));
+        .chain(
+            inner
+                .cards
+                .iter()
+                .rev()
+                .cloned()
+                .map(CanvasEvent::CardUpserted),
+        );
     for event in events {
         out.push_str(&serde_json::to_string(&event).map_err(std::io::Error::other)?);
         out.push('\n');
