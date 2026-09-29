@@ -23,6 +23,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/state", get(routes::get_state))
         .route("/api/profiles/:kind", get(routes::get_profiles))
         .route(
+            "/api/profiles/:kind/effective",
+            get(routes::get_effective_profile),
+        )
+        .route(
             "/api/profiles/:kind/definitions",
             put(routes::set_profile_text),
         )

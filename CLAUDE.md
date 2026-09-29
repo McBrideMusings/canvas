@@ -72,7 +72,9 @@ beside the terminal all day.
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
   guidance text (`include_str!`), and `skills/canvas/` is the skill agents
   load to know how to post. `canvas hook session-start` and `canvas
-  guidance` call `GET /api/profiles/posting-guidance?cwd=<cwd>` and use, in
+  guidance` call `GET /api/profiles/posting-guidance/effective?cwd=<cwd>` (only the
+  effective profile's text; `GET /api/profiles/:kind` is the settings page's
+  full read) and use, in
   order, the profile assigned to that repo, the one assigned globally, then
   the compiled-in default from `guidance.md`. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a

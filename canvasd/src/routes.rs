@@ -11,8 +11,8 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
-    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, OpenRequest, PostRequest,
-    ProfilesState, Session, SetProfileTextRequest, StateResponse, UpdateCardRequest,
+    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, OpenRequest,
+    PostRequest, ProfilesState, Session, SetProfileTextRequest, StateResponse, UpdateCardRequest,
     UpsertSessionRequest,
 };
 use futures::stream::Stream;
@@ -513,20 +513,41 @@ pub async fn get_card_image(
     }
 }
 
-/// `cwd` is optional so the settings page (which has no cwd of its own) can
-/// still read a kind's profiles — pass a `repo` query param instead in that
-/// case, since the daemon already knows every repo it's seen from the
-/// sessions it's registered, with no `git` call needed.
+/// The settings page's read: every named profile for `kind`, the global
+/// assignment and each repo's assignment. Sessions never call this — a
+/// growing set of profile texts has no business on the hook's 1s path; they
+/// use `get_effective_profile`.
+pub async fn get_profiles(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+) -> impl IntoResponse {
+    let config = state.profiles.read().await;
+    let set = config.kind(&kind);
+    let builtin = crate::profiles::builtin_default(&kind).map(str::to_string);
+    Json(ProfilesState {
+        kind,
+        profiles: set.profiles,
+        global: set.global,
+        repos: set.repos,
+        builtin,
+    })
+}
+
+/// `cwd` names the directory a session runs in (resolved to its GitHub repo);
+/// `repo` names the repo directly and wins when both are given.
 #[derive(serde::Deserialize)]
-pub struct ProfilesQuery {
+pub struct EffectiveProfileQuery {
     cwd: Option<String>,
     repo: Option<String>,
 }
 
-pub async fn get_profiles(
+/// The session/CLI read: only the profile that applies for the repo, with its
+/// text. `profile`/`text` are absent when nothing is assigned, and the caller
+/// falls back to its own compiled-in default.
+pub async fn get_effective_profile(
     State(state): State<AppState>,
     Path(kind): Path<String>,
-    Query(params): Query<ProfilesQuery>,
+    Query(params): Query<EffectiveProfileQuery>,
 ) -> impl IntoResponse {
     let repo = match params.repo {
         Some(repo) => Some(repo),
@@ -537,16 +558,12 @@ pub async fn get_profiles(
     };
     let config = state.profiles.read().await;
     let set = config.kind(&kind);
-    let effective_profile = set.effective_profile(repo.as_deref()).map(str::to_string);
-    let builtin = crate::profiles::builtin_default(&kind).map(str::to_string);
-    Json(ProfilesState {
+    let profile = set.effective_profile(repo.as_deref()).map(str::to_string);
+    let text = set.effective_text(repo.as_deref()).map(str::to_string);
+    Json(EffectiveProfile {
         kind,
-        profiles: set.profiles,
-        global: set.global,
-        repos: set.repos,
-        repo,
-        effective_profile,
-        builtin,
+        profile,
+        text,
     })
 }
 

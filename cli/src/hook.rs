@@ -39,8 +39,7 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
             let text = match read_input() {
                 Ok(input) => {
                     let _ = client::upsert_session(&input.session_id, &input.cwd);
-                    client::fetch_profile(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
-                        .and_then(|p| p.effective_text().map(str::to_string))
+                    client::fetch_profile_text(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
                         .unwrap_or_else(|| crate::guidance::TEXT.to_string())
                 }
                 Err(_) => crate::guidance::TEXT.to_string(),

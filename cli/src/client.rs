@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use canvas_core::{Card, PostRequest, ProfilesState, UpdateCardRequest, UpsertSessionRequest};
+use canvas_core::{Card, EffectiveProfile, PostRequest, UpdateCardRequest, UpsertSessionRequest};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -89,17 +89,17 @@ pub fn update_card(
     handle_card_response(result)
 }
 
-/// Fetches the profile in effect for `kind` at `cwd`. `None` on any failure
-/// (canvasd unreachable, timeout, bad response) — every caller falls back to
-/// its own compiled-in default in that case, same as every other client.rs
-/// call in a hook's path.
-pub fn fetch_profile(kind: &str, cwd: &str) -> Option<ProfilesState> {
+/// Fetches the text of the profile in effect for `kind` at `cwd`. `None` on
+/// any failure (canvasd unreachable, timeout, bad response) or when nothing
+/// is assigned — every caller falls back to its own compiled-in default in
+/// both cases, same as every other client.rs call in a hook's path.
+pub fn fetch_profile_text(kind: &str, cwd: &str) -> Option<String> {
     let response = agent()
-        .get(&format!("{}/api/profiles/{}", base_url(), kind))
+        .get(&format!("{}/api/profiles/{}/effective", base_url(), kind))
         .query("cwd", cwd)
         .call()
         .ok()?;
-    response.into_json::<ProfilesState>().ok()
+    response.into_json::<EffectiveProfile>().ok()?.text
 }
 
 /// `canvas wait`: polls `GET /api/cards/:id/reply` every 250ms until a reply

@@ -66,12 +66,10 @@ pub struct UpdateCardRequest {
     pub targets: Vec<String>,
 }
 
-/// What `GET /api/profiles/:kind?cwd=<cwd>` reports for one kind (today,
-/// only `"posting-guidance"` ships): every named profile defined for that
-/// kind, which one is assigned globally, which repo has its own assignment,
-/// and — resolved for the `cwd`/`repo` the query named — which profile and
-/// text actually apply. A caller with no effective profile wants its own
-/// compiled-in default; canvasd never ships one of its own.
+/// What `GET /api/profiles/:kind` reports for one kind (today, only
+/// `"posting-guidance"` ships), for the settings page: every named profile
+/// defined for that kind, which one is assigned globally, and which repos
+/// have their own assignment.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesState {
@@ -82,10 +80,6 @@ pub struct ProfilesState {
     pub global: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub repos: std::collections::HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repo: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_profile: Option<String>,
     /// The compiled-in default text a session falls back to when nothing is
     /// assigned, for kinds that have one — shown read-only alongside the
     /// named profiles so it's visible without leaving the settings page.
@@ -93,16 +87,19 @@ pub struct ProfilesState {
     pub builtin: Option<String>,
 }
 
-impl ProfilesState {
-    /// The text a session should actually see: the profile assigned to its
-    /// repo, else the one assigned globally, else `None` (fall back to the
-    /// caller's own compiled-in default).
-    pub fn effective_text(&self) -> Option<&str> {
-        self.effective_profile
-            .as_deref()
-            .and_then(|name| self.profiles.get(name))
-            .map(String::as_str)
-    }
+/// What `GET /api/profiles/:kind/effective?cwd=<cwd>` reports: only the
+/// profile that applies for the repo — its own assignment, else the global
+/// one — and that profile's text. Both are `None` when nothing is assigned;
+/// a caller then wants its own compiled-in default, and canvasd never ships
+/// one of its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveProfile {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Body for `PUT /api/profiles/:kind/definitions`. `text: None` (or blank)

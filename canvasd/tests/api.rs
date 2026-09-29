@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use canvas_core::{Card, ProfilesState, Session, StateResponse};
+use canvas_core::{Card, EffectiveProfile, ProfilesState, Session, StateResponse};
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
 use http_body_util::BodyExt;
@@ -929,14 +929,24 @@ const KIND: &str = "posting-guidance";
 #[tokio::test]
 async fn profiles_default_to_no_assignment() {
     let response = app()
-        .oneshot(get(&format!("/api/profiles/{KIND}?cwd=/tmp/proj")))
+        .oneshot(get(&format!("/api/profiles/{KIND}")))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let p: ProfilesState = json_body(response).await;
     assert!(p.profiles.is_empty());
     assert!(p.global.is_none());
-    assert!(p.effective_text().is_none());
+
+    let response = app()
+        .oneshot(get(&format!(
+            "/api/profiles/{KIND}/effective?cwd=/tmp/proj"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let e: EffectiveProfile = json_body(response).await;
+    assert!(e.profile.is_none());
+    assert!(e.text.is_none());
 }
 
 /// The compiled-in default is only meaningful for the one kind that ships
@@ -980,11 +990,13 @@ async fn global_profile_assignment_applies_to_every_repo() {
 
     let response = app
         .clone()
-        .oneshot(get(&format!("/api/profiles/{KIND}?cwd=/tmp/proj")))
+        .oneshot(get(&format!(
+            "/api/profiles/{KIND}/effective?cwd=/tmp/proj"
+        )))
         .await
         .unwrap();
-    let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.effective_text(), Some("post more, always"));
+    let e: EffectiveProfile = json_body(response).await;
+    assert_eq!(e.text.as_deref(), Some("post more, always"));
 }
 
 #[tokio::test]
@@ -1022,20 +1034,31 @@ async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
     let response = app
         .clone()
         .oneshot(get(&format!(
-            "/api/profiles/{KIND}?repo=acme/canvas"
+            "/api/profiles/{KIND}/effective?repo=acme/canvas"
         )))
         .await
         .unwrap();
-    let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.effective_text(), Some("canvas-specific text"));
+    let e: EffectiveProfile = json_body(response).await;
+    assert_eq!(e.text.as_deref(), Some("canvas-specific text"));
 
     let response = app
         .clone()
-        .oneshot(get(&format!("/api/profiles/{KIND}?repo=someone/other-repo")))
+        .oneshot(get(&format!(
+            "/api/profiles/{KIND}/effective?repo=someone/other-repo"
+        )))
         .await
         .unwrap();
-    let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.effective_text(), Some("global text"));
+    let e: EffectiveProfile = json_body(response).await;
+    assert_eq!(e.text.as_deref(), Some("global text"));
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/profiles/{KIND}/effective")))
+        .await
+        .unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(raw.get("profiles").is_none());
 }
 
 #[tokio::test]
@@ -1124,7 +1147,10 @@ async fn different_kinds_keep_independent_profile_sets() {
         .await
         .unwrap();
     let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.profiles.get("a").map(String::as_str), Some("guidance text"));
+    assert_eq!(
+        p.profiles.get("a").map(String::as_str),
+        Some("guidance text")
+    );
 
     let response = app
         .clone()
@@ -1132,7 +1158,10 @@ async fn different_kinds_keep_independent_profile_sets() {
         .await
         .unwrap();
     let p: ProfilesState = json_body(response).await;
-    assert_eq!(p.profiles.get("a").map(String::as_str), Some("unrelated text"));
+    assert_eq!(
+        p.profiles.get("a").map(String::as_str),
+        Some("unrelated text")
+    );
 }
 
 #[tokio::test]

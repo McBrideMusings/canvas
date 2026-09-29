@@ -589,9 +589,7 @@
     }
     profileRepoSelectEl.disabled = false;
     try {
-      const p = await getJson(
-        `/api/profiles/${KIND}?repo=${encodeURIComponent(repo)}`
-      );
+      const p = await getJson(`/api/profiles/${KIND}`);
       fillProfileSelect(profileRepoSelectEl, Object.keys(p.profiles).sort(), (p.repos || {})[repo]);
     } catch (e) {}
   }

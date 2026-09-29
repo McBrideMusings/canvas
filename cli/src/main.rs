@@ -13,9 +13,11 @@ fn main() {
                 .ok()
                 .map(|p| p.to_string_lossy().to_string())
                 .and_then(|cwd| {
-                    canvas::client::fetch_profile(canvasd::profiles::KIND_POSTING_GUIDANCE, &cwd)
+                    canvas::client::fetch_profile_text(
+                        canvasd::profiles::KIND_POSTING_GUIDANCE,
+                        &cwd,
+                    )
                 })
-                .and_then(|p| p.effective_text().map(str::to_string))
                 .unwrap_or_else(|| canvas::guidance::TEXT.to_string());
             print!("{text}");
         }
