@@ -1050,6 +1050,33 @@ async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
         .unwrap();
     let e: EffectiveProfile = json_body(response).await;
     assert_eq!(e.text.as_deref(), Some("global text"));
+}
+
+/// The hook path must not carry every profile's text — only the effective one.
+#[tokio::test]
+async fn effective_response_omits_the_profile_set() {
+    let app = app();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "default", "text": "global text"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/definitions"),
+            json!({"name": "other", "text": "unrelated text"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(put(
+            &format!("/api/profiles/{KIND}/global"),
+            json!({"profile": "default"}),
+        ))
+        .await
+        .unwrap();
 
     let response = app
         .clone()
@@ -1057,8 +1084,9 @@ async fn repo_profile_assignment_wins_over_global_for_that_repo_only() {
         .await
         .unwrap();
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(raw.get("profiles").is_none());
+    let raw = String::from_utf8(body.to_vec()).unwrap();
+    assert!(raw.contains("global text"));
+    assert!(!raw.contains("unrelated text"));
 }
 
 #[tokio::test]

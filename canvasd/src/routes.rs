@@ -559,7 +559,10 @@ pub async fn get_effective_profile(
     let config = state.profiles.read().await;
     let set = config.kind(&kind);
     let profile = set.effective_profile(repo.as_deref()).map(str::to_string);
-    let text = set.effective_text(repo.as_deref()).map(str::to_string);
+    let text = profile
+        .as_ref()
+        .and_then(|name| set.profiles.get(name))
+        .cloned();
     Json(EffectiveProfile {
         kind,
         profile,
