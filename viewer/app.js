@@ -1711,7 +1711,7 @@
       .__cv-head button{border:0;background:none;color:#9a9ca5;height:24px;padding:0 8px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;font:12px -apple-system,sans-serif;cursor:pointer;}
       .__cv-head button:hover{background:rgba(255,255,255,0.08);color:#e6e6e6;}
       .__cv-head button.__cv-done{color:#86efac;}
-      .__cv-code pre{margin:0;padding:10px 14px 12px;border:0;border-radius:0;box-sizing:border-box;background:#1e1f24;color:#e6e6e6;overflow-x:auto;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:2;}
+      .__cv-code pre{margin:0;padding:10px 14px 12px;border:0;border-radius:0;box-sizing:border-box;background:#1e1f24;color:#e6e6e6;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:2;}
       .__cv-code pre code{background:none;padding:0;border:0;color:inherit;font:inherit;}
       .__cv-code.__cv-clamped pre{max-height:calc(14 * 1.55em + 22px);overflow-y:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent);}
       .__cv-more{display:block;width:100%;border:0;border-top:1px solid rgba(255,255,255,0.07);background:none;color:#9a9ca5;padding:6px;cursor:pointer;font:12px -apple-system,sans-serif;}
@@ -1727,7 +1727,9 @@
       `<style>html,body{margin:0;overflow:hidden;}` +
       `body{font-family:-apple-system,sans-serif;}` +
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
-      `#__canvas_root{overflow:hidden;}` +
+      `#__canvas_root{overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;}` +
+      `:where(#__canvas_root) *{max-width:100%;}` +
+      `:where(#__canvas_root) :is(img,video){height:auto;}` +
       `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
       `</head><body><div id="__canvas_root">${html}</div>${postStyle}${resizeScript}</body></html>`
     );
