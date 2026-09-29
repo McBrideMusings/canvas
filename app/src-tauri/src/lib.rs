@@ -182,7 +182,7 @@ pub fn run() {
             // the window is ever shown, so a pinned window stays on top of
             // others from the first frame after relaunch.
             if let Some(window) = app.get_webview_window("main") {
-                if read_pinned_state(&app.handle()) {
+                if read_pinned_state(app.handle()) {
                     let _ = window.set_always_on_top(true);
                 }
             }
