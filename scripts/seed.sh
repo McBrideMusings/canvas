@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # admin seed <port> — load a fixed fixture of sessions and posts into the
-# canvas daemon listening on 127.0.0.1:<port>.
+# canvas daemon listening on 127.0.0.1:<port>. The live daemon's port
+# ($CANVAS_PORT, default 8229) is refused, since the clear step below would
+# delete that stream's seed-* sessions.
 #
 # It clears first: every fixture session (ids seed-*) is deleted, taking its
 # cards with it, then recreated, so a second run leaves the same sessions and
@@ -18,6 +20,15 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 base="http://127.0.0.1:${port}"
 root=/tmp/canvas-seed
 ids=(seed-storefront seed-billing seed-docs seed-scratch seed-legacy)
+
+case "${port}" in
+  ''|*[!0-9]*) echo "seed: port must be a number, got '${port}'" >&2; exit 1 ;;
+esac
+live=$((10#${CANVAS_PORT:-8229}))
+if [ $((10#${port})) -eq "${live}" ]; then
+  echo "seed: refusing port ${live}, the live daemon's port; seed a spare port" >&2
+  exit 1
+fi
 
 if ! curl -s -o /dev/null --max-time 2 "${base}/api/state"; then
   echo "seed: no canvas daemon answering on ${base}" >&2
