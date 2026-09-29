@@ -5,7 +5,10 @@
 use std::time::Duration;
 
 use canvas_core::unix_http::{self, Response};
-use canvas_core::{Card, EffectiveProfile, PostRequest, UpdateCardRequest, UpsertSessionRequest};
+use canvas_core::{
+    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, PostRequest,
+    ProfilesState, SetProfileTextRequest, UpdateCardRequest, UpsertSessionRequest,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -29,6 +32,19 @@ impl std::fmt::Display for Failure {
 impl std::error::Error for Failure {}
 
 fn call(method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Response, Failure> {
+    let response = call_any_status(method, path, body)?;
+    if (200..300).contains(&response.status) {
+        Ok(response)
+    } else {
+        Err(Failure::Status(response.status))
+    }
+}
+
+fn call_any_status(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<Response, Failure> {
     let socket = canvas_core::paths::socket_path()
         .ok_or_else(|| Failure::Transport("no HOME to place the socket".to_string()))?;
     let payload = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
@@ -37,13 +53,8 @@ fn call(method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Re
     } else {
         &[]
     };
-    let response = unix_http::request(&socket, method, path, headers, &payload, Some(TIMEOUT))
-        .map_err(|e| Failure::Transport(e.to_string()))?;
-    if (200..300).contains(&response.status) {
-        Ok(response)
-    } else {
-        Err(Failure::Status(response.status))
-    }
+    unix_http::request(&socket, method, path, headers, &payload, Some(TIMEOUT))
+        .map_err(|e| Failure::Transport(e.to_string()))
 }
 
 /// Serialize `body` and POST it to `path`. A body that fails to serialize
@@ -139,6 +150,85 @@ pub fn fetch_profile_text(kind: &str, cwd: &str) -> Option<String> {
     )
     .ok()?;
     into_json::<EffectiveProfile>(response).ok()?.text
+}
+
+/// One `canvas profile` request. Unlike `call`, a non-2xx answer keeps the
+/// daemon's body in the error (the assign routes explain a 400 with
+/// `no profile named "x"`), since the caller is a person or agent who needs
+/// the reason on one stderr line.
+fn profile_call(
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<Response, String> {
+    let response = call_any_status(method, path, body.as_ref()).map_err(|e| e.to_string())?;
+    if (200..300).contains(&response.status) {
+        return Ok(response);
+    }
+    let detail = String::from_utf8_lossy(&response.body);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        Err(Failure::Status(response.status).to_string())
+    } else {
+        Err(format!("{}: {detail}", Failure::Status(response.status)))
+    }
+}
+
+/// `GET /api/profiles/:kind`: every profile, the global assignment, the
+/// per-repo assignments and the built-in default.
+pub fn get_profiles(kind: &str) -> Result<ProfilesState, String> {
+    into_json(profile_call("GET", &format!("/api/profiles/{kind}"), None)?)
+}
+
+/// `GET /api/profiles/:kind/effective`, for `repo` when given, else for the
+/// GitHub repo the daemon resolves from `cwd`.
+pub fn get_effective_profile(
+    kind: &str,
+    repo: Option<&str>,
+    cwd: &str,
+) -> Result<EffectiveProfile, String> {
+    let query = match repo {
+        Some(repo) => format!("repo={}", percent_encode(repo)),
+        None => format!("cwd={}", percent_encode(cwd)),
+    };
+    into_json(profile_call(
+        "GET",
+        &format!("/api/profiles/{kind}/effective?{query}"),
+        None,
+    )?)
+}
+
+/// `PUT /api/profiles/:kind/definitions`: `text: None` deletes the profile.
+pub fn set_profile_text(kind: &str, name: &str, text: Option<String>) -> Result<(), String> {
+    let body = SetProfileTextRequest {
+        name: name.to_string(),
+        text,
+    };
+    profile_call(
+        "PUT",
+        &format!("/api/profiles/{kind}/definitions"),
+        Some(serde_json::to_value(body).unwrap_or_default()),
+    )
+    .map(|_| ())
+}
+
+/// `PUT /api/profiles/:kind/global` (`repo: None`) or `…/repos`.
+pub fn assign_profile(kind: &str, repo: Option<&str>, profile: Option<&str>) -> Result<(), String> {
+    let profile = profile.map(str::to_string);
+    let (path, body) = match repo {
+        Some(repo) => (
+            format!("/api/profiles/{kind}/repos"),
+            serde_json::to_value(AssignRepoProfileRequest {
+                repo: repo.to_string(),
+                profile,
+            }),
+        ),
+        None => (
+            format!("/api/profiles/{kind}/global"),
+            serde_json::to_value(AssignGlobalProfileRequest { profile }),
+        ),
+    };
+    profile_call("PUT", &path, Some(body.unwrap_or_default())).map(|_| ())
 }
 
 /// `canvas wait`: polls `GET /api/cards/:id/reply` every 250ms until a reply

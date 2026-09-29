@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas guidance | canvas install [repo] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -56,6 +56,20 @@ fn main() {
                 }
             };
             if let Err(e) = canvas::post::run(parsed.arg, parsed.format_flag, parsed.update_id) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some("profile") => {
+            // Run on purpose, so failures are loud like `canvas post`.
+            let parsed = match canvas::profile::parse_args(&args[2..]) {
+                Ok(parsed) => parsed,
+                Err(canvas::profile::UsageError) => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+            };
+            if let Err(e) = canvas::profile::run(parsed) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

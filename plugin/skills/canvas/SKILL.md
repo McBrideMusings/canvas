@@ -149,3 +149,26 @@ non-zero. On success it prints one JSON line to stdout —
 `{"card_id": "...", "images": [...], "targets": [...]}` — listing the local
 images and clickable targets it found. Check the exit code and read the
 message rather than assuming the post landed.
+
+## Adjusting guidance
+
+The posting guidance a session receives is a named profile: the one assigned to the
+session's GitHub repo, else the one assigned globally, else the built-in default. Change
+the guidance for the repo you are working in:
+
+```
+canvas profile set terse notes.md     # create or replace a profile from a file (or "-" for stdin)
+canvas profile assign terse --here    # use it for this directory's GitHub repo
+canvas profile show --effective       # print the text this repo's sessions get
+canvas profile unassign --here        # back to the global profile or the default
+```
+
+Other verbs: `canvas profile list` (profiles, the global and per-repo assignments, whether the
+built-in default exists), `canvas profile show <name>`, `canvas profile delete <name>`,
+`canvas profile assign <name>` (globally), and `--repo owner/name` in place of `--here` to
+name a repo directly. `--kind <k>` selects the profile kind; it defaults to `posting-guidance`,
+the only kind today. `--here` fails if the directory has no GitHub `origin`; every verb prints
+one line on stderr and exits non-zero on any error.
+
+A change applies to sessions that start after it: the SessionStart hook reads the effective
+profile once, when the session starts.
