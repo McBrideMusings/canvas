@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# admin seed <socket> — load a fixed fixture of sessions and posts into the
+# bash scripts/seed.sh <socket> — load a fixed fixture of sessions and posts into the
 # canvas daemon listening on the Unix socket at <socket>. The live daemon's
 # socket (canvasd.sock in ~/Library/Application Support/canvas) is refused, since the clear step below would delete that
 # stream's seed-* sessions.
@@ -15,7 +15,7 @@
 # session's repo.
 set -euo pipefail
 
-socket="${1:?usage: admin seed <socket>}"
+socket="${1:?usage: bash scripts/seed.sh <socket>}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 root=/tmp/canvas-seed
 ids=(seed-storefront seed-billing seed-docs seed-scratch seed-legacy)

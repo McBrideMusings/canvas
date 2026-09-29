@@ -3,7 +3,8 @@
 //! `canvas` binary that was just deployed.
 //!
 //! The marketplace is registered as a `directory` source pointing at the
-//! checkout, never a git remote: the repo is private and local-only. Like
+//! checkout, never a git remote, so the plugin always comes from the same
+//! checkout the binary was built from. Like
 //! `post`, every failure prints one line on stderr and exits non-zero.
 
 use std::path::{Path, PathBuf};

@@ -109,7 +109,7 @@ beside the terminal all day.
   assigned the response has no text and they print the compiled-in default from
   `guidance.md`. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a
-  local `directory` marketplace (never a git remote — the repo is private) and
+  local `directory` marketplace (never a git remote, so the plugin comes from the same checkout as the binary) and
   installs or updates `canvas@canvas` from it. `admin deploy canvas` installs
   the `canvas` binary and then runs `canvas install`, so the binary and the
   plugin always come from the same commit. Bump `plugin/.claude-plugin/plugin.json`'s

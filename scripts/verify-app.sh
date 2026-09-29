@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# admin verify-app <start|shot <png>|stop|env> — run a throwaway canvas daemon
+# bash scripts/verify-app.sh <start|shot <png>|stop|env> — run a throwaway canvas daemon
 # and a dev Canvas.app on their own Unix socket, and capture the app window.
 #
 # Canvas has no browser-reachable port, so the app window is the only viewer;
@@ -21,7 +21,7 @@ socket="${dir}/canvasd.sock"
 case "${1:-}" in
   start)
     if [ -f "${dir}/app.pid" ] && kill -0 "$(cat "${dir}/app.pid")" 2>/dev/null; then
-      echo "verify-app: already running (admin verify-app stop first)" >&2
+      echo "verify-app: already running (bash scripts/verify-app.sh stop first)" >&2
       exit 1
     fi
     rm -rf "${dir}"
@@ -39,7 +39,7 @@ case "${1:-}" in
     echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), socket ${socket}"
     ;;
   shot)
-    out="${2:?usage: admin verify-app shot <png>}"
+    out="${2:?usage: bash scripts/verify-app.sh shot <png>}"
     pid="$(cat "${dir}/app.pid")"
     cat > "${dir}/winid.swift" <<EOF
 import CoreGraphics
@@ -67,7 +67,7 @@ EOF
     echo "verify-app: stopped"
     ;;
   *)
-    echo "usage: admin verify-app <start|shot <png>|stop|env>" >&2
+    echo "usage: bash scripts/verify-app.sh <start|shot <png>|stop|env>" >&2
     exit 2
     ;;
 esac
