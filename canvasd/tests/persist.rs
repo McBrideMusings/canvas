@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::http::Request;
@@ -38,13 +38,13 @@ async fn state_of(app: &axum::Router) -> Value {
 }
 
 /// Drop the app, then start a new one on the same directory.
-async fn restart(state: AppState, dir: &PathBuf) -> axum::Router {
+async fn restart(state: AppState, dir: &Path) -> axum::Router {
     state.flush_store();
     drop(state);
     build_router(AppState::open(dir).await)
 }
 
-fn line_count(dir: &PathBuf) -> usize {
+fn line_count(dir: &Path) -> usize {
     std::fs::read_to_string(dir.join("stream.jsonl")).unwrap().lines().count()
 }
 
