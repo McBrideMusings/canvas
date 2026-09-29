@@ -1462,6 +1462,12 @@
         function canvasSendHeight() {
           var h = Math.ceil(canvasRoot.getBoundingClientRect().bottom + window.pageYOffset +
             canvasBelow(document.body) + canvasBelow(document.documentElement));
+          // Safety net: if the document is taller than the iframe's viewport,
+          // the post is being clipped whatever the wrapper measurement said.
+          // scrollHeight is only trusted when it exceeds the viewport, so it
+          // cannot hold the height up after the content shrinks.
+          var se = document.scrollingElement || document.documentElement;
+          if (se.scrollHeight > window.innerHeight + 1) h = Math.max(h, se.scrollHeight);
           parent.postMessage({ type: 'canvas-resize', height: h }, '*');
         }
         window.addEventListener('load', canvasSendHeight);
@@ -1833,6 +1839,12 @@
           const wasAbove = cardIsAboveViewport(cardEl);
           const before = frame.offsetHeight;
           frame.style.height = `${Math.max(20, data.height)}px`;
+          // An arriving card clips at --arrive-height, measured before this
+          // iframe reported its real height; keep the clip at the content's
+          // height so the post is never cut off mid-slide.
+          if (cardEl.classList.contains("arriving")) {
+            cardEl.style.setProperty("--arrive-height", `${cardEl.scrollHeight}px`);
+          }
           if (wasAbove) holdPlace(frame.offsetHeight - before);
           break;
         }
