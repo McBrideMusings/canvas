@@ -117,10 +117,10 @@ fn assign_global_is_what_effective_returns_and_unassign_clears_it() {
     canvas(&d, &["set", "terse", "-"], Some("Post rarely.\n"), None);
     assert!(canvas(&d, &["assign", "terse"], None, None).status.success());
     let eff = canvas(&d, &["show", "--effective", "--repo", "octo/hello"], None, None);
-    assert_eq!(out(&eff), "Post rarely.\n");
+    assert_eq!(out(&eff), "Post rarely.");
     assert!(canvas(&d, &["unassign"], None, None).status.success());
     let eff = out(&canvas(&d, &["show", "--effective", "--repo", "octo/hello"], None, None));
-    assert_ne!(eff, "Post rarely.\n");
+    assert_ne!(eff, "Post rarely.");
     assert!(!eff.is_empty(), "falls back to the built-in default");
 }
 
@@ -149,10 +149,11 @@ fn here_assigns_the_repo_the_hook_reads_with_cwd() {
     assert!(assign.status.success(), "{}", err(&assign));
     assert!(out(&assign).contains("octo/hello"));
     // No --repo: the daemon resolves ?cwd= itself, as the hook does.
-    let eff = canvas(&d, &["show", "--effective"], None, Some(&repo));
-    assert_eq!(out(&eff), "Repo text.\n");
+    // Additive is the default mode, so a repo-only assignment is the built-in text then the repo's.
+    let eff = out(&canvas(&d, &["show", "--effective"], None, Some(&repo)));
+    assert!(eff.ends_with("\n\nRepo text."), "{eff}");
     assert!(canvas(&d, &["unassign", "--here"], None, Some(&repo)).status.success());
-    assert_ne!(out(&canvas(&d, &["show", "--effective"], None, Some(&repo))), "Repo text.\n");
+    assert!(!out(&canvas(&d, &["show", "--effective"], None, Some(&repo))).contains("Repo text."));
 }
 
 #[test]
