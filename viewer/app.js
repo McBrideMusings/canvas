@@ -228,12 +228,18 @@
       hideEnded: typeof stored.hideEnded === "boolean" ? stored.hideEnded : true,
       animate: typeof stored.animate === "boolean" ? stored.animate : true,
       colorBy: stored.colorBy === "session" ? "session" : "repo",
+      fullWidth: typeof stored.fullWidth === "boolean" ? stored.fullWidth : false,
       shown: ids(stored.shown),
       hidden: ids(stored.hidden),
     };
   }
 
   const prefs = loadPrefs();
+
+  function applyFullWidth() {
+    document.documentElement.classList.toggle("full-width", prefs.fullWidth);
+  }
+  applyFullWidth();
 
   // What this window last wrote or read, so a stored value that differs is
   // known to come from the Settings window.
@@ -264,6 +270,7 @@
     const colorBy = prefs.colorBy;
     Object.assign(prefs, loadPrefs());
     if (prefs.colorBy !== colorBy) recolourSessions();
+    applyFullWidth();
     refreshVisibility();
   }
 

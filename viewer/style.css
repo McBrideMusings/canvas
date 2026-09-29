@@ -587,6 +587,12 @@ body {
   margin: 0 auto;
 }
 
+/* Settings > Appearance > Full-width cards: the column fills the window. */
+html.full-width #cards,
+html.full-width .empty-state {
+  max-width: none;
+}
+
 .empty-state {
   color: #666;
   padding: 40px 0;

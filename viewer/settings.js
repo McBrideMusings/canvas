@@ -25,6 +25,7 @@
 
   const archiveEnded = document.getElementById("archive-ended");
   const animate = document.getElementById("animate");
+  const fullWidth = document.getElementById("full-width");
   const colourButtons = Array.from(document.querySelectorAll("[data-color-by]"));
 
   // Daemon tab: only Canvas.app's WKWebView injects window.__TAURI__ (see
@@ -615,6 +616,7 @@
     const stored = readStored();
     archiveEnded.checked = typeof stored.hideEnded === "boolean" ? stored.hideEnded : true;
     animate.checked = typeof stored.animate === "boolean" ? stored.animate : true;
+    fullWidth.checked = typeof stored.fullWidth === "boolean" ? stored.fullWidth : false;
     const colorBy = stored.colorBy === "session" ? "session" : "repo";
     for (const btn of colourButtons) {
       btn.setAttribute("aria-pressed", btn.dataset.colorBy === colorBy ? "true" : "false");
@@ -633,6 +635,12 @@
   animate.addEventListener("change", () => {
     change((stored) => {
       stored.animate = animate.checked;
+    });
+  });
+
+  fullWidth.addEventListener("change", () => {
+    change((stored) => {
+      stored.fullWidth = fullWidth.checked;
     });
   });
 
