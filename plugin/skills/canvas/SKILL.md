@@ -57,6 +57,11 @@ Markdown source passes through unchanged. Text renders as an HTML-escaped
 `<pre>` block. HTML passes through as-is and must be self-contained: inline
 styles or a `<style>` block, no external stylesheet.
 
+Code blocks (`<pre>`) render dark with light text. If you paint a background
+inside one — diff rows, highlights — set a dark `color` on that element too, so
+the text stays readable on it (the viewer corrects low contrast, but say what
+you mean).
+
 ### Local paths and links
 
 An image at an absolute path that exists — `![](/abs/shot.png)` in Markdown

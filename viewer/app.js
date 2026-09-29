@@ -1654,6 +1654,50 @@
             box.appendChild(more);
           }
         });
+
+        // The block is dark and its text light, but a post can paint its own
+        // background on a span inside it (a diff's pink and green rows) and
+        // leave the text colour to inherit, giving light text on a pale row.
+        // Walk each <pre>'s elements in order, blend every background over
+        // its parent's, and where the text falls below 4.5:1 against the
+        // result, set whichever of near-black or near-white reads better.
+        var CANVAS_PRE_BG = [30, 31, 36, 1];
+        function canvasRgba(s) {
+          var m = /rgba?\\(([^)]+)\\)/.exec(s);
+          if (!m) return [0, 0, 0, 0];
+          var p = m[1].split(/[ ,\\/]+/).filter(Boolean).map(parseFloat);
+          return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+        }
+        function canvasBlend(top, under) {
+          var a = top[3];
+          return [0, 1, 2].map(function (i) { return top[i] * a + under[i] * (1 - a); }).concat([1]);
+        }
+        function canvasLum(c) {
+          var l = c.slice(0, 3).map(function (v) {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+        }
+        function canvasContrast(a, b) {
+          var x = canvasLum(a), y = canvasLum(b);
+          return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+        }
+        canvasRoot.querySelectorAll('pre').forEach(function (pre) {
+          var bgOf = new Map();
+          bgOf.set(pre, CANVAS_PRE_BG);
+          pre.querySelectorAll('*').forEach(function (el) {
+            var cs = getComputedStyle(el);
+            var bg = canvasBlend(canvasRgba(cs.backgroundColor), bgOf.get(el.parentElement));
+            bgOf.set(el, bg);
+            var fg = canvasRgba(cs.color);
+            if (fg[3] < 1) fg = canvasBlend(fg, bg);
+            if (canvasContrast(fg, bg) >= 4.5) return;
+            var dark = [26, 26, 26, 1], light = [230, 230, 230, 1];
+            var pick = canvasContrast(dark, bg) >= canvasContrast(light, bg) ? '#1a1a1a' : '#e6e6e6';
+            el.style.setProperty('color', pick, 'important');
+          });
+        });
       </script>
     `;
     // Injected after the post's markup so it wins at equal specificity.
