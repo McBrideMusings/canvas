@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
+    "usage: canvas hook <session-start|session-end> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -72,6 +72,30 @@ fn main() {
             if let Err(e) = canvas::profile::run(parsed) {
                 eprintln!("{e}");
                 std::process::exit(1);
+            }
+        }
+        Some("card") => {
+            // Prints the card the way canvasd holds it: one JSON object
+            // with its id, session, time, html, images and targets.
+            let card_id = match args.get(2) {
+                Some(id) => id,
+                None => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+            };
+            match canvas::client::get_card(card_id) {
+                Ok(card) => match serde_json::to_string(&card) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
         }
         Some("wait") => {

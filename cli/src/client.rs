@@ -261,6 +261,12 @@ pub fn get_reply(card_id: &str) -> Result<Option<serde_json::Value>, String> {
     }
 }
 
+/// `canvas card`: one card as the daemon holds it, for an agent handed a
+/// card id (from a pasted post link) to read the HTML the viewer renders.
+pub fn get_card(card_id: &str) -> Result<Card, String> {
+    handle_card_response(call("GET", &format!("/api/cards/{card_id}"), None))
+}
+
 fn handle_card_response(result: Result<Response, Failure>) -> Result<Card, String> {
     match result {
         Ok(response) => into_json(response),

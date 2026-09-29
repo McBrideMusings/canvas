@@ -29,3 +29,4 @@ log = "0.4"
 tauri = { version = "2.10.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 canvas-core = { path = "../../canvas-core" }
+tauri-plugin-deep-link = "2"

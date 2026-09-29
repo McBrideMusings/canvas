@@ -44,6 +44,11 @@ beside the terminal all day.
   copy and restart when the bundled binary already matches what's installed
   so an ordinary relaunch doesn't empty the daemon's in-memory stream. A
   debug build skips this — `admin dev canvas` runs the daemon separately.
+  It registers the `canvas-post` URL scheme (`tauri-plugin-deep-link`,
+  `tauri.conf.json`; only a bundled build carries it in `Info.plist`): opening
+  `canvas-post://<card_id>` shows the window and parks the id in `PendingCard`,
+  and the viewer takes it with `take_pending_card` once its state has loaded,
+  clears search and filters, scrolls to the card and rings it.
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
 - `viewer/` — plain `index.html` + JS, no build step, loaded only by
@@ -80,6 +85,9 @@ beside the terminal all day.
   `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
   stdout: `{"card_id": "...", "images": [...], "targets": [...]}`. Hook
   dispatch never starts a tokio runtime; only `canvas daemon` does.
+  `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
+  a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
+  can be read by an agent.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
   instead, replacing that card's html/images/targets in place (same id and
   session_id) rather than creating a new one; 404s if the id doesn't exist.

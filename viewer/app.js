@@ -75,6 +75,10 @@
           svgEl("rect", { x: "3", y: "7", width: "13", height: "15", rx: "2" })
         );
         break;
+      case "link":
+        svg.appendChild(svgEl("path", { d: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" }));
+        svg.appendChild(svgEl("path", { d: "M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" }));
+        break;
       case "check":
         svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
         break;
@@ -1067,6 +1071,16 @@
     );
   }
 
+  // The link Canvas.app registers as a URL scheme; opening it brings the
+  // post up (openCardLink), and `canvas card <id>` prints the post.
+  function copyPostLink(card) {
+    closeMenu();
+    navigator.clipboard.writeText(`canvas-post://${card.id}`).then(
+      () => toast("Copied post link"),
+      () => toast("Couldn't copy post link")
+    );
+  }
+
   function showOnlySession(sessionId) {
     closeMenu();
     selectSession(sessionId);
@@ -1084,6 +1098,7 @@
     menu.setAttribute("aria-label", "Post actions");
 
     menu.appendChild(buildMenuItem("copy", "Copy post text", () => copyPostText(card)));
+    menu.appendChild(buildMenuItem("link", "Copy post link", () => copyPostLink(card)));
     menu.appendChild(
       buildMenuItem("filter", `Show only ${sessionName(card.sessionId)}`, () =>
         showOnlySession(card.sessionId)
@@ -1435,8 +1450,18 @@
     const resizeScript = `
       <script>
         var canvasRoot = document.getElementById('__canvas_root');
+        // A post's own <style> can pad or margin body and html (the wrapper
+        // sits inside them). The wrapper's bottom edge measured from the
+        // top of the document already carries everything above it; what
+        // sits below it is added back.
+        function canvasBelow(el) {
+          var s = getComputedStyle(el);
+          return parseFloat(s.marginBottom) + parseFloat(s.paddingBottom) +
+            parseFloat(s.borderBottomWidth);
+        }
         function canvasSendHeight() {
-          var h = Math.ceil(canvasRoot.getBoundingClientRect().height);
+          var h = Math.ceil(canvasRoot.getBoundingClientRect().bottom + window.pageYOffset +
+            canvasBelow(document.body) + canvasBelow(document.documentElement));
           parent.postMessage({ type: 'canvas-resize', height: h }, '*');
         }
         window.addEventListener('load', canvasSendHeight);
@@ -2290,5 +2315,44 @@
     return Promise.all(registered);
   }
 
-  connectEvents().then(loadState);
+  // A `canvas-post://<card id>` link waits in the app until the viewer takes
+  // it. The viewer takes it only once the stream is loaded, so a link that
+  // launched the app finds its card; loadState calls this again when done.
+  let stateLoaded = false;
+
+  async function openPendingCard() {
+    if (!stateLoaded || !tauriCore) return;
+    const id = await tauriCore.invoke("take_pending_card");
+    if (id) openCardLink(id);
+  }
+
+  // Clears whatever hides the card (search, session filter, an archived
+  // session), scrolls it to the middle and flashes its ring.
+  function openCardLink(id) {
+    const card = cards.get(id);
+    if (!card) {
+      toast("That post is gone — Canvas keeps the newest 500 for 24 hours");
+      return;
+    }
+    setQuery("");
+    resetVisibility();
+    const session = sessions.get(card.sessionId);
+    if (session && isHidden(session)) showSession(session.id);
+    const el = cardsEl.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.classList.remove("ring");
+    void el.offsetWidth;
+    el.classList.add("ring");
+    setTimeout(() => el.classList.remove("ring"), 1900);
+  }
+
+  if (tauriCore) window.__TAURI__.event.listen("canvas-open-card", openPendingCard);
+
+  connectEvents()
+    .then(loadState)
+    .then(() => {
+      stateLoaded = true;
+      return openPendingCard();
+    });
 })();

@@ -128,8 +128,13 @@ On the agent side:
 
 ```
 canvas wait <card_id> [--timeout secs]   # blocks until a reply lands (default 30s), prints it as JSON
+canvas card <card_id>                    # prints one post as JSON (id, sessionId, at, html, images, targets)
 canvas replies <card_id>                 # one non-blocking check: prints the value and exits 0 if answered
 ```
+
+`canvas card` also reads a post the user points at: their "Copy post link" menu item
+produces `canvas-post://<card_id>`, so a pasted link means `canvas card <card_id>` — use the
+`html` field to see what the post renders, and `canvas post --update <card_id>` to fix it.
 
 `canvas replies` exits 1 for "no reply yet" — keep polling — and exits 3 with a message
 on stderr if canvasd itself couldn't be reached, so a script polling on exit code alone

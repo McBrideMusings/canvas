@@ -1,7 +1,8 @@
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 mod bridge;
 mod daemon;
@@ -89,6 +90,38 @@ fn daemon_status(app: tauri::AppHandle, state: tauri::State<daemon::DaemonState>
     daemon::query_status(&app, stored_error)
 }
 
+// The card id a `canvas-post://<card id>` link named, waiting for the viewer to
+// take it. A link that launches the app arrives before the page has loaded
+// and started listening, so the id is held here rather than only emitted.
+struct PendingCard(std::sync::Mutex<Option<String>>);
+
+// The viewer calls this at startup and again on every `canvas-open-card`
+// event; it returns the id once and clears it.
+#[tauri::command]
+fn take_pending_card(state: tauri::State<PendingCard>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
+
+// Handles the URLs the OS handed the app (the `canvas-post` scheme in
+// tauri.conf.json): shows the main window and tells the viewer which card to
+// bring up.
+fn open_card_links(app: &tauri::AppHandle, urls: &[tauri::Url]) {
+    let Some(id) = urls
+        .iter()
+        .find(|u| u.scheme() == "canvas-post")
+        .and_then(|u| u.host_str())
+    else {
+        return;
+    };
+    *app.state::<PendingCard>().0.lock().unwrap() = Some(id.to_string());
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("canvas-open-card", ());
+}
+
 // The default macOS menu with "Settings…" (⌘,) added under the app menu's
 // About item.
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
@@ -105,6 +138,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .register_asynchronous_uri_scheme_protocol("canvas", |_ctx, request, responder| {
             // The socket read blocks, so each request gets its own thread.
             std::thread::spawn(move || responder.respond(bridge::proxy(request)));
@@ -113,7 +147,8 @@ pub fn run() {
             set_pinned,
             get_pinned,
             open_settings,
-            daemon_status
+            daemon_status,
+            take_pending_card
         ])
         .setup(|app| {
             // Debug builds aren't bundled (no Resources dir to install from);
@@ -126,6 +161,14 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || bridge::forward_events(handle));
             app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
+            app.manage(PendingCard(std::sync::Mutex::new(None)));
+
+            let link_handle = app.handle().clone();
+            app.deep_link()
+                .on_open_url(move |event| open_card_links(&link_handle, &event.urls()));
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                open_card_links(app.handle(), &urls);
+            }
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(

@@ -210,6 +210,15 @@ pub async fn post_explicit(
     (StatusCode::OK, Json(card)).into_response()
 }
 
+/// One card as the daemon holds it; 404s when the id names none.
+pub async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let inner = state.inner.read().await;
+    match inner.cards.iter().find(|c| c.id == id) {
+        Some(card) => Json(card.clone()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Replaces an existing card's content in place — same id and session, a
 /// fresh `at` (it's the card's last-touched time, same sense `prune_before`
 /// uses it in). 404s rather than creating one: an id an agent doesn't

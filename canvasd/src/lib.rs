@@ -38,7 +38,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/profiles/:kind/repos", put(routes::set_repo_profile))
         .route(
             "/api/cards/:id",
-            delete(routes::delete_card).put(routes::update_card),
+            get(routes::get_card)
+                .delete(routes::delete_card)
+                .put(routes::update_card),
         )
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
