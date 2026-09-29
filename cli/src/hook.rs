@@ -38,9 +38,24 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         "session-start" => {
             let text = match read_input() {
                 Ok(input) => {
-                    let _ = client::upsert_session(&input.session_id, &input.cwd);
-                    client::fetch_profile_text(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
-                        .unwrap_or_else(|| crate::guidance::TEXT.to_string())
+                    // Both calls have a 1s timeout, so running them in
+                    // parallel caps the hook at ~1s. Each handle is joined
+                    // so a panic is swallowed rather than re-raised by the
+                    // scope.
+                    std::thread::scope(|s| {
+                        let register = s.spawn(|| {
+                            let _ = client::upsert_session(&input.session_id, &input.cwd);
+                        });
+                        let fetch = s.spawn(|| {
+                            client::fetch_profile_text(
+                                canvasd::profiles::KIND_POSTING_GUIDANCE,
+                                &input.cwd,
+                            )
+                        });
+                        let _ = register.join();
+                        fetch.join().ok().flatten()
+                    })
+                    .unwrap_or_else(|| crate::guidance::TEXT.to_string())
                 }
                 Err(_) => crate::guidance::TEXT.to_string(),
             };
