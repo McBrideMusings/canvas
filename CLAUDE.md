@@ -91,6 +91,12 @@ beside the terminal all day.
   no error label, no re-sent reply; the post comes a turn late); otherwise it
   prints nothing. With nothing assigned or canvasd unreachable it uses
   `plugin/stop-triggers.txt`, compiled in.
+  Everything that differs between coding agents sits behind the `AgentAdapter`
+  trait in `cli/src/agent.rs`: the environment variable that names the session
+  (`CLAUDE_CODE_SESSION_ID` for Claude Code, which `canvas post` reads), the hook's
+  stdin shape, and how the transcript reads as a finished turn. `canvas hook
+  <event> --agent <name>` picks the adapter; with no flag it is Claude Code, and
+  an unknown name makes the hook exit 0 silently.
   `canvas guidance` prints that same block unconditionally, for a person or
   agent to read on demand.
   `canvas profile list|show|set|delete|assign|unassign` reads and changes the
