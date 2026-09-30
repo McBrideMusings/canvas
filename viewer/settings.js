@@ -211,6 +211,7 @@
       btn.setAttribute("aria-pressed", String(btn.dataset.profileMode === mode));
     }
     profileModeNoteEl.textContent = MODE_NOTES[mode];
+    refreshForms();
   }
 
   // What a session in the typed repo receives, per the daemon's own join.
@@ -317,6 +318,239 @@
     "M4 7h16M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13M10 11v6M14 11v6";
   const PENCIL_PATH = "M16.5 3.5a1.5 1.5 0 012.12 2.12L7 17.25 3 18l.75-4L15.38 3.38a1.5 1.5 0 011.12-.5z";
 
+  // --- Stop-hook triggers form: a view over the profile text (model in
+  // stop-form.js). The textarea stays the store; every control reparses it,
+  // edits one directive and writes the text back, so the raw view, the form
+  // and `canvas profile` always agree.
+  let globalName = null;
+  let formRefreshers = [];
+
+  // Additive mode applies a repo profile after the global one, so any profile
+  // that isn't the global assignment is a set of edits to a base.
+  const isLayered = (name) => profileMode === "additive" && name !== globalName;
+  const layerBase = () => (globalName ? `global profile "${globalName}"` : "built-in default");
+
+  function h(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  const FORM_FLAGS = [
+    ["image", "Image", "An image was looked at"],
+    ["file", "File", "A file changed outside scratch space"],
+    ["report", "Report", "The turn ends with a closing report"],
+    ["verify", "Verify", "The user is asked to verify or try something"],
+  ];
+  const FORM_COUNTS = [
+    ["links", "Links", "or more links in a reply", StopForm.DEFAULT_LINKS],
+    ["long-block", "Long block", "or more lines in a code block or table", StopForm.DEFAULT_LONG_BLOCK],
+  ];
+
+  // Builds the Form/Text switch and the form for `textarea`; the caller
+  // appends the returned nodes just before it. `layered()` says whether this profile is applied after a base, `base()`
+  // names that base.
+  function stopFormNodes(textarea, layered, base) {
+    const formEl = h("div", "stop-form");
+    const switcher = h("span", "seg");
+    switcher.setAttribute("role", "group");
+    switcher.setAttribute("aria-label", "Editor view");
+    const formBtn = h("button", "seg-btn", "Form");
+    const textBtn = h("button", "seg-btn", "Text");
+    formBtn.type = textBtn.type = "button";
+    switcher.append(formBtn, textBtn);
+    const bar = h("div", "stop-form-bar");
+    bar.append(switcher);
+
+    let view = "form";
+    const showView = (next) => {
+      view = next;
+      formBtn.setAttribute("aria-pressed", String(view === "form"));
+      textBtn.setAttribute("aria-pressed", String(view === "text"));
+      formEl.hidden = view !== "form";
+      textarea.hidden = view !== "text";
+      if (view === "form") renderForm();
+    };
+    formBtn.addEventListener("click", () => showView("form"));
+    textBtn.addEventListener("click", () => showView("text"));
+
+    const edit = (fn) => {
+      const model = StopForm.parse(textarea.value);
+      fn(model);
+      textarea.value = StopForm.emit(model);
+      renderForm();
+    };
+
+    function segControl(label, states, current, onPick) {
+      const seg = h("span", "seg");
+      seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", label);
+      for (const [value, text] of states) {
+        const btn = h("button", "seg-btn", text);
+        btn.type = "button";
+        btn.setAttribute("aria-pressed", String(value === current));
+        btn.addEventListener("click", () => onPick(value));
+        seg.append(btn);
+      }
+      return seg;
+    }
+
+    // Layered: Inherit writes no line, On/Off write one that overrides the
+    // base. Standalone: there is no base, so On is a line and Off is none.
+    function stateOf(value, isLayered) {
+      if (value === undefined) return isLayered ? "inherit" : "off";
+      return value === false ? "off" : "on";
+    }
+
+    function renderRow(model, layeredNow, key, label, hint, count) {
+      const row = h("div", "stop-form-row");
+      const name = h("div", "stop-form-name");
+      name.append(h("span", "stop-form-label", label), h("span", "stop-form-hint", hint));
+      const value = StopForm.get(model, key);
+      const state = stateOf(value, layeredNow);
+      const states = layeredNow
+        ? [["inherit", "Inherit"], ["on", "On"], ["off", "Off"]]
+        : [["on", "On"], ["off", "Off"]];
+      const control = segControl(label, states, state, (next) => {
+        edit((m) => {
+          if (next === "inherit" || (next === "off" && !layeredNow)) StopForm.set(m, key, undefined);
+          else if (next === "off") StopForm.set(m, key, false);
+          else StopForm.set(m, key, count ? count[3] : true);
+        });
+      });
+      const end = h("span", "stop-form-end");
+      if (count) {
+        const input = h("input", "stop-form-number");
+        input.type = "number";
+        input.min = "1";
+        input.step = "1";
+        input.setAttribute("aria-label", `${label} threshold`);
+        input.disabled = state !== "on";
+        input.value = typeof value === "number" ? String(value) : "";
+        input.placeholder = String(count[3]);
+        input.addEventListener("change", () => {
+          const n = Number.parseInt(input.value, 10);
+          if (n >= 1) edit((m) => StopForm.set(m, key, n));
+          else renderForm();
+        });
+        end.append(input, h("span", "stop-form-hint", count[2]));
+      }
+      row.append(name, control, end);
+      return row;
+    }
+
+    function renderList(model, layeredNow, prefix, title, hint, word) {
+      const block = h("div", "stop-form-list");
+      block.append(h("div", "stop-form-label", title), h("div", "stop-form-hint", hint));
+      const chips = h("div", "stop-form-chips");
+      for (const entry of StopForm.entries(model, prefix)) {
+        if (entry.value === false && !layeredNow) continue;
+        const chip = h("span", "stop-chip" + (entry.value ? "" : " stop-chip-removed"));
+        chip.append(h("span", "stop-chip-text", (entry.value ? "" : "no ") + entry.label));
+        const x = h("button", "stop-chip-x", "×");
+        x.type = "button";
+        x.title = "Remove this line";
+        x.setAttribute("aria-label", `Remove ${entry.value ? "" : "no "}${entry.label}`);
+        x.addEventListener("click", () => edit((m) => StopForm.set(m, entry.key, undefined)));
+        chip.append(x);
+        chips.append(chip);
+      }
+      const add = h("div", "stop-form-add");
+      const input = h("input", "guidance-repo-input");
+      input.type = "text";
+      input.placeholder = word === "phrase" ? "phrase to count as asking to verify" : "path prefix, e.g. /tmp/";
+      input.setAttribute("aria-label", `New ${word}`);
+      const apply = (value) => {
+        const text = input.value.trim();
+        if (!text) return;
+        const label = word === "phrase" ? text.toLowerCase() : text;
+        edit((m) => StopForm.set(m, `${word}:${label}`, value, label));
+      };
+      const addBtn = h("button", "btn btn-secondary", "Add");
+      addBtn.type = "button";
+      addBtn.addEventListener("click", () => apply(true));
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          apply(true);
+        }
+      });
+      add.append(input, addBtn);
+      if (layeredNow) {
+        const removeBtn = h("button", "btn btn-secondary", "Remove from base");
+        removeBtn.type = "button";
+        removeBtn.addEventListener("click", () => apply(false));
+        add.append(removeBtn);
+      }
+      block.append(chips, add);
+      return block;
+    }
+
+    function renderForm() {
+      const layeredNow = layered();
+      const model = StopForm.parse(textarea.value);
+      formEl.innerHTML = "";
+      const banner = h("p", "stop-form-banner");
+      banner.textContent = layeredNow
+        ? `Layered: these lines are applied after the ${base()}. Inherit leaves a setting as it is; ` +
+          "On and Off write a line that overrides it."
+        : "Standalone: this profile is the whole configuration, so anything not switched on is off.";
+      formEl.append(banner);
+      for (const [key, label, hint] of FORM_FLAGS) {
+        formEl.append(renderRow(model, layeredNow, key, label, hint, null));
+      }
+      for (const count of FORM_COUNTS) {
+        formEl.append(renderRow(model, layeredNow, count[0], count[1], "", count));
+      }
+      formEl.append(
+        renderList(model, layeredNow, "phrase:", "Phrases", "Text that counts as asking the user to verify", "phrase"),
+        renderList(model, layeredNow, "scratch:", "Scratch prefixes", "Files under these paths are not worth posting", "scratch")
+      );
+      // The hook's own switch: standalone shows the hook as on unless an
+      // `off` line says otherwise.
+      const enabled = StopForm.get(model, "enabled");
+      const row = h("div", "stop-form-row");
+      const name = h("div", "stop-form-name");
+      name.append(h("span", "stop-form-label", "Stop hook"), h("span", "stop-form-hint", "Off stops every trigger above"));
+      const states = layeredNow
+        ? [["inherit", "Inherit"], ["on", "On"], ["off", "Off"]]
+        : [["on", "On"], ["off", "Off"]];
+      const state = enabled === undefined ? (layeredNow ? "inherit" : "on") : enabled ? "on" : "off";
+      row.append(
+        name,
+        segControl("Stop hook", states, state, (next) =>
+          edit((m) => {
+            if (next === "inherit" || (next === "on" && !layeredNow)) StopForm.set(m, "enabled", undefined);
+            else StopForm.set(m, "enabled", next === "on");
+          })
+        )
+      );
+      formEl.append(row);
+      const unknown = StopForm.unknownLines(model);
+      if (unknown.length) {
+        formEl.append(
+          h(
+            "p",
+            "stop-form-banner",
+            `${unknown.length} line${unknown.length === 1 ? "" : "s"} the form doesn't read (kept as written): ` +
+              unknown.map((l) => l.raw.trim()).join(" · ")
+          )
+        );
+      }
+    }
+
+    formRefreshers.push(() => {
+      if (formEl.isConnected && view === "form") renderForm();
+    });
+    showView("form");
+    return [bar, formEl];
+  }
+
+  function refreshForms() {
+    for (const fn of formRefreshers) fn();
+  }
+
   // The compiled-in default a session falls back to when nothing is
   // assigned — shown in the same list as the editable profiles, collapsible
   // the same way, but with no rename/delete/save: it isn't stored data,
@@ -377,6 +611,7 @@
 
   function renderProfileRows(profiles, builtin) {
     profilesListEl.innerHTML = "";
+    formRefreshers = [];
     if (builtin) renderBuiltinRow(builtin);
     const names = Object.keys(profiles).sort();
     for (const name of names) {
@@ -453,6 +688,8 @@
       textarea.className = "guidance-text";
       textarea.rows = 5;
       textarea.value = profiles[name];
+      const stopForm =
+        KIND === "stop-triggers" ? stopFormNodes(textarea, () => isLayered(name), layerBase) : [];
 
       const actions = document.createElement("div");
       actions.className = "guidance-actions";
@@ -463,7 +700,7 @@
       const status = document.createElement("span");
       status.className = "guidance-status";
       actions.append(saveBtn, status);
-      detail.append(textarea, actions);
+      detail.append(...stopForm, textarea, actions);
 
       // The name/preview row toggles the editor open — everywhere except the
       // rename and delete icon buttons, which have their own click handling.
@@ -588,6 +825,7 @@
     try {
       const p = await getJson(`/api/profiles/${KIND}`);
       builtinText = p.builtin || null;
+      globalName = p.global || null;
       renderMode(p.mode || "additive");
       const names = Object.keys(p.profiles).sort();
       renderProfileRows(p.profiles, p.builtin);
@@ -628,6 +866,10 @@
     } else {
       textarea.placeholder = KINDS[KIND].placeholder;
     }
+    // A draft is layered in additive mode: it starts blank and is appended to
+    // a base, and nothing global can point at it before it is saved.
+    const stopForm =
+      KIND === "stop-triggers" ? stopFormNodes(textarea, () => isLayered(null), layerBase) : [];
 
     const actions = document.createElement("div");
     actions.className = "guidance-actions";
@@ -643,7 +885,7 @@
     status.className = "guidance-status";
     actions.append(saveBtn, cancelBtn, status);
 
-    draft.append(nameInput, textarea, actions);
+    draft.append(nameInput, ...stopForm, textarea, actions);
     profilesListEl.prepend(draft);
     nameInput.focus();
 
@@ -692,6 +934,8 @@
       await putJson(`/api/profiles/${KIND}/global`, {
         profile: profileGlobalSelectEl.value || null,
       });
+      globalName = profileGlobalSelectEl.value || null;
+      refreshForms();
       flashStatus(profileGlobalStatusEl, "saved");
       renderRepoEffective();
     } catch (e) {
