@@ -488,6 +488,11 @@ body {
   white-space: nowrap;
 }
 
+.drawer-row-text .drawer-row-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
 .drawer-row-text small {
   display: block;
   overflow: hidden;

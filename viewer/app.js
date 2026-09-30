@@ -805,7 +805,11 @@
       parts.push(`ended ${relativeTime(session.endedAt)}`);
     }
     meta.textContent = parts.join(" · ");
-    text.append(name, meta);
+    const id = document.createElement("small");
+    id.className = "drawer-row-id";
+    id.textContent = session.id.slice(0, 8);
+    id.title = session.id;
+    text.append(name, meta, id);
     row.append(dot, text);
 
     if (section === "active") {
