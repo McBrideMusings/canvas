@@ -67,6 +67,10 @@ beside the terminal all day.
   always renders in the active theme: `buildIframeDoc` rewrites its
   `prefers-color-scheme` queries, forces the page surface and ink, and recolors
   text that falls below 4.5:1 contrast; a change rebuilds every card iframe.
+  A card image opens in a lightbox (`openLightbox` in `app.js`): a click on the
+  image toggles fit and 2.5x, wheel or pinch zooms at the cursor (1x to 8x),
+  drag pans while zoomed, `+` `-` `0` zoom and reset, and only the X button,
+  Esc or a click on the bare backdrop closes it.
   Settings > Guidance > Post reminders edits each profile as a form
   (`stop-form.js` parses the directive text into a model and re-emits it, keeping
   comments, unknown lines and order) or as raw text; the text stays the only store.

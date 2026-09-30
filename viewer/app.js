@@ -36,6 +36,8 @@
   const overlayPrevEl = document.getElementById("image-overlay-prev");
   const overlayNextEl = document.getElementById("image-overlay-next");
   const overlayCountEl = document.getElementById("image-overlay-count");
+  const overlayCloseEl = document.getElementById("image-overlay-close");
+  const overlayZoomEl = document.getElementById("image-overlay-zoom");
   const titlebarEl = document.getElementById("titlebar");
   const toastsEl = document.getElementById("toasts");
 
@@ -196,6 +198,9 @@
         break;
       case "chevron-right":
         svg.appendChild(svgEl("path", { d: "M9 5l7 7-7 7" }));
+        break;
+      case "x":
+        svg.appendChild(svgEl("path", { d: "M6 6l12 12M18 6L6 18" }));
         break;
       default:
         throw new Error(`buildIcon: unknown icon name "${name}"`);
@@ -2345,9 +2350,59 @@
   // the arrow buttons and keys step through that card's images in post order.
   let lightbox = null; // { card, index } while open
 
+  // Zoom is relative to the fitted image: scale 1 is "fit", and tx/ty move the
+  // image from the window centre (the image's transform-origin). Pan is only
+  // allowed while the scaled image is larger than the window, and stops at its
+  // edges.
+  const ZOOM_MAX = 8;
+  const ZOOM_CLICK = 2.5;
+  const ZOOM_KEY_STEP = 1.25;
+  const DRAG_SLOP = 4; // px of pointer travel before a press counts as a drag
+  const zoom = { scale: 1, tx: 0, ty: 0 };
+  let imageDrag = null; // { id, x, y, tx, ty, moved } while a press is down on the image
+  let backdropClickSuppressed = false;
+
+  function paintZoom() {
+    const { scale } = zoom;
+    const maxX = Math.max(0, (overlayImgEl.offsetWidth * scale - overlayEl.clientWidth) / 2);
+    const maxY = Math.max(0, (overlayImgEl.offsetHeight * scale - overlayEl.clientHeight) / 2);
+    zoom.tx = Math.min(maxX, Math.max(-maxX, zoom.tx));
+    zoom.ty = Math.min(maxY, Math.max(-maxY, zoom.ty));
+    overlayImgEl.style.transform =
+      scale === 1 ? "" : `translate(${zoom.tx}px, ${zoom.ty}px) scale(${scale})`;
+    overlayImgEl.classList.toggle("zoomed", scale > 1);
+    overlayZoomEl.hidden = scale === 1;
+    if (scale > 1 && overlayImgEl.naturalWidth) {
+      const pct = (scale * overlayImgEl.offsetWidth) / overlayImgEl.naturalWidth;
+      overlayZoomEl.textContent = `${Math.round(pct * 100)}%`;
+    }
+  }
+
+  // Zoom to `next`, keeping the image point under (clientX, clientY) still;
+  // with no point, the window centre.
+  function zoomTo(next, clientX, clientY) {
+    next = Math.min(ZOOM_MAX, Math.max(1, next));
+    const rect = overlayEl.getBoundingClientRect();
+    const dx = (clientX ?? rect.left + rect.width / 2) - (rect.left + rect.width / 2);
+    const dy = (clientY ?? rect.top + rect.height / 2) - (rect.top + rect.height / 2);
+    const ratio = next / zoom.scale;
+    zoom.tx = dx - (dx - zoom.tx) * ratio;
+    zoom.ty = dy - (dy - zoom.ty) * ratio;
+    zoom.scale = next;
+    paintZoom();
+  }
+
+  function resetZoom() {
+    zoom.scale = 1;
+    zoom.tx = 0;
+    zoom.ty = 0;
+    paintZoom();
+  }
+
   function paintLightbox() {
     const { card, index } = lightbox;
     const count = card.images.length;
+    resetZoom();
     overlayImgEl.src = `/api/cards/${encodeURIComponent(card.id)}/images/${index}`;
     overlayPrevEl.hidden = count < 2;
     overlayNextEl.hidden = count < 2;
@@ -2367,8 +2422,11 @@
 
   function closeLightbox() {
     lightbox = null;
+    imageDrag = null;
+    overlayImgEl.classList.remove("dragging");
     overlayEl.hidden = true;
     overlayImgEl.src = "";
+    resetZoom();
   }
 
   function stepLightbox(delta) {
@@ -2387,10 +2445,78 @@
     e.stopPropagation();
     stepLightbox(1);
   });
-  overlayEl.addEventListener("click", closeLightbox);
+  overlayCloseEl.appendChild(buildIcon("x"));
+  overlayCloseEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeLightbox();
+  });
+  overlayEl.addEventListener("pointerdown", () => {
+    backdropClickSuppressed = false;
+  });
+  // Only a click on the bare backdrop closes; one that ends a drag does not.
+  overlayEl.addEventListener("click", (e) => {
+    if (e.target !== overlayEl) return;
+    if (backdropClickSuppressed) {
+      backdropClickSuppressed = false;
+      return;
+    }
+    closeLightbox();
+  });
+  // A press on the image that doesn't travel toggles fit and 2.5x at the
+  // click point; one that travels pans when zoomed and does nothing at fit.
+  overlayImgEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    imageDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: zoom.tx, ty: zoom.ty, moved: false };
+    overlayImgEl.setPointerCapture(e.pointerId);
+  });
+  overlayImgEl.addEventListener("pointermove", (e) => {
+    if (!imageDrag || e.pointerId !== imageDrag.id) return;
+    const dx = e.clientX - imageDrag.x;
+    const dy = e.clientY - imageDrag.y;
+    if (!imageDrag.moved && Math.hypot(dx, dy) < DRAG_SLOP) return;
+    imageDrag.moved = true;
+    if (zoom.scale === 1) return;
+    overlayImgEl.classList.add("dragging");
+    zoom.tx = imageDrag.tx + dx;
+    zoom.ty = imageDrag.ty + dy;
+    paintZoom();
+  });
+  function endImageDrag(e, cancelled) {
+    if (!imageDrag || e.pointerId !== imageDrag.id) return;
+    const { moved } = imageDrag;
+    imageDrag = null;
+    overlayImgEl.classList.remove("dragging");
+    if (moved) {
+      backdropClickSuppressed = true;
+    } else if (!cancelled) {
+      if (zoom.scale > 1) resetZoom();
+      else zoomTo(ZOOM_CLICK, e.clientX, e.clientY);
+    }
+  }
+  overlayImgEl.addEventListener("pointerup", (e) => endImageDrag(e, false));
+  overlayImgEl.addEventListener("pointercancel", (e) => endImageDrag(e, true));
+  overlayEl.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      // A trackpad pinch arrives as a wheel event with ctrlKey and small deltas.
+      const rate = e.ctrlKey ? 0.01 : 0.002;
+      // A line-mode wheel reports about 3 per notch where a pixel-mode one reports about 100.
+      const delta = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 33 : e.deltaY;
+      zoomTo(zoom.scale * Math.exp(-delta * rate), e.clientX, e.clientY);
+    },
+    { passive: false }
+  );
+  window.addEventListener("resize", () => {
+    if (lightbox) paintZoom();
+  });
   window.addEventListener("keydown", (e) => {
     if (!lightbox) return;
     if (e.key === "Escape") closeLightbox();
+    else if (e.metaKey || e.ctrlKey || e.altKey) return;
+    else if (e.key === "+" || e.key === "=") zoomTo(zoom.scale * ZOOM_KEY_STEP);
+    else if (e.key === "-") zoomTo(zoom.scale / ZOOM_KEY_STEP);
+    else if (e.key === "0") resetZoom();
     else if (e.key === "ArrowLeft" && lightbox.card.images.length > 1) stepLightbox(-1);
     else if (e.key === "ArrowRight" && lightbox.card.images.length > 1) stepLightbox(1);
   });

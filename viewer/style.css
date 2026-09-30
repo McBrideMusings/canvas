@@ -846,13 +846,25 @@ html.full-width .empty-state {
   align-items: center;
   justify-content: center;
   z-index: 50;
-  cursor: zoom-out;
   outline: none;
+  overflow: hidden;
 }
 
 .image-overlay img {
   max-width: 88vw;
   max-height: 88vh;
+  cursor: zoom-in;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.image-overlay img.zoomed {
+  cursor: grab;
+}
+
+.image-overlay img.dragging {
+  cursor: grabbing;
 }
 
 .image-overlay-nav {
@@ -886,6 +898,24 @@ html.full-width .empty-state {
 
 .image-overlay-next {
   right: 20px;
+}
+
+.image-overlay-close {
+  top: 20px;
+  right: 20px;
+  transform: none;
+}
+
+.image-overlay-zoom {
+  position: absolute;
+  bottom: 14px;
+  left: 20px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .image-overlay-count {
