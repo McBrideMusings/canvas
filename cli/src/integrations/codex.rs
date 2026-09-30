@@ -118,6 +118,8 @@ fn install_in(home: &Path) -> Result<(), String> {
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    // A symlinked file (a dotfiles repo) keeps its link: replace the target.
+    let path = &path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let tmp = path.with_extension("canvas-tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
