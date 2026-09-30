@@ -34,7 +34,10 @@
       if (negated) return arg === "" ? { raw, key: word, value: false } : { raw, key: null };
       const fallback = word === "links" ? DEFAULT_LINKS : DEFAULT_LONG_BLOCK;
       if (arg === "") return { raw, key: word, value: fallback };
-      return /^\d+$/.test(arg) ? { raw, key: word, value: Number(arg) } : { raw, key: null };
+      // Rust's usize parse accepts a leading `+`; a value past 2^53 is left as an
+      // unread line, which the daemon still accepts and the form keeps as written.
+      const n = /^\+?\d+$/.test(arg) ? Number(arg) : NaN;
+      return Number.isSafeInteger(n) ? { raw, key: word, value: n } : { raw, key: null };
     }
     if ((word === "phrase" || word === "scratch") && arg !== "") {
       return {

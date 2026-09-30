@@ -62,6 +62,9 @@ beside the terminal all day.
   Session chips and the drawer's per-row eye toggle add/remove sessions from a
   multi-select visible set (everything visible by default) rather than
   picking one session at a time.
+  Settings > Guidance > Stop-hook triggers edits each profile as a form
+  (`stop-form.js` parses the directive text into a model and re-emits it, keeping
+  comments, unknown lines and order) or as raw text; the text stays the only store.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
   `canvasd`'s router and serves it on a Unix socket, `canvasd.sock` in
   `CANVAS_DATA_DIR` (`CANVAS_SOCKET` to override), mode 0600 — there is no TCP
