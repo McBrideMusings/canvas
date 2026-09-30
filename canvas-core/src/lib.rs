@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The coding agent a session belongs to. Serialized kebab-case
-/// (`"claude-code"`).
+/// (`"claude-code"`, `"codex"`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Agent {
@@ -11,6 +11,7 @@ pub enum Agent {
     /// came from Claude Code, so a stored session missing it reloads as one.
     #[default]
     ClaudeCode,
+    Codex,
 }
 
 /// One main agent conversation on this Mac, from SessionStart to SessionEnd.

@@ -10,7 +10,7 @@ beside the terminal all day.
   oldest-first, held in memory and appended to `stream.jsonl` in
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
   the last 24h reload, dropping any session with no post left, and the file is rewritten compacted; each session
-  records the `agent` that started it — `claude-code` is the only one today —
+  records the `agent` that started it — `claude-code` and `codex` are the values —
   required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
@@ -93,8 +93,10 @@ beside the terminal all day.
   `plugin/stop-triggers.txt`, compiled in.
   Everything that differs between coding agents sits behind the `AgentAdapter`
   trait in `cli/src/agent.rs`: the environment variable that names the session
-  (`CLAUDE_CODE_SESSION_ID` for Claude Code, which `canvas post` reads), the hook's
-  stdin shape, and how the transcript reads as a finished turn. `canvas hook
+  (`CLAUDE_CODE_SESSION_ID` for Claude Code, `CODEX_THREAD_ID` for Codex; `canvas
+  post` reads whichever is set), the hook's stdin shape, and how the transcript
+  (Claude Code's JSONL, Codex's rollout) reads as a finished turn. Codex reads text
+  files through the shell, so its turns list only images (`view_image`) as read paths. `canvas hook
   <event> --agent <name>` picks the adapter; with no flag it is Claude Code, and
   an unknown name makes the hook exit 0 silently.
   `canvas guidance` prints that same block unconditionally, for a person or

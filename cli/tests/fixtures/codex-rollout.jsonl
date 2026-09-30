@@ -1,0 +1,20 @@
+{"timestamp":"2026-09-30T17:00:00.000Z","type":"session_meta","payload":{"session_id":"01a0f378-6413-77e0-bd55-50c67b99c883","id":"01a0f378-6413-77e0-bd55-50c67b99c883","cwd":"/work/app","originator":"codex_exec","cli_version":"0.153.2","source":"exec"}}
+{"timestamp":"2026-09-30T17:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-09-30T17:00:01.100Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<skills_instructions>injected context, not a prompt</skills_instructions>"}]}}
+{"timestamp":"2026-09-30T17:00:01.200Z","type":"event_msg","payload":{"type":"user_message","message":"post the plan"}}
+{"timestamp":"2026-09-30T17:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"c1","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"canvas post plan.md\",\"workdir\":\"/work/app\"});\ntext(r.output);\n"}}
+{"timestamp":"2026-09-30T17:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"{\"card_id\":\"x\"}"}]}}
+{"timestamp":"2026-09-30T17:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Posted the plan."}]}}
+{"timestamp":"2026-09-30T17:00:04.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+{"timestamp":"2026-09-30T17:01:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}
+{"timestamp":"2026-09-30T17:01:00.100Z","type":"event_msg","payload":{"type":"user_message","message":"fix the bug and look at the screenshot"}}
+{"timestamp":"2026-09-30T17:01:01.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAAA"}}
+{"timestamp":"2026-09-30T17:01:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Looking at the code first."}]}}
+{"timestamp":"2026-09-30T17:01:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"c2","name":"exec","input":"const r = await Promise.all([\n  tools.exec_command({\"cmd\":\"git status --short\",\"workdir\":\"/work/app\"}),\n  tools.exec_command({\"cmd\":\"rg -n 'canvas post' README.md\",\"workdir\":\"/work/app\"}),\n]);\ntext(r.map(x => x.output).join(\"\\n\"));\n"}}
+{"timestamp":"2026-09-30T17:01:04.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo test\",\"workdir\":\"/work/app\"}","call_id":"c3"}}
+{"timestamp":"2026-09-30T17:01:05.000Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"/tmp/shot.png\"}","call_id":"c4"}}
+{"timestamp":"2026-09-30T17:01:06.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"c5","name":"apply_patch","input":"*** Begin Patch\n*** Update File: /work/app/src/main.rs\n@@\n-old\n+new\n*** End Patch\n"}}
+{"timestamp":"2026-09-30T17:01:07.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Fixed `main.rs`.\n\nLook for: a green `cargo test`."}]}}
+{"timestamp":"2026-09-30T17:01:07.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t2"}}
+{"timestamp":"2026-09-30T17:02:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t3"}}
+{"timestamp":"2026-09-30T17:02:00.100Z","type":"event_msg","payload":{"type":"user_message","message":"thanks, one more thing"}}
