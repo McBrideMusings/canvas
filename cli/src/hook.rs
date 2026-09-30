@@ -1,6 +1,6 @@
 //! Dispatches one Claude Code hook invocation: reads the hook JSON Claude
-//! Code writes to stdin, and calls canvasd. `session-start` registration is
-//! best-effort and never blocks the guidance block it returns; every other
+//! Code writes to stdin, and calls canvasd. `session-start` only prints the guidance
+//! block and registers nothing; every other
 //! error — bad stdin, no canvasd listening, an unrecognised event — is
 //! returned as `Err` so `main` can swallow it and exit 0 silently. A hook
 //! must never slow or break the Claude session it's attached to.
@@ -26,12 +26,9 @@ fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
 
 /// Returns the guidance block on every `session-start` (Claude Code adds
 /// SessionStart stdout to the session's context, including the times it
-/// re-fires after compaction) — `None` for every other event. Registering
-/// the session with canvasd is best-effort: posting only needs a running
-/// canvasd, not a registered session (`canvas post` creates one server-side
-/// if it's missing), so a session started while canvasd is unreachable —
-/// e.g. mid-restart during `admin deploy canvas` — still gets its guidance
-/// instead of losing it to a swallowed registration error. The text itself
+/// re-fires after compaction) — `None` for every other event. It registers
+/// nothing: the daemon creates a session when its first `canvas post`
+/// arrives, so a session that never posts never shows up in Canvas. The text
 /// is whichever `posting-guidance` profile (repo, else global) the settings
 /// page has assigned for this `cwd`, falling back to the compiled-in default
 /// on any fetch failure or when nothing is assigned.
@@ -40,24 +37,8 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         "session-start" => {
             let text = match read_input() {
                 Ok(input) => {
-                    // Both calls have a 1s timeout, so running them in
-                    // parallel caps the hook at ~1s. Each handle is joined
-                    // so a panic is swallowed rather than re-raised by the
-                    // scope.
-                    std::thread::scope(|s| {
-                        let register = s.spawn(|| {
-                            let _ = client::upsert_session(&input.session_id, &input.cwd);
-                        });
-                        let fetch = s.spawn(|| {
-                            client::fetch_profile_text(
-                                canvasd::profiles::KIND_POSTING_GUIDANCE,
-                                &input.cwd,
-                            )
-                        });
-                        let _ = register.join();
-                        fetch.join().ok().flatten()
-                    })
-                    .unwrap_or_else(|| crate::guidance::TEXT.to_string())
+                    client::fetch_profile_text(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
+                        .unwrap_or_else(|| crate::guidance::TEXT.to_string())
                 }
                 Err(_) => crate::guidance::TEXT.to_string(),
             };

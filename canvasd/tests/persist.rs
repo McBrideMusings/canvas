@@ -60,13 +60,6 @@ async fn restart_rebuilds_the_same_state() {
     send(
         &app,
         "POST",
-        "/api/sessions",
-        Some(json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code"})),
-    )
-    .await;
-    send(
-        &app,
-        "POST",
         "/api/posts",
         Some(json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code", "html": "<p>x</p>"})),
     )

@@ -7,7 +7,7 @@ One live stream of posts from every Claude Code session on this Mac.
 ### Domain
 
 **Session**:
-One main agent conversation on this Mac, from SessionStart to SessionEnd, started by one Agent. It is active until it ends. An ended session is archived by default; its cards are kept and come back with Show in the Sessions drawer.
+One main agent conversation on this Mac, from its first post to SessionEnd, started by one Agent. A conversation that never posts has no session. It is active until it ends. An ended session is archived by default; its cards are kept and come back with Show in the Sessions drawer.
 _Avoid_: conversation
 
 **Agent**:

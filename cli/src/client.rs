@@ -7,7 +7,7 @@ use std::time::Duration;
 use canvas_core::unix_http::{self, Response};
 use canvas_core::{
     Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
-    PostRequest, ProfilesState, SetProfileTextRequest, UpdateCardRequest, UpsertSessionRequest,
+    PostRequest, ProfilesState, SetProfileTextRequest, UpdateCardRequest,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -83,16 +83,6 @@ fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<Response, Failu
 fn into_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
     serde_json::from_slice(&response.body)
         .map_err(|e| format!("canvasd returned malformed JSON: {e}"))
-}
-
-pub fn upsert_session(session_id: &str, cwd: &str) -> Result<(), String> {
-    let body = UpsertSessionRequest {
-        session_id: session_id.to_string(),
-        cwd: cwd.to_string(),
-        agent: Agent::ClaudeCode,
-    };
-    post_json("/api/sessions", body).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub fn end_session(session_id: &str) -> Result<(), String> {

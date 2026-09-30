@@ -62,19 +62,17 @@ async fn root_serves_viewer() {
 }
 
 #[tokio::test]
-async fn upsert_and_end_session() {
+async fn a_post_creates_the_session_and_ending_it_sets_ended_at() {
     let app = app();
 
-    let response = app
-        .clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/Users/me/Projects/canvas", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let session: Session = json_body(response).await;
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.is_empty());
+
+    seed_card(&app, "s1", "/Users/me/Projects/canvas").await;
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let session = state.sessions.iter().find(|s| s.id == "s1").unwrap();
     assert_eq!(session.name, "canvas");
     assert_eq!(session.agent, Agent::ClaudeCode);
     assert!(session.ended_at.is_none());
@@ -90,6 +88,39 @@ async fn upsert_and_end_session() {
     let state: StateResponse = json_body(response).await;
     let s = state.sessions.iter().find(|s| s.id == "s1").unwrap();
     assert!(s.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn ending_a_session_that_never_posted_is_404_and_creates_nothing() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post("/api/sessions/never/end", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.is_empty());
+}
+
+#[tokio::test]
+async fn the_sessions_registration_route_is_gone() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/sessions",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.sessions.is_empty());
 }
 
 /// A throwaway git checkout whose `origin` is `remote`, plus a linked
@@ -130,19 +161,16 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
     let app = app();
     let (main, linked) = git_checkout_with_origin("git@github.com:octo/hello.git");
 
-    // SessionStart in the main checkout.
-    let response = app
-        .clone()
+    // A first post from the main checkout.
+    app.clone()
         .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "r1", "cwd": main, "agent": "claude-code"}),
+            "/api/posts",
+            json!({"session_id": "r1", "cwd": main, "agent": "claude-code", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
-    let session: Session = json_body(response).await;
-    assert_eq!(session.repo.as_deref(), Some("octo/hello"));
 
-    // A post for a session the daemon never saw, in a linked worktree.
+    // A first post from a linked worktree.
     app.clone()
         .oneshot(post(
             "/api/posts",
@@ -154,8 +182,8 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
     // Outside any git checkout.
     app.clone()
         .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "r3", "cwd": "/", "agent": "claude-code"}),
+            "/api/posts",
+            json!({"session_id": "r3", "cwd": "/", "agent": "claude-code", "html": "<p>x</p>"}),
         ))
         .await
         .unwrap();
@@ -171,6 +199,7 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
             .repo
             .clone()
     };
+    assert_eq!(repo("r1").as_deref(), Some("octo/hello"));
     assert_eq!(repo("r2").as_deref(), Some("octo/hello"));
     assert_eq!(repo("r3"), None);
 
@@ -194,14 +223,6 @@ async fn turns_endpoint_is_gone() {
 #[tokio::test]
 async fn each_post_creates_its_own_card() {
     let app = app();
-
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
 
     let response = app
         .clone()
@@ -263,21 +284,17 @@ async fn post_for_unknown_session_creates_it_named_from_cwd() {
 }
 
 #[tokio::test]
-async fn a_session_request_without_an_agent_is_rejected() {
+async fn a_post_without_an_agent_is_rejected() {
     let app = app();
-    for (uri, body) in [
-        (
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj"}),
-        ),
-        (
+    let response = app
+        .clone()
+        .oneshot(post(
             "/api/posts",
             json!({"session_id": "s1", "cwd": "/tmp/proj", "html": "<p>x</p>"}),
-        ),
-    ] {
-        let response = app.clone().oneshot(post(uri, body)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
-    }
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
@@ -335,14 +352,6 @@ async fn update_unknown_card_is_404() {
 #[tokio::test]
 async fn ring_evicts_oldest_at_501() {
     let app = app();
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-
     for i in 0..501 {
         app.clone()
             .oneshot(post(
@@ -535,18 +544,13 @@ async fn file_path_endpoint_is_gone() {
 }
 
 #[tokio::test]
-async fn reupserting_a_session_preserves_started_and_ended_at() {
+async fn a_later_post_keeps_the_sessions_started_and_ended_at() {
     let app = app();
 
-    let response = app
-        .clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-    let first: Session = json_body(response).await;
+    seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let first = state.sessions.into_iter().find(|s| s.id == "s1").unwrap();
 
     let response = app
         .clone()
@@ -556,19 +560,13 @@ async fn reupserting_a_session_preserves_started_and_ended_at() {
     let ended: Session = json_body(response).await;
     assert!(ended.ended_at.is_some());
 
-    // A retried/re-fired registration for the same id must not reset
-    // startedAt or resurrect an already-ended session.
-    let response = app
-        .clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-    let reupserted: Session = json_body(response).await;
-    assert_eq!(reupserted.started_at, first.started_at);
-    assert_eq!(reupserted.ended_at, ended.ended_at);
+    // A post after the session ended must not reset startedAt or resurrect it.
+    seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    let later = state.sessions.into_iter().find(|s| s.id == "s1").unwrap();
+    assert_eq!(later.started_at, first.started_at);
+    assert_eq!(later.ended_at, ended.ended_at);
 }
 
 #[tokio::test]
@@ -598,14 +596,6 @@ async fn events_endpoint_is_sse() {
 }
 
 async fn seed_card(app: &axum::Router, session_id: &str, cwd: &str) -> Card {
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": session_id, "cwd": cwd, "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-
     let response = app
         .clone()
         .oneshot(post(
@@ -720,14 +710,12 @@ async fn clear_cards_removes_only_that_sessions_cards_and_keeps_it_registered() 
 }
 
 #[tokio::test]
-async fn clear_cards_on_a_session_with_no_cards_is_204_with_no_events() {
+async fn clear_cards_on_a_session_whose_cards_were_all_deleted_is_204_with_no_events() {
     let state = AppState::new();
     let app = build_router(state.clone());
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
     app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
+        .oneshot(delete(&format!("/api/cards/{}", card.id)))
         .await
         .unwrap();
     let mut events = state.events.subscribe();
@@ -1167,14 +1155,6 @@ async fn oversized_card_reply_is_rejected() {
 async fn card_reply_is_dropped_when_its_card_is_evicted_from_the_ring() {
     let state = AppState::new();
     let app = canvasd::build_router(state.clone());
-    app.clone()
-        .oneshot(post(
-            "/api/sessions",
-            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code"}),
-        ))
-        .await
-        .unwrap();
-
     let response = app
         .clone()
         .oneshot(post(

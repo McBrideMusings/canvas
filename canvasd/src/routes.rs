@@ -11,7 +11,7 @@ use axum::Json;
 use canvas_core::{
     Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
     OpenRequest, PostRequest, ProfilesState, Session, SetProfileModeRequest, SetProfileTextRequest,
-    StateResponse, UpdateCardRequest, UpsertSessionRequest,
+    StateResponse, UpdateCardRequest,
 };
 use futures::stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
@@ -32,49 +32,10 @@ fn cwd_basename(cwd: &str) -> String {
         .unwrap_or_else(|| cwd.to_string())
 }
 
-pub async fn upsert_session(
-    State(state): State<AppState>,
-    Json(req): Json<UpsertSessionRequest>,
-) -> impl IntoResponse {
-    // Read before taking the lock: it runs `git`, and nothing else should
-    // wait on that.
-    let repo = github_repo(&req.cwd).await;
-    let session = {
-        let mut inner = state.inner.write().await;
-        // A genuine upsert: a retried or re-fired registration for an id that
-        // already exists must not reset when it started or resurrect an
-        // already-ended session, or change which agent started it.
-        let (started_at, ended_at, agent) = match inner.sessions.get(&req.session_id) {
-            Some(existing) => (
-                existing.started_at.clone(),
-                existing.ended_at.clone(),
-                existing.agent,
-            ),
-            None => (now(), None, req.agent),
-        };
-        let session = Session {
-            id: req.session_id.clone(),
-            cwd: req.cwd.clone(),
-            agent,
-            name: cwd_basename(&req.cwd),
-            repo,
-            started_at,
-            ended_at,
-        };
-        inner.sessions.insert(session.id.clone(), session.clone());
-        state.publish(CanvasEvent::SessionUpserted(session.clone()));
-        session
-    };
-
-    (StatusCode::OK, Json(session))
-}
-
 /// Creates `session_id` with `name` set from `cwd`'s basename when the
-/// daemon doesn't already know it — the pid → session lookup this used to
-/// depend on is gone, so `/api/posts` can arrive for a session that never
-/// got a `SessionStart` (e.g. the daemon restarted after the session
-/// began). Returns the new session so the caller can publish a
-/// `SessionUpserted` event; returns `None` when the session already existed,
+/// daemon doesn't already know it. A session's first `/api/posts` is what
+/// creates it; nothing registers a session at `SessionStart`. Returns the
+/// new session so the caller can publish a `SessionUpserted` event; returns `None` when the session already existed,
 /// since nothing about it changed. `repo` comes from
 /// [`repo_if_unknown`], resolved before the caller took the lock.
 fn ensure_session(

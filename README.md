@@ -14,8 +14,7 @@ It has three parts:
 - **Canvas.app**: a Tauri window and menu bar icon that shows the stream. On
   first launch it installs the `canvas` binary it carries and starts the daemon
   as a launchd agent.
-- **The Claude Code plugin** in `plugin/`: session hooks that register each
-  session and tell the agent how to post, ask it to post when a turn ends with something worth showing, plus a `canvas` skill.
+- **The Claude Code plugin** in `plugin/`: session hooks that tell the agent how to post, ask it to post when a turn ends with something worth showing, plus a `canvas` skill.
 
 ## Requirements
 

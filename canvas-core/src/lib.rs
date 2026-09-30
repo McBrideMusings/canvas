@@ -49,14 +49,6 @@ pub struct Card {
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpsertSessionRequest {
-    pub session_id: String,
-    pub cwd: String,
-    pub agent: Agent,
-}
-
-/// Request bodies use snake_case, matching Claude Code hook JSON.
 /// `images`/`targets` are empty until a later slice fills them in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostRequest {

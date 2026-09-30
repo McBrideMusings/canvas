@@ -11,8 +11,7 @@ beside the terminal all day.
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
   the last 24h reload and the file is rewritten compacted; each session
   records the `agent` that started it — `claude-code` is the only one today —
-  required on `/api/sessions` and `/api/posts`, kept from the first
-  registration, and a stored session without one reloads as Claude Code), SSE push to
+  required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
   reuse instead of growing its own bespoke override: a "kind" owns its own
@@ -72,11 +71,11 @@ beside the terminal all day.
   client; `canvas daemon` refuses to start when something already answers on
   the socket. It runs as a launchd agent (`com.piercemakes.canvasd`).
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
-  stdin and registers or ends a session; `session-start` always prints the
-  guidance block to stdout (Claude Code adds SessionStart stdout to the
-  session's context), whether or not registering the session with canvasd
-  succeeds — posting only needs a running canvasd, not a registered session
-  (`canvas post` creates one server-side if it's missing).
+  stdin and ends a session (a no-op for one that never posted); `session-start`
+  registers nothing and always prints the guidance block to stdout (Claude Code
+  adds SessionStart stdout to the session's context). A session exists in
+  canvasd only once its first `canvas post` creates it, so one that never posts
+  never appears in Canvas; there is no session-registration route.
   `canvas hook prompt` (the plugin's UserPromptSubmit hook, `cli/src/stop.rs`)
   reads the transcript's last finished turn and, when a trigger the `stop-triggers` profile in
   effect for the session's cwd enables fired (an image looked at, a file
