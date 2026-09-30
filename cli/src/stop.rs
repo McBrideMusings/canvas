@@ -41,9 +41,7 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
                     let input = &block["input"];
                     match block["name"].as_str() {
                         Some("Bash") => {
-                            posted |= input["command"]
-                                .as_str()
-                                .is_some_and(|c| c.contains("canvas post"));
+                            posted |= input["command"].as_str().is_some_and(runs_canvas_post);
                         }
                         Some("Read") => {
                             let path = input["file_path"].as_str().unwrap_or("").to_lowercase();
@@ -100,6 +98,65 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
          then give your reply. If the post would only repeat the chat text, skip it.",
         triggers.join("; ")
     ))
+}
+
+/// True when a shell segment of `cmd` runs `canvas post` (bare or by path, after
+/// optional `VAR=x` words). Segments end at `;`, `&`, `|` or a newline outside
+/// quotes and `$(...)`, so the text in a commit message or a grep pattern does
+/// not count. An unterminated quote leaves the rest as one segment.
+fn runs_canvas_post(cmd: &str) -> bool {
+    // Open contexts, innermost last: `'`, `"` or `(`.
+    let mut open: Vec<u8> = Vec::new();
+    let bytes = cmd.as_bytes();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match open.last().copied() {
+            Some(b'\'') => {
+                if b == b'\'' {
+                    open.pop();
+                }
+            }
+            top => {
+                let in_double = top == Some(b'"');
+                if b == b'\\' {
+                    i += 1;
+                } else if in_double && b == b'"' {
+                    open.pop();
+                } else if b == b'$' && bytes.get(i + 1) == Some(&b'(') {
+                    open.push(b'(');
+                    i += 1;
+                } else if in_double {
+                } else if b == b'\'' || b == b'"' {
+                    open.push(b);
+                } else if b == b'(' {
+                    open.push(b'(');
+                } else if b == b')' {
+                    open.pop();
+                } else if open.is_empty() && matches!(b, b';' | b'&' | b'|' | b'\n') {
+                    if segment_is_canvas_post(&cmd[start..i]) {
+                        return true;
+                    }
+                    start = i + 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    segment_is_canvas_post(&cmd[start.min(cmd.len())..])
+}
+
+fn segment_is_canvas_post(segment: &str) -> bool {
+    let mut words = segment
+        .split_whitespace()
+        .skip_while(|w| w.split_once('=').is_some_and(|(k, _)| is_var_name(k)));
+    let program = words.next().unwrap_or("");
+    (program == "canvas" || program.ends_with("/canvas")) && words.next() == Some("post")
+}
+
+fn is_var_name(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// A real prompt: a user line, not `isMeta`, with text or an image in it
@@ -225,6 +282,31 @@ mod tests {
             say("done"),
         ]);
         assert_eq!(reason(&t, &cfg()), None);
+    }
+
+    #[test]
+    fn only_a_command_named_canvas_post_counts() {
+        for yes in [
+            "canvas post -",
+            "cd x && canvas post -",
+            "~/.local/bin/canvas post --update abc f.html",
+            "FOO=1 canvas post -",
+            "cat f | canvas post - --format html",
+            "canvas post - <<'EOF'\nhi\nEOF",
+        ] {
+            assert!(runs_canvas_post(yes), "{yes}");
+        }
+        for no in [
+            "git commit -m 'docs: canvas post'",
+            "git commit -m \"$(cat <<'EOF'\ndocs\n\ncanvas post\nEOF\n)\"",
+            "grep -r \"canvas post\" .",
+            "echo \"a; canvas post\"",
+            "echo 'x' && grep canvas post.txt",
+            "canvas postmortem",
+            "canvas wait abc",
+        ] {
+            assert!(!runs_canvas_post(no), "{no}");
+        }
     }
 
     #[test]
