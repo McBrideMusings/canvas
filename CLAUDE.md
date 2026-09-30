@@ -9,7 +9,7 @@ beside the terminal all day.
 - `canvasd/` — library crate (axum): the router, state (newest 500 posts, evicted
   oldest-first, held in memory and appended to `stream.jsonl` in
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
-  the last 24h reload and the file is rewritten compacted; each session
+  the last 24h reload, dropping any session with no post left, and the file is rewritten compacted; each session
   records the `agent` that started it — `claude-code` is the only one today —
   required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.

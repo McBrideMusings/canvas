@@ -124,14 +124,15 @@ async fn deletions_stay_deleted_after_restart() {
 
     let app = restart(state, &dir).await;
     let after = state_of(&app).await;
-    assert_eq!(after, before);
+    // "third" survives until restart, then goes: it has no card left.
+    assert_eq!(after["cards"], before["cards"]);
     let ids: Vec<&str> = after["sessions"]
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["keep", "third"]);
+    assert_eq!(ids, ["keep"]);
     assert_eq!(after["cards"].as_array().unwrap().len(), 1);
 }
 
@@ -162,8 +163,15 @@ async fn cleared_cards_stay_cleared_after_restart() {
 
     let app = restart(state, &dir).await;
     let after = state_of(&app).await;
-    assert_eq!(after, before);
-    assert_eq!(after["sessions"].as_array().unwrap().len(), 2);
+    // "cleared" survives until restart, then goes: it has no card left.
+    assert_eq!(after["cards"], before["cards"]);
+    let ids: Vec<&str> = after["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["other"]);
 }
 
 #[tokio::test]
@@ -178,6 +186,7 @@ async fn entries_older_than_24_hours_are_dropped() {
         card("c-old", "old", &old),
         session("live", &old), // started long ago, still has a recent card
         card("c-live", "live", &new),
+        session("empty", &new), // recent, but never posted
     ];
     let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
     std::fs::write(dir.join("stream.jsonl"), body).unwrap();

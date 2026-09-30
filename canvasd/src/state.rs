@@ -128,8 +128,9 @@ impl Inner {
         }
     }
 
-    /// Drop cards last touched before `cutoff`, then sessions with no card left
-    /// whose own last timestamp (end, else start) is also before it.
+    /// Drop cards last touched before `cutoff`, then every session with no card
+    /// left: a session exists only once it has posted, however recently it
+    /// started or ended.
     pub fn prune_before(&mut self, cutoff: DateTime<Utc>) {
         let fresh = |ts: &str| {
             DateTime::parse_from_rfc3339(ts).map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
@@ -139,10 +140,8 @@ impl Inner {
         }
         self.cards.retain(|c| fresh(&c.at));
         let cards = &self.cards;
-        self.sessions.retain(|id, s| {
-            cards.iter().any(|c| &c.session_id == id)
-                || fresh(s.ended_at.as_deref().unwrap_or(&s.started_at))
-        });
+        self.sessions
+            .retain(|id, _| cards.iter().any(|c| &c.session_id == id));
     }
 
     /// Insert or replace a card, moving it to the front either way — an
