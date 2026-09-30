@@ -9,7 +9,10 @@ beside the terminal all day.
 - `canvasd/` — library crate (axum): the router, state (newest 500 posts, evicted
   oldest-first, held in memory and appended to `stream.jsonl` in
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
-  the last 24h reload and the file is rewritten compacted), SSE push to
+  the last 24h reload and the file is rewritten compacted; each session
+  records the `agent` that started it — `claude-code` is the only one today —
+  required on `/api/sessions` and `/api/posts`, kept from the first
+  registration, and a stored session without one reloads as Claude Code), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
   reuse instead of growing its own bespoke override: a "kind" owns its own

@@ -7,8 +7,12 @@ One live stream of posts from every Claude Code session on this Mac.
 ### Domain
 
 **Session**:
-One main Claude Code conversation on this Mac, from SessionStart to SessionEnd. It is active until it ends. An ended session is archived by default; its cards are kept and come back with Show in the Sessions drawer.
-_Avoid_: agent, conversation
+One main agent conversation on this Mac, from SessionStart to SessionEnd, started by one Agent. It is active until it ends. An ended session is archived by default; its cards are kept and come back with Show in the Sessions drawer.
+_Avoid_: conversation
+
+**Agent**:
+The coding tool that started a session. Claude Code is the only one today; the daemon records it on the session when the session is registered and never changes it afterward.
+_Avoid_: source, client
 
 **Archived session**:
 A session whose chip and cards the viewer leaves out, because it ended while Archive sessions when they end is on, or because someone chose Archive this session. The Sessions drawer lists it under Archived with Show and Delete. Archiving is per viewer and changes nothing in canvasd.
