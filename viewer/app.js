@@ -1371,6 +1371,7 @@
   // archived, the selected chip has no posts, or there are no posts at all.
   function updateEmptyState(visible) {
     emptyStateEl.hidden = visible > 0;
+    emptyStateEl.classList.remove("hero");
     if (visible > 0) return;
     const sessionList = Array.from(sessions.values());
     if (sessionList.length > 0 && sessionList.every(isHidden)) {
@@ -1407,9 +1408,56 @@
         textButton("Show all", "link-btn", resetVisibility)
       );
     } else {
-      emptyStateEl.textContent =
-        "No posts yet. Canvas shows what your Claude sessions post as they work.";
+      emptyStateEl.classList.add("hero");
+      emptyStateEl.replaceChildren(buildFirstRunEmpty());
     }
+  }
+
+  // Three offset cards, the front one with a few lines of "content".
+  function buildEmptyIllustration() {
+    const svg = svgEl("svg", {
+      viewBox: "0 0 120 96",
+      width: "120",
+      height: "96",
+      class: "empty-art",
+      "aria-hidden": "true",
+      focusable: "false",
+    });
+    svg.appendChild(svgEl("rect", { x: "22", y: "6", width: "76", height: "56", rx: "8", class: "art-back2" }));
+    svg.appendChild(svgEl("rect", { x: "14", y: "16", width: "92", height: "60", rx: "8", class: "art-back1" }));
+    svg.appendChild(svgEl("rect", { x: "6", y: "28", width: "108", height: "62", rx: "8", class: "art-front" }));
+    svg.appendChild(svgEl("circle", { cx: "20", cy: "42", r: "4", class: "art-dot" }));
+    svg.appendChild(svgEl("rect", { x: "30", y: "39", width: "44", height: "6", rx: "3", class: "art-line strong" }));
+    svg.appendChild(svgEl("rect", { x: "18", y: "56", width: "84", height: "5", rx: "2.5", class: "art-line" }));
+    svg.appendChild(svgEl("rect", { x: "18", y: "68", width: "58", height: "5", rx: "2.5", class: "art-line" }));
+    return svg;
+  }
+
+  // The no-posts-at-all state: what Canvas is and how the first post gets here.
+  function buildFirstRunEmpty() {
+    const wrap = document.createElement("div");
+    wrap.className = "empty-hero";
+    const title = document.createElement("h2");
+    title.className = "empty-title";
+    title.textContent = "Nothing posted yet";
+    const body = document.createElement("p");
+    body.className = "empty-body";
+    body.textContent =
+      "Plans, docs and images your Claude Code sessions post appear here as they work.";
+    const hint = document.createElement("div");
+    hint.className = "empty-hint";
+    const ask = document.createElement("span");
+    ask.textContent = "Ask a session:";
+    const prompt = document.createElement("code");
+    prompt.textContent = "post this plan to Canvas";
+    const or = document.createElement("span");
+    or.className = "empty-or";
+    or.textContent = "or run";
+    const cmd = document.createElement("code");
+    cmd.textContent = "canvas post notes.md";
+    hint.append(ask, prompt, or, cmd);
+    wrap.append(buildEmptyIllustration(), title, body, hint);
+    return wrap;
   }
 
   // A srcdoc iframe (sandbox="allow-scripts", no allow-same-origin) has an
