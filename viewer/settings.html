@@ -77,6 +77,20 @@
       </svg>
       Daemon
     </button>
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-integrations"
+      data-section="integrations"
+      role="tab"
+      aria-selected="false"
+      aria-controls="section-integrations"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 4v4M15 4v4M7 8h10v3a5 5 0 01-10 0zM12 16v4" />
+      </svg>
+      Integrations
+    </button>
   </div>
   <h1 class="settings-title" id="settings-title">General</h1>
   <main class="prefs" id="section-general" role="tabpanel" aria-labelledby="tab-general">
@@ -230,6 +244,17 @@
       </div>
       <pre class="daemon-error" id="daemon-status-error" hidden></pre>
     </div>
+  </main>
+  <main class="prefs prefs-wide" id="section-integrations" role="tabpanel" aria-labelledby="tab-integrations" hidden>
+    <div class="integrations-head">
+      <span class="pref-note integrations-intro">Canvas keeps each agent's hooks current when it opens.</span>
+      <span class="guidance-head-end">
+        <span class="guidance-status" id="integrations-checked"></span>
+        <button type="button" class="btn btn-secondary" id="integrations-refresh">Check now</button>
+      </span>
+    </div>
+    <div id="integrations-list"></div>
+    <pre class="daemon-error" id="integrations-load-error" role="alert" hidden></pre>
   </main>
   <script src="stop-form.js"></script>
   <script src="settings.js"></script>

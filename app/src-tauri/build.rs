@@ -5,7 +5,15 @@ fn main() {
   tauri_build::try_build(
     tauri_build::Attributes::new().app_manifest(
       tauri_build::AppManifest::new()
-        .commands(&["set_pinned", "get_pinned", "open_settings", "daemon_status", "take_pending_card"]),
+        .commands(&[
+            "set_pinned",
+            "get_pinned",
+            "open_settings",
+            "daemon_status",
+            "integration_status",
+            "integration_install",
+            "take_pending_card",
+        ]),
     ),
   )
   .expect("failed to run tauri-build");

@@ -6,6 +6,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod bridge;
 mod daemon;
+mod integrations;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
@@ -90,6 +91,25 @@ fn daemon_status(app: tauri::AppHandle, state: tauri::State<daemon::DaemonState>
     daemon::query_status(&app, stored_error)
 }
 
+// settings.js's Integrations tab reads each agent's state from this and, for a
+// Retry or Update click, asks for one agent's install. Both run the `canvas`
+// CLI, which can take seconds, so they stay off the main thread.
+#[tauri::command]
+async fn integration_status(app: tauri::AppHandle) -> Result<Vec<integrations::IntegrationRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || integrations::status(&app.state::<integrations::IntegrationState>()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn integration_install(app: tauri::AppHandle, agent: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        integrations::install(&app.state::<integrations::IntegrationState>(), &agent)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // The card id a `canvas-post://<card id>` link named, waiting for the viewer to
 // take it. A link that launches the app arrives before the page has loaded
 // and started listening, so the id is held here rather than only emitted.
@@ -148,6 +168,8 @@ pub fn run() {
             get_pinned,
             open_settings,
             daemon_status,
+            integration_status,
+            integration_install,
             take_pending_card
         ])
         .setup(|app| {
@@ -162,6 +184,13 @@ pub fn run() {
             std::thread::spawn(move || bridge::forward_events(handle));
             app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
             app.manage(PendingCard(std::sync::Mutex::new(None)));
+            app.manage(integrations::IntegrationState(Default::default()));
+            // After the daemon step, which installs the `canvas` this runs.
+            // Off the setup thread: `claude plugin` calls can take seconds.
+            if !cfg!(debug_assertions) {
+                let integrations_handle = app.handle().clone();
+                std::thread::spawn(move || integrations::install_outdated(&integrations_handle));
+            }
 
             let link_handle = app.handle().clone();
             app.deep_link()

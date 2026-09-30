@@ -169,6 +169,117 @@ body {
   word-break: break-word;
 }
 
+/* Integrations tab: one row per agent — a glyph, the name over one status
+   phrase, and a button when there is something to do. Hairline dividers like
+   the profile list; a failed install's stderr line sits under the phrase. The
+   glyph's shape carries the state, its colour only repeats it. */
+.integrations-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.integrations-intro {
+  margin: 0;
+}
+
+.integration-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.integration-row:last-child {
+  border-bottom: none;
+}
+
+.integration-glyph {
+  display: inline-flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.integration-glyph svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.integration-row[data-state="current"] .integration-glyph {
+  color: var(--ok);
+}
+
+.integration-row[data-state="stale"] .integration-glyph,
+.integration-row[data-state="review"] .integration-glyph {
+  color: var(--warn);
+}
+
+.integration-row[data-state="error"] .integration-glyph {
+  color: var(--danger);
+}
+
+.integration-row[data-state="busy"] .integration-glyph {
+  color: var(--accent);
+}
+
+.integration-row[data-state="busy"] .integration-glyph svg {
+  animation: integration-spin 900ms linear infinite;
+}
+
+@keyframes integration-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .integration-row[data-state="busy"] .integration-glyph svg {
+    animation-duration: 3s;
+  }
+}
+
+.integration-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.integration-name {
+  font-weight: 600;
+}
+
+.integration-phrase {
+  margin-top: 1px;
+  color: var(--fg3);
+}
+
+.integration-body .daemon-error {
+  margin-top: 8px;
+}
+
+.integrations-empty {
+  padding: 28px 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+.integrations-empty b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--fg);
+  font-size: 14px;
+}
+
 .seg {
   display: inline-flex;
   padding: 2px;

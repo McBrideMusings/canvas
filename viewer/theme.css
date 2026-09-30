@@ -20,6 +20,8 @@
   --danger: #b91c1c;
   --danger-soft: #fee2e2;
   --danger-line: #f3c9c9;
+  --ok: #1f7a3a;
+  --warn: #8a5a00;
   --pill-bg: #1a1a1a;
   --switch-off: #cfccc3;
   --seg-on: #fff;
@@ -46,6 +48,8 @@
   --danger: #f08a84;
   --danger-soft: #4a2424;
   --danger-line: #5c3030;
+  --ok: #6fcf8a;
+  --warn: #e0b45a;
   --pill-bg: #3a3a42;
   --switch-off: #4a4a52;
   --seg-on: #45454d;

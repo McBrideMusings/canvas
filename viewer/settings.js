@@ -118,6 +118,153 @@
     daemonTabEl.hidden = true;
   }
 
+  // Integrations tab: one row per coding agent, from the app's
+  // integration_status (which runs `canvas integrations list --json`). A row
+  // is one of: not found, current, out of date, installing (this page's own
+  // state, while integration_install runs), needs review, or install failed
+  // with the CLI's stderr line. Only Canvas.app can answer, so outside it the
+  // tab is hidden like Daemon's.
+  const integrationsTabEl = document.getElementById("tab-integrations");
+  const integrationsListEl = document.getElementById("integrations-list");
+  const integrationsErrorEl = document.getElementById("integrations-load-error");
+  const integrationsCheckedEl = document.getElementById("integrations-checked");
+  const integrationsRefreshEl = document.getElementById("integrations-refresh");
+  const AGENT_NAMES = { "claude-code": "Claude Code", codex: "Codex" };
+  const AGENT_COMMANDS = { "claude-code": "claude", codex: "codex" };
+  const GLYPHS = {
+    current: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    stale: '<circle cx="12" cy="12" r="8.5"/><path d="M12 16V8M8.5 11.5L12 8l3.5 3.5"/>',
+    notfound: '<circle cx="12" cy="12" r="8.5"/><path d="M8 12h8"/>',
+    error: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.01"/>',
+    busy: '<path d="M12 3.5a8.5 8.5 0 108.5 8.5"/>',
+    review: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.5"/>',
+  };
+  let integrationRows = [];
+  const installing = new Set();
+
+  // What one row shows: its state, the phrase, an optional hint or error,
+  // and the button label (none when there is nothing to do).
+  function integrationView(row) {
+    const name = AGENT_NAMES[row.agent] || row.agent;
+    if (installing.has(row.agent)) return { state: "busy", phrase: "Installing…", action: "Installing…" };
+    if (!row.found) {
+      const cmd = AGENT_COMMANDS[row.agent] || row.agent;
+      return { state: "notfound", phrase: "Not found", hint: `The ${cmd} command isn't on your PATH. Canvas sets it up once you install it.` };
+    }
+    if (row.error) return { state: "error", phrase: "Install failed", error: row.error, action: "Retry" };
+    switch (row.status) {
+      case "current":
+        return { state: "current", phrase: "Installed · Current" };
+      case "out of date":
+        return { state: "stale", phrase: "Installed · Out of date", action: "Update" };
+      case "needs review":
+        return { state: "review", phrase: "Installed · Needs review", hint: `Open ${name} and trust Canvas's hooks when it asks (“Hooks need review”).` };
+      case "not installed":
+        return { state: "stale", phrase: "Not installed", action: "Install" };
+      default:
+        return { state: "stale", phrase: row.status || "Unknown" };
+    }
+  }
+
+  function integrationRowEl(row) {
+    const view = integrationView(row);
+    const name = AGENT_NAMES[row.agent] || row.agent;
+    const el = document.createElement("div");
+    el.className = "integration-row";
+    el.dataset.state = view.state;
+    el.dataset.agent = row.agent;
+
+    const glyph = document.createElement("span");
+    glyph.className = "integration-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.innerHTML = `<svg viewBox="0 0 24 24">${GLYPHS[view.state]}</svg>`;
+
+    const body = document.createElement("div");
+    body.className = "integration-body";
+    const nameEl = document.createElement("div");
+    nameEl.className = "integration-name";
+    nameEl.textContent = name;
+    const phraseEl = document.createElement("div");
+    phraseEl.className = "integration-phrase";
+    phraseEl.textContent = view.phrase;
+    body.append(nameEl, phraseEl);
+    if (view.error) {
+      const errEl = document.createElement("pre");
+      errEl.className = "daemon-error";
+      errEl.setAttribute("role", "alert");
+      errEl.textContent = view.error;
+      body.append(errEl);
+    }
+    if (view.hint) {
+      const hintEl = document.createElement("p");
+      hintEl.className = "pref-note";
+      hintEl.textContent = view.hint;
+      body.append(hintEl);
+    }
+    el.append(glyph, body);
+
+    if (view.action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = view.state === "error" || view.state === "busy" ? "btn" : "btn btn-secondary";
+      btn.textContent = view.action;
+      btn.disabled = view.state === "busy";
+      btn.setAttribute("aria-label", `${view.state === "busy" ? "Installing" : view.action} ${name}`);
+      btn.addEventListener("click", () => installIntegration(row.agent));
+      el.append(btn);
+    }
+    return el;
+  }
+
+  function renderIntegrations() {
+    integrationsListEl.replaceChildren();
+    if (integrationRows.length > 0 && integrationRows.every((r) => !r.found)) {
+      const empty = document.createElement("div");
+      empty.className = "integrations-empty";
+      const title = document.createElement("b");
+      title.textContent = "No coding agents found";
+      empty.append(title, "Canvas looks for claude and codex on your PATH. Install one and press Check now.");
+      integrationsListEl.append(empty);
+      return;
+    }
+    for (const row of integrationRows) integrationsListEl.append(integrationRowEl(row));
+  }
+
+  function refreshIntegrations() {
+    if (!window.__TAURI__) return Promise.resolve();
+    return window.__TAURI__.core
+      .invoke("integration_status")
+      .then((rows) => {
+        integrationRows = rows;
+        integrationsErrorEl.hidden = true;
+        integrationsCheckedEl.textContent = `Checked ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+        renderIntegrations();
+      })
+      .catch((e) => {
+        integrationsErrorEl.textContent = String(e);
+        integrationsErrorEl.hidden = false;
+      });
+  }
+
+  function installIntegration(agent) {
+    installing.add(agent);
+    renderIntegrations();
+    window.__TAURI__.core
+      .invoke("integration_install", { agent })
+      .catch(() => {})
+      .then(() => {
+        installing.delete(agent);
+        return refreshIntegrations();
+      })
+      .then(renderIntegrations);
+  }
+
+  if (window.__TAURI__ && window.__TAURI__.core) {
+    integrationsRefreshEl.addEventListener("click", refreshIntegrations);
+  } else {
+    integrationsTabEl.hidden = true;
+  }
+
   // The settings window hides rather than closes (lib.rs), so this script
   // keeps running — pause the poll while the page isn't visible instead of
   // ticking a background window forever.
@@ -146,6 +293,7 @@
   function openTab(section) {
     selectTab(section);
     if (section === "guidance") loadProfilesTab();
+    if (section === "integrations") refreshIntegrations();
     if (section === "daemon") startDaemonPolling();
     else stopDaemonPolling();
   }

@@ -55,6 +55,17 @@ beside the terminal all day.
   clears search and filters, scrolls to the card and rings it.
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
+  `integrations.rs` keeps each agent's hooks current by running the installed
+  `canvas integrations list --json` and `install <agent>` (`CANVAS_BIN`
+  names a stand-in binary in a debug build; the subprocess PATH gains `~/.local/bin`,
+  `/opt/homebrew/bin` and `/usr/local/bin`, since a Finder-launched app has
+  none of them): a release build's `setup()` installs every detected agent
+  that is out of date or not installed, on a background thread after the
+  daemon step, and a failed install's stderr line stays in `IntegrationState`
+  until that agent's next success. The `integration_status` and
+  `integration_install(agent)` commands (agent from the fixed list
+  `claude-code`, `codex`) feed the Settings window's Integrations tab, which
+  shows a row per agent with a Retry, Update or Install button.
 - `viewer/` — plain `index.html` + JS, no build step, loaded only by
   Canvas.app (there is no browser-reachable port). A toolbar (search field,
   row of session chips) below the title bar, stream of cards, one per post.

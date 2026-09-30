@@ -34,7 +34,7 @@ fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME").map(std::path::PathBuf::from).expect("HOME must be set")
 }
 
-fn installed_path() -> std::path::PathBuf {
+pub fn installed_path() -> std::path::PathBuf {
     dirs_home().join(".local/bin/canvas")
 }
 
