@@ -100,57 +100,140 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
     ))
 }
 
+/// Words that may precede the command name in a segment.
+const COMMAND_PREFIXES: [&str; 12] = [
+    "then", "do", "else", "elif", "if", "while", "until", "{", "!", "time", "env", "exec",
+];
+
 /// True when a shell segment of `cmd` runs `canvas post` (bare or by path, after
-/// optional `VAR=x` words). Segments end at `;`, `&`, `|` or a newline outside
-/// quotes and `$(...)`, so the text in a commit message or a grep pattern does
-/// not count. An unterminated quote leaves the rest as one segment.
+/// optional `VAR=x` words and keywords like `then`). A segment starts at the
+/// beginning, after `;`, `&`, `|`, a newline, a backtick, or on either side of
+/// `(`, `$(` and `)`, but never inside quotes, so the text in a commit message or
+/// a grep pattern does not count. Heredoc bodies are skipped. An unterminated
+/// quote leaves the rest as one segment.
 fn runs_canvas_post(cmd: &str) -> bool {
-    // Open contexts, innermost last: `'`, `"` or `(`.
-    let mut open: Vec<u8> = Vec::new();
     let bytes = cmd.as_bytes();
+    // Open contexts, innermost last: `'` and `"` quotes, `(` a command group.
+    let mut open: Vec<u8> = Vec::new();
+    let mut heredocs: Vec<&str> = Vec::new();
     let mut start = 0;
     let mut i = 0;
+    macro_rules! segment_ends_here {
+        () => {
+            if segment_is_canvas_post(&cmd[start..i]) {
+                return true;
+            }
+        };
+    }
     while i < bytes.len() {
         let b = bytes[i];
+        let next = bytes.get(i + 1).copied();
         match open.last().copied() {
             Some(b'\'') => {
                 if b == b'\'' {
                     open.pop();
                 }
             }
-            top => {
-                let in_double = top == Some(b'"');
-                if b == b'\\' {
-                    i += 1;
-                } else if in_double && b == b'"' {
+            Some(b'"') => match b {
+                b'\\' => i += 1,
+                b'"' => {
                     open.pop();
-                } else if b == b'$' && bytes.get(i + 1) == Some(&b'(') {
-                    open.push(b'(');
-                    i += 1;
-                } else if in_double {
-                } else if b == b'\'' || b == b'"' {
-                    open.push(b);
-                } else if b == b'(' {
-                    open.push(b'(');
-                } else if b == b')' {
-                    open.pop();
-                } else if open.is_empty() && matches!(b, b';' | b'&' | b'|' | b'\n') {
-                    if segment_is_canvas_post(&cmd[start..i]) {
-                        return true;
-                    }
                     start = i + 1;
                 }
-            }
+                b'$' if next == Some(b'(') => {
+                    open.push(b'(');
+                    i += 1;
+                    start = i + 1;
+                }
+                _ => {}
+            },
+            _ => match b {
+                b'\\' => i += 1,
+                b'\'' | b'"' => open.push(b),
+                b'$' if next == Some(b'(') => {
+                    segment_ends_here!();
+                    open.push(b'(');
+                    i += 1;
+                    start = i + 1;
+                }
+                b'(' => {
+                    segment_ends_here!();
+                    open.push(b'(');
+                    start = i + 1;
+                }
+                b')' => {
+                    segment_ends_here!();
+                    open.pop();
+                    start = i + 1;
+                }
+                b'&' if next == Some(b'>')
+                    || matches!(i.checked_sub(1).map(|p| bytes[p]), Some(b'>' | b'<')) => {}
+                b';' | b'&' | b'|' | b'`' => {
+                    segment_ends_here!();
+                    start = i + 1;
+                }
+                b'\n' => {
+                    segment_ends_here!();
+                    start = skip_heredoc_bodies(cmd, i + 1, &mut heredocs);
+                    i = start.max(i + 1) - 1;
+                }
+                b'<' if next == Some(b'<') && bytes.get(i + 2) != Some(&b'<') => {
+                    let (delimiter, end) = heredoc_delimiter(cmd, i + 2);
+                    if !delimiter.is_empty() {
+                        heredocs.push(delimiter);
+                    }
+                    i = end - 1;
+                }
+                _ => {}
+            },
         }
         i += 1;
     }
     segment_is_canvas_post(&cmd[start.min(cmd.len())..])
 }
 
+/// The heredoc delimiter word starting at or after `from` (past `<<`), and the
+/// index just past it.
+fn heredoc_delimiter(cmd: &str, from: usize) -> (&str, usize) {
+    let bytes = cmd.as_bytes();
+    let mut j = from;
+    if bytes.get(j) == Some(&b'-') {
+        j += 1;
+    }
+    while matches!(bytes.get(j), Some(b' ' | b'\t')) {
+        j += 1;
+    }
+    let word_start = j;
+    while j < bytes.len() && !b" \t\n;&|()<>".contains(&bytes[j]) {
+        j += 1;
+    }
+    (
+        cmd[word_start..j].trim_matches(['\'', '"', '\\']),
+        j.max(from),
+    )
+}
+
+/// Consumes the queued heredoc bodies starting at line start `from`; returns
+/// the index of the first line after them.
+fn skip_heredoc_bodies(cmd: &str, from: usize, pending: &mut Vec<&str>) -> usize {
+    let mut pos = from;
+    for delimiter in pending.drain(..) {
+        while pos < cmd.len() {
+            let end = cmd[pos..].find('\n').map_or(cmd.len(), |n| pos + n);
+            let line = &cmd[pos..end];
+            pos = (end + 1).min(cmd.len());
+            if line.trim() == delimiter {
+                break;
+            }
+        }
+    }
+    pos
+}
+
 fn segment_is_canvas_post(segment: &str) -> bool {
-    let mut words = segment
-        .split_whitespace()
-        .skip_while(|w| w.split_once('=').is_some_and(|(k, _)| is_var_name(k)));
+    let mut words = segment.split_whitespace().skip_while(|w| {
+        COMMAND_PREFIXES.contains(w) || w.split_once('=').is_some_and(|(k, _)| is_var_name(k))
+    });
     let program = words.next().unwrap_or("");
     (program == "canvas" || program.ends_with("/canvas")) && words.next() == Some("post")
 }
@@ -293,6 +376,13 @@ mod tests {
             "FOO=1 canvas post -",
             "cat f | canvas post - --format html",
             "canvas post - <<'EOF'\nhi\nEOF",
+            "out=$(canvas post f.html)",
+            "cat > f.html <<'EOF'\n<p>don't</p>\nEOF\ncanvas post f.html",
+            "(cd x && canvas post -)",
+            "if true; then canvas post -; fi",
+            "`canvas post -`",
+            "canvas post f.html 2>&1",
+            "echo é && canvas post -",
         ] {
             assert!(runs_canvas_post(yes), "{yes}");
         }
@@ -302,6 +392,8 @@ mod tests {
             "grep -r \"canvas post\" .",
             "echo \"a; canvas post\"",
             "echo 'x' && grep canvas post.txt",
+            "cat <<EOF\ncanvas post\nEOF",
+            "echo \"$(date) canvas post\"",
             "canvas postmortem",
             "canvas wait abc",
         ] {
