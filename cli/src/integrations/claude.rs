@@ -1,19 +1,38 @@
-//! `canvas install [repo]` — installs or refreshes the Claude Code plugin from
-//! a local checkout, so the hooks and skill Claude Code runs always match the
-//! `canvas` binary that was just deployed.
+//! The Claude Code integration: installs or refreshes the plugin from a local
+//! checkout, so the hooks and skill Claude Code runs always match the `canvas`
+//! binary that was just deployed.
 //!
 //! The marketplace is registered as a `directory` source pointing at the
 //! checkout, never a git remote, so the plugin always comes from the same
-//! checkout the binary was built from. Like
-//! `post`, every failure prints one line on stderr and exits non-zero.
+//! checkout the binary was built from.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::Status;
+
 const MARKETPLACE: &str = "canvas";
 const PLUGIN: &str = "canvas@canvas";
 
-pub fn run(arg: Option<&str>) -> Result<(), String> {
+/// Compares the installed plugin version to the `plugin.json` in the checkout
+/// the marketplace points at.
+pub fn status() -> Result<Status, String> {
+    let (Some(path), Some(installed)) = (marketplace_path()?, installed_version()?) else {
+        return Ok(Status::NotInstalled);
+    };
+    let manifest = Path::new(&path).join("plugin/.claude-plugin/plugin.json");
+    let text = std::fs::read_to_string(&manifest)
+        .map_err(|e| format!("could not read {}: {e}", manifest.display()))?;
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("could not parse {}: {e}", manifest.display()))?;
+    Ok(if json["version"].as_str() == Some(installed.as_str()) {
+        Status::Current
+    } else {
+        Status::OutOfDate
+    })
+}
+
+pub fn install(arg: Option<&str>) -> Result<(), String> {
     let repo = repo_dir(arg)?;
     let repo_str = repo.to_string_lossy().to_string();
 
@@ -59,7 +78,7 @@ fn repo_dir(arg: Option<&str>) -> Result<PathBuf, String> {
         .map_err(|e| format!("could not resolve {}: {e}", dir.display()))?;
     if !dir.join(".claude-plugin/marketplace.json").is_file() {
         return Err(format!(
-            "{} has no .claude-plugin/marketplace.json; run canvas install from the canvas checkout",
+            "{} has no .claude-plugin/marketplace.json; pass the canvas checkout or run from it",
             dir.display()
         ));
     }

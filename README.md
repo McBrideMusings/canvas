@@ -42,8 +42,11 @@ cargo build --release -p canvas
 cp -R app/src-tauri/target/release/bundle/macos/Canvas.app /Applications/
 open /Applications/Canvas.app
 
-# 4. Install the Claude Code plugin from this checkout.
-~/.local/bin/canvas install .
+# 4. Install each detected agent's Canvas hooks (Claude Code plugin from this
+#    checkout; Codex entries in ~/.codex/hooks.json).
+~/.local/bin/canvas integrations list
+~/.local/bin/canvas integrations install claude-code .
+~/.local/bin/canvas integrations install codex
 ```
 
 Step 3 copies the `canvas` binary to `~/.local/bin/canvas` and registers the

@@ -127,6 +127,17 @@ beside the terminal all day.
   last write wins, in memory only. `canvas wait <card_id> [--timeout secs]`
   blocks until a reply lands (default 30s); `canvas replies <card_id>` is
   the non-blocking single check.
+- `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)
+  detects each agent (its CLI on PATH), reports `current`, `out of date`,
+  `not installed` or `needs review`, and installs; per agent it is
+  `AgentAdapter::{detect, status, install}`. Codex's install merges Canvas's
+  SessionStart, UserPromptSubmit and SessionEnd groups into
+  `~/.codex/hooks.json` (`$CODEX_HOME`), replacing only its own groups and
+  appending new ones so other tools' entries keep their positions, and writes
+  `canvas-hooks-version` beside it. Codex runs a hook only after the user
+  trusts it (the TUI's "Hooks need review"; `trusted_hash` tables in
+  `config.toml`, computed by Codex), so status is `needs review` until those
+  tables exist for Canvas's groups.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and UserPromptSubmit to
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
@@ -138,11 +149,11 @@ beside the terminal all day.
   /api/profiles/:kind/mode` sets the mode), and print that text; when nothing is
   assigned the response has no text and they print the compiled-in default from
   `guidance.md`. Claude Code runs a cached copy of
-  `plugin/`, not the repo: `canvas install [repo]` registers the checkout as a
+  `plugin/`, not the repo: `canvas integrations install claude-code [repo]` registers the checkout as a
   local `directory` marketplace (never a git remote, so the plugin comes from the same checkout as the binary) and
   installs or updates `canvas@canvas` from it. `admin deploy canvas` installs
-  the `canvas` binary and then runs `canvas install`, so the binary and the
-  plugin always come from the same commit. Bump `plugin/.claude-plugin/plugin.json`'s
+  the `canvas` binary and then runs `canvas integrations install` for each
+  detected agent, so the binary and the plugin always come from the same commit. Bump `plugin/.claude-plugin/plugin.json`'s
   `version` when `plugin/` changes, or `claude plugin update` keeps the old copy.
 
 ## Rules

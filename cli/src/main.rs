@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -21,8 +21,8 @@ fn main() {
                 .unwrap_or_else(|| canvas::guidance::TEXT.to_string());
             print!("{text}");
         }
-        Some("install") => {
-            if let Err(e) = canvas::install::run(args.get(2).map(String::as_str)) {
+        Some("integrations") => {
+            if let Err(e) = canvas::integrations::run(&args[2..]) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

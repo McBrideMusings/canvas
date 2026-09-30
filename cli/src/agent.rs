@@ -6,6 +6,8 @@
 //! session; it carries no behavior.
 
 use canvas_core::Agent;
+
+use crate::integrations::{on_path, Status};
 use serde_json::Value;
 
 /// What a hook reads from stdin.
@@ -51,11 +53,31 @@ pub trait AgentAdapter: Sync {
     /// The last finished turn in this agent's transcript text; an empty
     /// `Turn` when there is none.
     fn last_turn(&self, transcript: &str) -> Turn;
+    /// The agent's CLI is on `PATH`.
+    fn detect(&self) -> bool;
+    /// Whether the agent's Canvas hooks match this `canvas` binary.
+    fn status(&self) -> Result<Status, String>;
+    /// Makes the agent's Canvas hooks current; running it again changes
+    /// nothing. `repo` is the canvas checkout, which only Claude Code's
+    /// plugin install reads (default: the current directory).
+    fn install(&self, repo: Option<&str>) -> Result<(), String>;
 }
 
 pub struct ClaudeCode;
 
 impl AgentAdapter for ClaudeCode {
+    fn detect(&self) -> bool {
+        on_path("claude")
+    }
+
+    fn status(&self) -> Result<Status, String> {
+        crate::integrations::claude::status()
+    }
+
+    fn install(&self, repo: Option<&str>) -> Result<(), String> {
+        crate::integrations::claude::install(repo)
+    }
+
     fn agent(&self) -> Agent {
         Agent::ClaudeCode
     }
@@ -140,6 +162,18 @@ impl AgentAdapter for ClaudeCode {
 pub struct Codex;
 
 impl AgentAdapter for Codex {
+    fn detect(&self) -> bool {
+        on_path("codex")
+    }
+
+    fn status(&self) -> Result<Status, String> {
+        crate::integrations::codex::status()
+    }
+
+    fn install(&self, _repo: Option<&str>) -> Result<(), String> {
+        crate::integrations::codex::install()
+    }
+
     fn agent(&self) -> Agent {
         Agent::Codex
     }
@@ -313,6 +347,11 @@ fn is_prompt(line: &Value) -> bool {
 }
 
 const ADAPTERS: [&dyn AgentAdapter; 2] = [&ClaudeCode, &Codex];
+
+/// Every adapter.
+pub fn adapters() -> &'static [&'static dyn AgentAdapter] {
+    &ADAPTERS
+}
 
 /// The adapter an `--agent <name>` flag names.
 pub fn by_name(name: &str) -> Option<&'static dyn AgentAdapter> {
