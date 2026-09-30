@@ -2,10 +2,6 @@
   box-sizing: border-box;
 }
 
-:root {
-  color-scheme: light;
-}
-
 html, body {
   height: 100%;
 }
@@ -14,8 +10,8 @@ body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
-  background: #f4f3ef;
-  color: #1a1a1a;
+  background: var(--bg);
+  color: var(--fg);
   display: flex;
   flex-direction: column;
 }
@@ -45,7 +41,7 @@ body {
   align-items: flex-start;
   gap: 16px;
   padding: 0 16px;
-  background: #f4f3ef;
+  background: var(--bg);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -72,8 +68,8 @@ body {
   align-items: center;
   gap: 16px;
   padding: 8px 20px 10px 16px;
-  background: #f4f3ef;
-  border-bottom: 1px solid rgba(20, 18, 12, 0.14);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-toolbar);
   box-shadow: 0 4px 8px -2px rgba(20, 18, 12, 0.1);
   -webkit-user-select: none;
   user-select: none;
@@ -102,15 +98,15 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 10px;
-  border: 1px solid #d6d3c8;
+  border: 1px solid var(--line2);
   border-radius: 7px;
-  background: #fff;
-  color: #888;
+  background: var(--surface);
+  color: var(--muted);
   cursor: text;
 }
 
 .search-field:focus-within {
-  border-color: #2563eb;
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
 }
 
@@ -128,22 +124,22 @@ body {
   outline: none;
   background: none;
   font: inherit;
-  color: #1a1a1a;
+  color: var(--fg);
 }
 
 .search-input::placeholder {
-  color: #999;
+  color: var(--faint);
 }
 
 .search-hint {
   flex: none;
   padding: 0 5px;
-  border: 1px solid #d6d3c8;
+  border: 1px solid var(--line2);
   border-radius: 4px;
   font: inherit;
   font-size: 11px;
   line-height: 16px;
-  color: #888;
+  color: var(--muted);
 }
 
 .search-clear {
@@ -154,7 +150,7 @@ body {
   border: none;
   border-radius: 4px;
   background: none;
-  color: #2563eb;
+  color: var(--accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -170,7 +166,7 @@ body {
 .search-count {
   flex: none;
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -217,10 +213,10 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0 10px 0 8px;
-  border: 1px solid #e2e0d8;
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: #fff;
-  color: #1a1a1a;
+  background: var(--surface);
+  color: var(--fg);
   font: inherit;
   cursor: pointer;
   appearance: none;
@@ -229,12 +225,12 @@ body {
 }
 
 .chip:hover {
-  border-color: color-mix(in srgb, var(--session-colour, #888) 55%, #e2e0d8);
-  background: color-mix(in srgb, var(--session-colour, #888) 7%, #fff);
+  border-color: color-mix(in srgb, var(--session-colour, #888) 55%, var(--line));
+  background: color-mix(in srgb, var(--session-colour, #888) 7%, var(--surface));
 }
 
 .chip:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -257,7 +253,7 @@ body {
 .chip-repo,
 .chip-count {
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
   white-space: nowrap;
 }
 
@@ -327,7 +323,7 @@ body {
   border: none;
   border-radius: 6px;
   background: none;
-  color: #444;
+  color: var(--fg2);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
@@ -339,24 +335,24 @@ body {
 }
 
 .icon-btn:hover {
-  background: #ece9e0;
+  background: var(--hover);
 }
 
 .icon-btn:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 /* A pressed toggle (aria-pressed="true", e.g. the pin once pinned) gets a
    subtle tinted background instead of the plain hover grey. */
 .icon-btn[aria-pressed="true"] {
-  background: #dbe6fd;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 #drawer-toggle[aria-expanded="true"] {
-  background: #dbe6fd;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* The drawer toggle's archived-session count, pinned to its top-right corner. */
@@ -409,8 +405,8 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-left: 0 solid #e2e0d8;
+  background: var(--surface);
+  border-left: 0 solid var(--line);
   transition: width 180ms ease-out, border-left-width 180ms ease-out;
 }
 
@@ -461,12 +457,12 @@ body {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #888;
+  color: var(--muted);
 }
 
 .drawer-empty {
   padding: 4px 16px;
-  color: #888;
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -478,7 +474,7 @@ body {
 }
 
 .drawer-row:hover {
-  background: #f4f3ef;
+  background: var(--bg);
 }
 
 .drawer-row-text {
@@ -498,14 +494,14 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
 }
 
 .link-btn {
   padding: 0;
   border: none;
   background: none;
-  color: #2563eb;
+  color: var(--accent);
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
@@ -517,33 +513,33 @@ body {
 .drawer-action-btn {
   flex: none;
   padding: 4px 10px;
-  border: 1px solid #d6d3c8;
+  border: 1px solid var(--line2);
   border-radius: 6px;
-  background: #fff;
-  color: #1a1a1a;
+  background: var(--surface);
+  color: var(--fg);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
 .drawer-action-btn:hover:not(:disabled) {
-  background: #ece9e0;
+  background: var(--hover);
 }
 
 .drawer-action-btn:disabled {
-  color: #bbb;
-  border-color: #e2e0d8;
+  color: var(--faint);
+  border-color: var(--line);
   cursor: default;
 }
 
 .drawer-action-btn.danger {
-  color: #b91c1c;
-  border-color: #f3c9c9;
+  color: var(--danger);
+  border-color: var(--danger-line);
 }
 
 .drawer-action-btn.danger:disabled {
-  color: #bbb;
-  border-color: #e2e0d8;
+  color: var(--faint);
+  border-color: var(--line);
 }
 
 /* "Clear all" and its armed "Confirm" share one width so the button doesn't
@@ -560,12 +556,12 @@ body {
 }
 
 .icon-btn.danger {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .icon-btn.confirming {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .icon-btn.copied {
@@ -594,7 +590,7 @@ html.full-width .empty-state {
 }
 
 .empty-state {
-  color: #666;
+  color: var(--fg3);
   padding: 40px 0;
   line-height: 1.5;
 }
@@ -614,24 +610,24 @@ html.full-width .empty-state {
   margin-bottom: 20px;
 }
 
-.empty-art .art-back2 { fill: #ece9e1; stroke: #dedbd1; }
-.empty-art .art-back1 { fill: #f8f7f3; stroke: #dedbd1; }
-.empty-art .art-front { fill: #fff; stroke: #d3d0c5; }
+.empty-art .art-back2 { fill: var(--art-2); stroke: var(--line2); }
+.empty-art .art-back1 { fill: var(--art-1); stroke: var(--line2); }
+.empty-art .art-front { fill: var(--surface); stroke: var(--line2); }
 .empty-art .art-dot { fill: #d97757; }
-.empty-art .art-line { fill: #e9e7df; }
-.empty-art .art-line.strong { fill: #d3d0c5; }
+.empty-art .art-line { fill: var(--line); }
+.empty-art .art-line.strong { fill: var(--line2); }
 
 .empty-title {
   margin: 0 0 6px;
   font-size: 17px;
   font-weight: 600;
-  color: #1a1a1a;
+  color: var(--fg);
 }
 
 .empty-body {
   margin: 0 0 22px;
   max-width: 340px;
-  color: #666;
+  color: var(--fg3);
 }
 
 .empty-hint {
@@ -641,23 +637,23 @@ html.full-width .empty-state {
   justify-content: center;
   gap: 6px 8px;
   font-size: 12.5px;
-  color: #888;
+  color: var(--muted);
 }
 
 .empty-hint code {
   padding: 3px 8px;
-  border: 1px solid #e2e0d8;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
-  color: #444;
+  background: var(--surface);
+  color: var(--fg2);
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* No overflow: hidden — the ⋯ menu hangs below the header and must be able
    to extend past the bottom of a short card. */
 .card {
-  background: #fff;
-  border: 1px solid #e2e0d8;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
   margin-bottom: 16px;
 }
@@ -665,7 +661,7 @@ html.full-width .empty-state {
 .card-header {
   position: relative;
   padding: 12px 16px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--line);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -691,13 +687,13 @@ html.full-width .empty-state {
 
 .card-header .session-repo {
   font-weight: 400;
-  color: #666;
+  color: var(--fg3);
   margin-left: 6px;
 }
 
 .card-header .time {
   font-weight: 400;
-  color: #888;
+  color: var(--muted);
   margin-left: 6px;
 }
 
@@ -726,8 +722,8 @@ html.full-width .empty-state {
   min-width: 200px;
   max-width: 320px;
   padding: 4px;
-  background: #fff;
-  border: 1px solid #e2e0d8;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(20, 18, 12, 0.14), 0 2px 6px rgba(20, 18, 12, 0.06);
   font-weight: 400;
@@ -742,7 +738,7 @@ html.full-width .empty-state {
   border: none;
   border-radius: 6px;
   background: none;
-  color: #1a1a1a;
+  color: var(--fg);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -762,25 +758,25 @@ html.full-width .empty-state {
 }
 
 .menu-item:hover {
-  background: #ece9e0;
+  background: var(--hover);
 }
 
 .menu-item:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 .menu-item.danger {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .menu-item.danger.confirming {
-  background: #fee2e2;
+  background: var(--danger-soft);
   font-weight: 600;
 }
 
 .menu-divider {
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
   margin: 4px 2px;
 }
 
@@ -803,7 +799,7 @@ html.full-width .empty-state {
   max-width: 460px;
   padding: 8px 12px;
   border-radius: 9px;
-  background: #1a1a1a;
+  background: var(--pill-bg);
   color: #fff;
   font-size: 13px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
@@ -974,7 +970,7 @@ html.full-width .empty-state {
   padding: 0 12px;
   border: none;
   border-radius: 14px;
-  background: #1a1a1a;
+  background: var(--pill-bg);
   color: #fff;
   font: inherit;
   font-size: 13px;
@@ -984,7 +980,7 @@ html.full-width .empty-state {
 
 .new-pill:focus-visible,
 .to-top:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -1008,10 +1004,10 @@ html.full-width .empty-state {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e2e0d8;
+  border: 1px solid var(--line);
   border-radius: 50%;
-  background: #fff;
-  color: #1a1a1a;
+  background: var(--surface);
+  color: var(--fg);
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
 }

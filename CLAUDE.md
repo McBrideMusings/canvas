@@ -61,6 +61,12 @@ beside the terminal all day.
   Session chips and the drawer's per-row eye toggle add/remove sessions from a
   multi-select visible set (everything visible by default) rather than
   picking one session at a time.
+  A theme button between Pin and Sessions switches light and dark for the
+  whole window and every card (`theme.js` holds the choice in localStorage,
+  `theme.css` the palette; with nothing stored the system decides). A card
+  always renders in the active theme: `buildIframeDoc` rewrites its
+  `prefers-color-scheme` queries, forces the page surface and ink, and recolors
+  text that falls below 4.5:1 contrast; a change rebuilds every card iframe.
   Settings > Guidance > Post reminders edits each profile as a form
   (`stop-form.js` parses the directive text into a model and re-emits it, keeping
   comments, unknown lines and order) or as raw text; the text stays the only store.

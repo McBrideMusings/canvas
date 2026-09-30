@@ -147,6 +147,18 @@
           })
         );
         break;
+      // The icon shows the mode a click switches to.
+      case "moon":
+        svg.appendChild(svgEl("path", { d: "M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" }));
+        break;
+      case "sun":
+        svg.appendChild(svgEl("circle", { cx: "12", cy: "12", r: "4" }));
+        svg.appendChild(
+          svgEl("path", {
+            d: "M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4",
+          })
+        );
+        break;
       // A window with its sidebar on the right.
       case "sidebar-right":
         svg.appendChild(
@@ -445,6 +457,29 @@
       }
     });
   }
+
+  // The theme button sits between Pin and Sessions. The icon shows the mode
+  // a click switches to. A change rebuilds every card, because a card's
+  // iframe bakes the theme into its document.
+  const themeToggleEl = document.getElementById("theme-toggle");
+
+  function applyThemeButton() {
+    const dark = window.canvasTheme.get() === "dark";
+    themeToggleEl.setAttribute(
+      "aria-label",
+      dark ? "Switch to light mode" : "Switch to dark mode"
+    );
+    setButtonIcon(themeToggleEl, dark ? "sun" : "moon");
+  }
+
+  applyThemeButton();
+  themeToggleEl.addEventListener("click", () => {
+    window.canvasTheme.set(window.canvasTheme.get() === "dark" ? "light" : "dark");
+  });
+  window.addEventListener("canvas-theme", () => {
+    applyThemeButton();
+    bootstrapRender();
+  });
 
   function relativeTime(iso) {
     const then = new Date(iso).getTime();
@@ -1479,8 +1514,27 @@
     );
   }
 
+  // A card renders in the window's theme whatever it asks for. Its
+  // `prefers-color-scheme` media queries are rewritten so only the active
+  // theme's block matches (`(min-width:0px)` is always true, the huge
+  // `min-width` never is, and both stay valid after `and`), and the injected
+  // script answers `matchMedia` for the same queries. A stylesheet loaded
+  // from a CDN is out of reach; the forced surface, ink and contrast pass
+  // still keep its text readable.
+  function forceCardTheme(html, theme) {
+    return html.replace(
+      /\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)/gi,
+      (_m, want) =>
+        want.toLowerCase() === theme ? "(min-width:0px)" : "(min-width:999999px)"
+    );
+  }
+
   function buildIframeDoc(html) {
-    html = absolutizeCardImageSrcs(html);
+    const theme = window.canvasTheme.get();
+    const rootStyle = getComputedStyle(document.documentElement);
+    const surface = rootStyle.getPropertyValue("--surface").trim();
+    const ink = rootStyle.getPropertyValue("--fg").trim();
+    html = forceCardTheme(absolutizeCardImageSrcs(html), theme);
     const csp =
       "default-src 'none'; " +
       "script-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com 'unsafe-inline'; " +
@@ -1784,14 +1838,47 @@
             el.style.setProperty('color', pick, 'important');
           });
         });
+
+        // The rest of the post. Its own colours stay, but a post written
+        // for the other theme (dark text on a dark surface, or pale text on
+        // a pale panel) gets the same 4.5:1 fix. Each element's background
+        // is blended over its parent's, starting from the page surface; one
+        // with a background image or gradient has no known colour, so it
+        // passes its parent's through and is left alone.
+        var CANVAS_SURFACE = canvasRgba(getComputedStyle(document.body).backgroundColor);
+        var cvBg = new Map();
+        cvBg.set(canvasRoot, CANVAS_SURFACE);
+        canvasRoot.querySelectorAll('*').forEach(function (el) {
+          var parentBg = cvBg.get(el.parentElement) || CANVAS_SURFACE;
+          if (el.closest('.__cv-code') || el.closest('svg')) {
+            cvBg.set(el, parentBg);
+            return;
+          }
+          var cs = getComputedStyle(el);
+          var unknown = cs.backgroundImage !== 'none';
+          var bg = unknown ? parentBg : canvasBlend(canvasRgba(cs.backgroundColor), parentBg);
+          cvBg.set(el, bg);
+          if (unknown) return;
+          var hasText = Array.prototype.some.call(el.childNodes, function (n) {
+            return n.nodeType === 3 && n.nodeValue.trim() !== '';
+          });
+          if (!hasText) return;
+          var fg = canvasRgba(cs.color);
+          if (fg[3] < 1) fg = canvasBlend(fg, bg);
+          if (canvasContrast(fg, bg) >= 4.5) return;
+          var dark = [26, 26, 26, 1], light = [232, 230, 225, 1];
+          var pick = canvasContrast(dark, bg) >= canvasContrast(light, bg) ? '#1a1a1a' : '#e8e6e1';
+          el.style.setProperty('color', pick, 'important');
+        });
       </script>
     `;
     // Injected after the post's markup so it wins at equal specificity.
-    // The page colours are the card's surface and ink (.card in style.css);
-    // only html, body and the root wrapper are forced, so elements inside
-    // the post keep their own colours.
+    // The page colours are the active theme's surface and ink; only html,
+    // body and the root wrapper are forced, and the contrast pass in the
+    // script above fixes any text a post left unreadable against them.
     const postStyle = `<style>
-      html,body,#__canvas_root{background:#fff!important;background-color:#fff!important;color:#1a1a1a!important;}
+      html{color-scheme:${theme}!important;}
+      html,body,#__canvas_root{background:${surface}!important;background-color:${surface}!important;color:${ink}!important;}
       .__cv-code{margin:4px 0 12px;border-radius:8px;background:#1e1f24;color:#e6e6e6;overflow:hidden;}
       .__cv-head{display:flex;align-items:center;justify-content:space-between;height:30px;padding:0 4px 0 12px;font:12px ui-monospace,Menlo,Consolas,monospace;color:#9a9ca5;border-bottom:1px solid rgba(255,255,255,0.07);}
       .__cv-head button{border:0;background:none;color:#9a9ca5;height:24px;padding:0 8px;border-radius:5px;display:inline-flex;align-items:center;gap:5px;font:12px -apple-system,sans-serif;cursor:pointer;}
@@ -1810,6 +1897,11 @@
     return (
       `<!doctype html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="${csp}">` +
+      `<script>(function(){var t='${theme}',m=window.matchMedia.bind(window);` +
+      `window.matchMedia=function(q){var r=/prefers-color-scheme\\s*:\\s*(dark|light)/i.exec(String(q));` +
+      `if(!r)return m(q);var on=r[1].toLowerCase()===t;` +
+      `return{matches:on,media:String(q),onchange:null,addEventListener:function(){},removeEventListener:function(){},` +
+      `addListener:function(){},removeListener:function(){},dispatchEvent:function(){return false;}};};})();</script>` +
       `<style>html,body{margin:0;overflow:hidden;}` +
       `body{font-family:-apple-system,sans-serif;}` +
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +

@@ -57,6 +57,15 @@ Markdown source passes through unchanged. Text renders as an HTML-escaped
 `<pre>` block. HTML passes through as-is and must be self-contained: inline
 styles or a `<style>` block, no external stylesheet.
 
+Canvas has a light and a dark theme, chosen by a button in its title bar, and
+a card always renders in the active one. The viewer forces the page's
+background and text color, so don't set `html` or `body` background or color,
+and set a `color` beside any background you paint (a callout, a table header).
+To adapt on purpose, define a light palette on `:root` and override it under
+`@media (prefers-color-scheme: dark)`; Canvas makes that query match the
+active theme, not the system setting. Text that ends up unreadable against its
+background is recolored at render time.
+
 Code blocks (`<pre>`) render dark with light text. If you paint a background
 inside one — diff rows, highlights — set a dark `color` on that element too, so
 the text stays readable on it (the viewer corrects low contrast, but say what

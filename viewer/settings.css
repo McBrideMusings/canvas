@@ -2,16 +2,12 @@
   box-sizing: border-box;
 }
 
-:root {
-  color-scheme: light;
-}
-
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
-  background: #f4f3ef;
-  color: #1a1a1a;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 /* The System Settings convention: a row of icon-and-label section tabs
@@ -36,23 +32,23 @@ body {
   border: none;
   border-radius: 8px;
   background: none;
-  color: #444;
+  color: var(--fg2);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
 }
 
 .settings-tab:hover {
-  background: #ece9e0;
+  background: var(--hover);
 }
 
 .settings-tab[aria-selected="true"] {
-  background: #dbe6fd;
-  color: #2563eb;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .settings-tab:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -96,11 +92,11 @@ body {
 .pref-note {
   margin: 6px 0 0;
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
 }
 
 .pref-note-error {
-  color: #c0392b;
+  color: var(--danger);
 }
 
 .status-dot {
@@ -150,7 +146,7 @@ body {
 }
 
 .daemon-grid-label {
-  color: #888;
+  color: var(--muted);
   white-space: nowrap;
 }
 
@@ -165,8 +161,8 @@ body {
   margin: 0;
   padding: 10px 12px;
   border-radius: 6px;
-  background: #fdecea;
-  color: #c0392b;
+  background: var(--danger-soft);
+  color: var(--danger);
   font-family: ui-monospace, monospace;
   font-size: 11.5px;
   white-space: pre-wrap;
@@ -177,7 +173,7 @@ body {
   display: inline-flex;
   padding: 2px;
   border-radius: 7px;
-  background: #ece9e0;
+  background: var(--hover);
 }
 
 .seg-btn {
@@ -186,20 +182,20 @@ body {
   border: none;
   border-radius: 5px;
   background: none;
-  color: #444;
+  color: var(--fg2);
   font: inherit;
   font-size: 12.5px;
   cursor: pointer;
 }
 
 .seg-btn[aria-pressed="true"] {
-  background: #fff;
-  color: #1a1a1a;
+  background: var(--seg-on);
+  color: var(--fg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .seg-btn:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -214,7 +210,7 @@ body {
   height: 19px;
   margin: 0;
   border-radius: 10px;
-  background: #cfccc3;
+  background: var(--switch-off);
   cursor: pointer;
   transition: background-color 150ms;
 }
@@ -227,7 +223,7 @@ body {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 150ms ease-out;
 }
@@ -242,7 +238,7 @@ body {
 }
 
 .switch:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -271,7 +267,7 @@ body {
 
 .guidance-status {
   font-size: 11px;
-  color: #888;
+  color: var(--muted);
   min-height: 14px;
 }
 
@@ -280,9 +276,9 @@ body {
   max-width: 220px;
   height: 28px;
   padding: 0 12px;
-  border: 1px solid #d8d5cc;
+  border: 1px solid var(--line2);
   border-radius: 6px;
-  background: #fff;
+  background: var(--surface);
   font: inherit;
   font-size: 12px;
 }
@@ -294,9 +290,9 @@ body {
 .guidance-text {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid #d8d5cc;
+  border: 1px solid var(--line2);
   border-radius: 6px;
-  background: #fff;
+  background: var(--surface);
   color: inherit;
   font: inherit;
   font-size: 12px;
@@ -305,7 +301,7 @@ body {
 }
 
 .guidance-text:disabled {
-  background: #ece9e0;
+  background: var(--hover);
   opacity: 0.7;
 }
 
@@ -327,22 +323,22 @@ body {
 }
 
 .btn:disabled {
-  background: #b7c8f5;
+  background: var(--accent-dis);
   cursor: default;
 }
 
 .btn-secondary {
-  background: #ece9e0;
-  color: #444;
+  background: var(--hover);
+  color: var(--fg2);
 }
 
 .btn-secondary:disabled {
-  background: #ece9e0;
-  color: #aaa;
+  background: var(--hover);
+  color: var(--faint);
 }
 
 .btn:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -363,17 +359,17 @@ body {
   border: none;
   border-radius: 6px;
   background: none;
-  color: #777;
+  color: var(--fg3);
   cursor: pointer;
 }
 
 .icon-btn:hover {
-  background: #ece9e0;
-  color: #1a1a1a;
+  background: var(--hover);
+  color: var(--fg);
 }
 
 .icon-btn:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -381,12 +377,12 @@ body {
    or a disabled control (both also #ece9e0) — colour alone signals "this
    deletes something" until it's armed. */
 .icon-btn-danger {
-  color: #b3261e;
+  color: var(--danger);
 }
 
 .icon-btn-danger:hover {
-  background: #fbe9e7;
-  color: #b3261e;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .icon-btn-danger[data-armed="true"] {
@@ -419,7 +415,7 @@ body {
 }
 
 .profile-row {
-  border-bottom: 1px solid #e4e1d8;
+  border-bottom: 1px solid var(--line);
 }
 
 .profile-row:last-child {
@@ -443,7 +439,7 @@ body {
 .profile-row-preview {
   flex: 1;
   min-width: 0;
-  color: #888;
+  color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
@@ -454,8 +450,8 @@ body {
   flex: none;
   padding: 1px 6px;
   border-radius: 4px;
-  background: #ece9e0;
-  color: #777;
+  background: var(--hover);
+  color: var(--fg3);
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -474,7 +470,7 @@ body {
 
 .profile-row-chevron {
   flex: none;
-  color: #999;
+  color: var(--faint);
   transition: transform 150ms;
 }
 
@@ -487,9 +483,9 @@ body {
   max-width: 160px;
   height: 22px;
   padding: 0 6px;
-  border: 1px solid #2563eb;
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  background: #fff;
+  background: var(--surface);
   font: inherit;
   font-weight: 600;
   font-size: 12px;
@@ -527,8 +523,8 @@ body {
   margin: 0 0 6px;
   padding: 6px 10px;
   border-radius: 6px;
-  background: #ece9e0;
-  color: #444;
+  background: var(--hover);
+  color: var(--fg2);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -539,7 +535,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 5px 0;
-  border-bottom: 1px solid #e4e1d8;
+  border-bottom: 1px solid var(--line);
 }
 
 .stop-form-name,
@@ -562,7 +558,7 @@ body {
 }
 
 .stop-form-hint {
-  color: #888;
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -570,9 +566,9 @@ body {
   width: 64px;
   height: 26px;
   padding: 0 6px;
-  border: 1px solid #d8d5cc;
+  border: 1px solid var(--line2);
   border-radius: 6px;
-  background: #fff;
+  background: var(--surface);
   font: inherit;
   font-size: 12px;
 }
@@ -586,7 +582,7 @@ body {
   flex-direction: column;
   gap: 4px;
   padding: 8px 0 4px;
-  border-bottom: 1px solid #e4e1d8;
+  border-bottom: 1px solid var(--line);
 }
 
 .stop-form-chips {
@@ -602,7 +598,7 @@ body {
   max-width: 100%;
   padding: 1px 2px 1px 8px;
   border-radius: 10px;
-  background: #ece9e0;
+  background: var(--hover);
   font-size: 11.5px;
 }
 
@@ -614,7 +610,7 @@ body {
 
 .stop-chip-removed .stop-chip-text {
   text-decoration: line-through;
-  color: #777;
+  color: var(--fg3);
 }
 
 .stop-chip-x {
@@ -624,18 +620,18 @@ body {
   border: none;
   border-radius: 50%;
   background: none;
-  color: #777;
+  color: var(--fg3);
   font: inherit;
   cursor: pointer;
 }
 
 .stop-chip-x:hover {
-  background: #d8d5cc;
-  color: #1a1a1a;
+  background: var(--line2);
+  color: var(--fg);
 }
 
 .stop-chip-x:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid var(--accent);
 }
 
 .stop-form-add {

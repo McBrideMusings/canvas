@@ -14,6 +14,10 @@ th, td { border: 1px solid #ccc; padding: 4px 8px; }\
 th { font-weight: 600; background: #f0f0f0; }\
 code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }\
 code { background: #f0f0f0; padding: 0.1em 0.3em; }\
+@media (prefers-color-scheme: dark) {\
+th, td { border-color: #44444c; }\
+th, code { background: #2e2e35; }\
+}\
 </style>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

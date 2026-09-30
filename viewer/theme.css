@@ -1,0 +1,55 @@
+/* The window's palette, shared by the viewer and the Settings window. The
+   light values are the original literals; theme.js sets data-theme on the
+   root. A card's surface and ink are the --surface and --fg of the active
+   theme (app.js reads them when it builds a card's iframe). */
+:root {
+  color-scheme: light;
+  --bg: #f4f3ef;
+  --surface: #fff;
+  --hover: #ece9e0;
+  --fg: #1a1a1a;
+  --fg2: #444;
+  --fg3: #666;
+  --muted: #888;
+  --faint: #999;
+  --line: #e2e0d8;
+  --line2: #d6d3c8;
+  --accent: #2563eb;
+  --accent-soft: #dbe6fd;
+  --accent-dis: #b7c8f5;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --danger-line: #f3c9c9;
+  --pill-bg: #1a1a1a;
+  --switch-off: #cfccc3;
+  --seg-on: #fff;
+  --art-1: #f8f7f3;
+  --art-2: #ece9e1;
+  --line-toolbar: rgba(20, 18, 12, 0.14);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #18181b;
+  --surface: #232329;
+  --hover: #2e2e35;
+  --fg: #e8e6e1;
+  --fg2: #c4c2bc;
+  --fg3: #a3a19b;
+  --muted: #8d8b86;
+  --faint: #6f6d69;
+  --line: #36363d;
+  --line2: #44444c;
+  --accent: #7aa2f7;
+  --accent-soft: #22304f;
+  --accent-dis: #2f3f66;
+  --danger: #f08a84;
+  --danger-soft: #4a2424;
+  --danger-line: #5c3030;
+  --pill-bg: #3a3a42;
+  --switch-off: #4a4a52;
+  --seg-on: #45454d;
+  --art-1: #202025;
+  --art-2: #2a2a30;
+  --line-toolbar: rgba(255, 255, 255, 0.12);
+}
