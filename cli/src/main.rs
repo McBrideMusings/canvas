@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas install [repo] | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -38,7 +38,12 @@ fn main() {
             // A hook must never slow or break a Claude session: every
             // failure — bad stdin, canvasd unreachable, an unrecognised
             // event — is swallowed and the process exits 0 silently.
-            if let Ok(Some(guidance)) = canvas::hook::run(event) {
+            let adapter = match args.get(3).map(String::as_str) {
+                Some("--agent") => args.get(4).and_then(|n| canvas::agent::by_name(n)),
+                None => Some(canvas::agent::default_adapter()),
+                Some(_) => None,
+            };
+            if let Some(Ok(Some(guidance))) = adapter.map(|a| canvas::hook::run(event, a)) {
                 print!("{guidance}");
             }
             std::process::exit(0);

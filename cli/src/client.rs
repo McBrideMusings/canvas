@@ -100,6 +100,7 @@ pub fn end_session(session_id: &str) -> Result<(), String> {
 /// every failure instead of the raw `Failure`, and returns the card the
 /// daemon created on success so the caller can report its id.
 pub fn post_explicit(
+    agent: Agent,
     session_id: &str,
     cwd: &str,
     html: String,
@@ -109,7 +110,7 @@ pub fn post_explicit(
     let body = PostRequest {
         session_id: session_id.to_string(),
         cwd: cwd.to_string(),
-        agent: Agent::ClaudeCode,
+        agent,
         html,
         images,
         targets,

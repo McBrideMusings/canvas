@@ -10,71 +10,40 @@
 //! or may not have written the new prompt to the transcript when the hook
 //! runs; a trailing prompt with no turn after it is skipped.
 
+use crate::agent::{AgentAdapter, Turn};
 use canvasd::stop_triggers::StopTriggers;
-use serde_json::Value;
 
 const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
-/// Returns the reminder when the last finished turn in `transcript` (Claude
-/// Code's JSONL) has a trigger `cfg` enables and no `canvas post`; `None`
-/// otherwise.
-pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
+/// Returns the reminder when the last finished turn in `transcript` (in
+/// `adapter`'s format) has a trigger `cfg` enables and no `canvas post`;
+/// `None` otherwise.
+pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &StopTriggers) -> Option<String> {
     if !cfg.enabled {
         return None;
     }
-    let lines: Vec<Value> = transcript
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    let end = match lines.iter().rposition(is_prompt) {
-        Some(i) if i + 1 == lines.len() => i,
-        _ => lines.len(),
-    };
-    let start = lines[..end]
-        .iter()
-        .rposition(is_prompt)
-        .map_or(0, |i| i + 1);
-    let turn = &lines[start..end];
+    let Turn {
+        posted,
+        read_paths,
+        written_paths,
+        last_text,
+    } = adapter.last_turn(transcript);
 
     let mut triggers: Vec<&str> = Vec::new();
-    let mut posted = false;
-    let mut last_text = String::new();
-
-    for line in turn.iter().filter(|l| l["type"] == "assistant") {
-        let Some(blocks) = line["message"]["content"].as_array() else {
-            continue;
-        };
-        for block in blocks {
-            match block["type"].as_str() {
-                Some("text") => last_text = block["text"].as_str().unwrap_or("").to_string(),
-                Some("tool_use") => {
-                    let input = &block["input"];
-                    match block["name"].as_str() {
-                        Some("Bash") => {
-                            posted |= input["command"].as_str().is_some_and(runs_canvas_post);
-                        }
-                        Some("Read") => {
-                            let path = input["file_path"].as_str().unwrap_or("").to_lowercase();
-                            if cfg.image && IMAGE_EXTENSIONS.iter().any(|e| path.ends_with(e)) {
-                                triggers.push("looked at a screenshot or image");
-                            }
-                        }
-                        Some("Write" | "Edit" | "NotebookEdit") => {
-                            let path = input["file_path"]
-                                .as_str()
-                                .or_else(|| input["notebook_path"].as_str())
-                                .unwrap_or("");
-                            if cfg.file && !cfg.scratch.iter().any(|p| path.starts_with(p.as_str()))
-                            {
-                                triggers.push("created or changed a file");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
+    if cfg.image
+        && read_paths.iter().any(|p| {
+            let p = p.to_lowercase();
+            IMAGE_EXTENSIONS.iter().any(|e| p.ends_with(e))
+        })
+    {
+        triggers.push("looked at a screenshot or image");
+    }
+    if cfg.file
+        && written_paths
+            .iter()
+            .any(|p| !cfg.scratch.iter().any(|s| p.starts_with(s.as_str())))
+    {
+        triggers.push("created or changed a file");
     }
     if posted {
         return None;
@@ -119,7 +88,7 @@ const COMMAND_PREFIXES: [&str; 12] = [
 /// `(`, `$(` and `)`, but never inside quotes, so the text in a commit message or
 /// a grep pattern does not count. Heredoc bodies are skipped. An unterminated
 /// quote leaves the rest as one segment.
-fn runs_canvas_post(cmd: &str) -> bool {
+pub(crate) fn runs_canvas_post(cmd: &str) -> bool {
     let bytes = cmd.as_bytes();
     // Open contexts, innermost last: `'` and `"` quotes, `(` a command group.
     let mut open: Vec<u8> = Vec::new();
@@ -250,21 +219,6 @@ fn is_var_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-/// A real prompt: a user line, not `isMeta`, with text or an image in it
-/// (a line holding only tool results is the agent's own tool loop).
-fn is_prompt(line: &Value) -> bool {
-    if line["type"] != "user" || line["isMeta"] == true {
-        return false;
-    }
-    match &line["message"]["content"] {
-        Value::String(_) => true,
-        Value::Array(blocks) => blocks
-            .iter()
-            .any(|b| matches!(b["type"].as_str(), Some("text" | "image"))),
-        _ => false,
-    }
-}
-
 /// True when `text` contains one of `phrases` (lower-cased) — wording that
 /// hands the user a check to do.
 fn asks_for_verification(text: &str, phrases: &[String]) -> bool {
@@ -310,6 +264,12 @@ fn has_long_block(text: &str, limit: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ClaudeCode;
+    use serde_json::Value;
+
+    fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
+        super::reason(&ClaudeCode, transcript, cfg)
+    }
 
     fn cfg() -> StopTriggers {
         canvasd::stop_triggers::parse(canvasd::profiles::builtin_default("stop-triggers").unwrap())

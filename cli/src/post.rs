@@ -8,6 +8,7 @@
 
 use std::io::Read;
 
+use crate::agent::{self, AgentAdapter};
 use crate::client;
 use crate::format::{self, Format};
 use crate::scan;
@@ -97,9 +98,10 @@ pub fn run(
     let card = match update_id {
         Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
         None => {
-            let session_id = session_id()?;
+            let (adapter, session_id) = session()?;
             let cwd = current_dir()?;
             client::post_explicit(
+                adapter.agent(),
                 &session_id,
                 &cwd,
                 scanned.html,
@@ -133,13 +135,14 @@ fn resolve_format(arg: Option<&str>, format_flag: Option<&str>) -> Result<Format
     Ok(from_ext.unwrap_or(Format::Markdown))
 }
 
-/// Claude Code sets `CLAUDE_CODE_SESSION_ID` in every Bash tool shell, equal
-/// to the `session_id` the hooks get on stdin. There is no other reliable
-/// way for a plain shell command to learn which session it's running in.
-fn session_id() -> Result<String, String> {
-    std::env::var("CLAUDE_CODE_SESSION_ID").map_err(|_| {
-        "canvas post must run inside a Claude Code session (CLAUDE_CODE_SESSION_ID is not set)"
-            .to_string()
+/// The agent this shell runs under and its session id, read from the
+/// environment variable that agent's adapter names.
+fn session() -> Result<(&'static dyn AgentAdapter, String), String> {
+    agent::from_env().ok_or_else(|| {
+        format!(
+            "canvas post must run inside a coding-agent session (one of {} must be set)",
+            agent::session_envs().join(", ")
+        )
     })
 }
 

@@ -7,21 +7,13 @@
 
 use std::io::Read;
 
+use crate::agent::{AgentAdapter, HookInput};
 use crate::client;
 
-#[derive(Debug, serde::Deserialize)]
-struct HookInput {
-    session_id: String,
-    #[serde(default)]
-    cwd: String,
-    #[serde(default)]
-    transcript_path: String,
-}
-
-fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
+fn read_input(adapter: &dyn AgentAdapter) -> Result<HookInput, Box<dyn std::error::Error>> {
     let mut raw = String::new();
     std::io::stdin().read_to_string(&mut raw)?;
-    Ok(serde_json::from_str(&raw)?)
+    Ok(adapter.parse_hook(&raw)?)
 }
 
 /// Returns the guidance block on every `session-start` (Claude Code adds
@@ -32,10 +24,13 @@ fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
 /// is whichever `posting-guidance` profile (repo, else global) the settings
 /// page has assigned for this `cwd`, falling back to the compiled-in default
 /// on any fetch failure or when nothing is assigned.
-pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub fn run(
+    event: &str,
+    adapter: &dyn AgentAdapter,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match event {
         "session-start" => {
-            let text = match read_input() {
+            let text = match read_input(adapter) {
                 Ok(input) => {
                     client::fetch_profile_text(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
                         .unwrap_or_else(|| crate::guidance::TEXT.to_string())
@@ -45,7 +40,7 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
             Ok(Some(text))
         }
         "session-end" => {
-            let input = read_input()?;
+            let input = read_input(adapter)?;
             client::end_session(&input.session_id)?;
             Ok(None)
         }
@@ -53,7 +48,7 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         // prompt's context) when the previous turn had something to show and
         // no post; prints nothing otherwise.
         "prompt" => {
-            let input = read_input()?;
+            let input = read_input(adapter)?;
             let transcript = std::fs::read_to_string(&input.transcript_path)?;
             // The profile in effect for this directory; the compiled-in
             // default when nothing is assigned, canvasd is unreachable, or
@@ -68,7 +63,7 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
                 client::fetch_profile_text(canvasd::profiles::KIND_STOP_TRIGGERS, &input.cwd)
                     .and_then(|text| canvasd::stop_triggers::parse(&text).ok())
                     .map_or_else(builtin, Ok)?;
-            Ok(crate::stop::reason(&transcript, &triggers))
+            Ok(crate::stop::reason(adapter, &transcript, &triggers))
         }
         other => Err(format!("unknown hook event: {other}").into()),
     }
