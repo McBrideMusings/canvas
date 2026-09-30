@@ -1,20 +1,23 @@
-//! The `stop` hook: when a turn produced something Canvas exists to show and
-//! no `canvas post` ran during it, block the stop once with a reminder. The
-//! session-start guidance is read once, many tool calls before a turn ends;
-//! this puts the check at the moment the agent would otherwise finish.
+//! The `prompt` hook (UserPromptSubmit): when the previous turn produced
+//! something Canvas exists to show and no `canvas post` ran during it, add a
+//! one-line reminder to the new prompt's context. It adds context rather than
+//! blocking, so the agent never re-sends a reply that is already on screen and
+//! the UI shows no hook error; the cost is that the post comes a turn late.
 //!
-//! The turn is the stretch of the transcript after the last real user prompt
-//! (not a tool result, not a hook's `isMeta` feedback). A reply to the block
-//! sets `stop_hook_active`, which the caller checks first, so the hook never
-//! loops.
+//! A turn is the stretch of the transcript after a real user prompt (not a
+//! tool result, not a hook's `isMeta` feedback). Only the turn just before the
+//! new prompt is checked, so a reminder fires once per turn. Claude Code may
+//! or may not have written the new prompt to the transcript when the hook
+//! runs; a trailing prompt with no turn after it is skipped.
 
 use canvasd::stop_triggers::StopTriggers;
 use serde_json::Value;
 
 const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
-/// Returns the block reason when the last turn in `transcript` (Claude Code's
-/// JSONL) has a trigger `cfg` enables and no `canvas post`; `None` otherwise.
+/// Returns the reminder when the last finished turn in `transcript` (Claude
+/// Code's JSONL) has a trigger `cfg` enables and no `canvas post`; `None`
+/// otherwise.
 pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
     if !cfg.enabled {
         return None;
@@ -23,8 +26,15 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    let start = lines.iter().rposition(is_prompt).map_or(0, |i| i + 1);
-    let turn = &lines[start..];
+    let end = match lines.iter().rposition(is_prompt) {
+        Some(i) if i + 1 == lines.len() => i,
+        _ => lines.len(),
+    };
+    let start = lines[..end]
+        .iter()
+        .rposition(is_prompt)
+        .map_or(0, |i| i + 1);
+    let turn = &lines[start..end];
 
     let mut triggers: Vec<&str> = Vec::new();
     let mut posted = false;
@@ -93,11 +103,7 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
     }
 
     Some(format!(
-        "This turn {}, and no `canvas post` ran. Post it to Canvas now \
-         (`canvas post`; images as `![](/abs/path.png)`, files as `[name](/abs/path)`), \
-         then end with one short line naming the card. Your reply is already shown: \
-         do not repeat or re-send it. If the post would only repeat the chat text, \
-         skip it and end with just \"Skipped the Canvas post.\"",
+        "Last turn {}; no `canvas post` ran. If it belongs on Canvas, post it before answering.",
         triggers.join("; ")
     ))
 }
@@ -331,7 +337,42 @@ mod tests {
     }
 
     #[test]
-    fn edit_without_a_post_blocks() {
+    fn a_trailing_prompt_is_not_the_turn() {
+        let turn = [
+            user("fix it"),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            say("done"),
+        ];
+        let with_next_prompt = transcript(&[&turn[..], &[user("thanks")]].concat());
+        assert!(reason(&with_next_prompt, &cfg()).is_some());
+        let posted = transcript(
+            &[
+                &turn[..],
+                &[tool("Bash", serde_json::json!({"command":"canvas post -"}))],
+                &[user("thanks")],
+            ]
+            .concat(),
+        );
+        assert_eq!(reason(&posted, &cfg()), None);
+    }
+
+    #[test]
+    fn a_turn_still_counts_before_its_next_prompt_is_written() {
+        let t = transcript(&[
+            user("fix it"),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            say("done"),
+        ]);
+        assert!(reason(&t, &cfg()).is_some());
+    }
+
+    #[test]
+    fn the_first_prompt_of_a_session_has_nothing_to_remind_about() {
+        assert_eq!(reason(&transcript(&[user("hello")]), &cfg()), None);
+    }
+
+    #[test]
+    fn edit_without_a_post_reminds() {
         let t = transcript(&[
             user("fix it"),
             tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
@@ -343,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn image_read_blocks() {
+    fn image_read_reminds() {
         let t = transcript(&[
             user("look"),
             tool(
@@ -356,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn a_post_in_the_turn_suppresses_the_block() {
+    fn a_post_in_the_turn_suppresses_the_reminder() {
         let t = transcript(&[
             user("fix it"),
             tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
@@ -431,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn scratch_files_and_plain_answers_do_not_block() {
+    fn scratch_files_and_plain_answers_do_not_remind() {
         let t = transcript(&[
             user("q"),
             tool(
@@ -444,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_report_and_long_blocks_block() {
+    fn closing_report_and_long_blocks_remind() {
         let t = transcript(&[user("q"), say("**Run:**\n```\nx\n```\n**Look for:** y")]);
         assert!(reason(&t, &cfg()).unwrap().contains("closing report"));
 
@@ -457,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_requests_and_several_links_block() {
+    fn verification_requests_and_several_links_remind() {
         let t = transcript(&[user("q"), say("Please verify the header looks right.")]);
         assert!(reason(&t, &cfg()).unwrap().contains("verify"));
 

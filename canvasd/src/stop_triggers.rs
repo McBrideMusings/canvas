@@ -1,4 +1,4 @@
-//! The `stop-triggers` profile kind: which turns the plugin's Stop hook asks
+//! The `stop-triggers` profile kind: which turns the plugin's prompt hook reminds
 //! an agent to post. A profile's text is one directive per line; the parser
 //! lives here, beside the profile store, so the daemon can refuse a bad
 //! profile when it is saved and the hook parses the same text at run time.

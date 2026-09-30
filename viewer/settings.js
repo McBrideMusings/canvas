@@ -168,7 +168,7 @@
     "stop-triggers": {
       file: "plugin/stop-triggers.txt",
       note:
-        "Which turns the Stop hook asks an agent to post before it finishes. One directive per line, " +
+        "Which turns the prompt hook reminds an agent to post, on the prompt after the turn. One directive per line, " +
         "top to bottom, later lines override earlier ones: image, file, report, verify, links [N], " +
         "long-block [N], phrase <text>, scratch <prefix>, no <directive>, off, on. " +
         "Lines starting with # are notes. Open the built-in default below to see the full list.",
@@ -318,7 +318,7 @@
     "M4 7h16M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13M10 11v6M14 11v6";
   const PENCIL_PATH = "M16.5 3.5a1.5 1.5 0 012.12 2.12L7 17.25 3 18l.75-4L15.38 3.38a1.5 1.5 0 011.12-.5z";
 
-  // --- Stop-hook triggers form: a view over the profile text (model in
+  // --- Post-reminder triggers form: a view over the profile text (model in
   // stop-form.js). The textarea stays the store; every control reparses it,
   // edits one directive and writes the text back, so the raw view, the form
   // and `canvas profile` always agree.
@@ -512,14 +512,14 @@
       const enabled = StopForm.get(model, "enabled");
       const row = h("div", "stop-form-row");
       const name = h("div", "stop-form-name");
-      name.append(h("span", "stop-form-label", "Stop hook"), h("span", "stop-form-hint", "Off stops every trigger above"));
+      name.append(h("span", "stop-form-label", "Reminder"), h("span", "stop-form-hint", "Off stops every trigger above"));
       const states = layeredNow
         ? [["inherit", "Inherit"], ["on", "On"], ["off", "Off"]]
         : [["on", "On"], ["off", "Off"]];
       const state = enabled === undefined ? (layeredNow ? "inherit" : "on") : enabled ? "on" : "off";
       row.append(
         name,
-        segControl("Stop hook", states, state, (next) =>
+        segControl("Reminder", states, state, (next) =>
           edit((m) => {
             if (next === "inherit" || (next === "on" && !layeredNow)) StopForm.set(m, "enabled", undefined);
             else StopForm.set(m, "enabled", next === "on");

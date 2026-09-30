@@ -1,5 +1,5 @@
-# When a turn ends with one of these and no `canvas post` ran in it, the stop
-# hook asks the agent to post once before finishing. One directive per line.
+# When a turn ends with one of these and no `canvas post` ran in it, the next
+# prompt carries a reminder to post. One directive per line.
 image
 file
 report

@@ -178,10 +178,10 @@ one line on stderr and exits non-zero on any error.
 A change applies to sessions that start after it: the SessionStart hook reads the effective
 profile once, when the session starts.
 
-### Stop-hook triggers
+### Post-reminder triggers
 
-The Stop hook asks a session to post when its turn ends with something worth showing and no
-`canvas post`. Which turns count is the `stop-triggers` profile kind: one directive per line
+The prompt hook reminds a session to post when its previous turn ended with something worth
+showing and no `canvas post`. Which turns count is the `stop-triggers` profile kind: one directive per line
 (`image`, `file`, `report`, `verify`, `links [N]`, `long-block [N]`, `phrase <text>`,
 `scratch <prefix>`, `no <directive>`, `off`, `on`), applied top to bottom. The same verbs
 apply with `--kind stop-triggers`:

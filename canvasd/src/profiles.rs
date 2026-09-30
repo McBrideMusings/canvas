@@ -7,7 +7,7 @@
 //! must not age out on the 24h retention window those go through.
 //!
 //! Two kinds ship: `posting-guidance` (text an agent reads) and
-//! `stop-triggers` (directives the Stop hook parses). The settings page's
+//! `stop-triggers` (directives the prompt hook parses). The settings page's
 //! Guidance tab switches between them.
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub const KIND_POSTING_GUIDANCE: &str = "posting-guidance";
 /// gets when nothing is assigned isn't invisible.
 const BUILTIN_POSTING_GUIDANCE: &str = include_str!("../../plugin/guidance.md");
 
-/// Which turns the plugin's Stop hook asks an agent to post; the text is
+/// Which turns the plugin's prompt hook reminds an agent to post; the text is
 /// directives, parsed by `stop_triggers`.
 pub const KIND_STOP_TRIGGERS: &str = "stop-triggers";
 

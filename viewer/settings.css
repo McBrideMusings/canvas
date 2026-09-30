@@ -505,7 +505,7 @@ body {
   padding: 10px 0 12px;
 }
 
-/* Stop-hook triggers form: one row per trigger, name left, control right,
+/* Post-reminder triggers form: one row per trigger, name left, control right,
    sitting where the raw text editor would be. */
 .stop-form-bar {
   display: flex;

@@ -24,7 +24,7 @@ beside the terminal all day.
   else the global one. `ProfileSet::compose` returns the joined text and the
   ordered source names (`"built-in"` marks the default). Two kinds ship:
   `posting-guidance` (text an agent reads) and `stop-triggers` (directives
-  the Stop hook parses; `stop_triggers.rs` holds the parser, and the daemon
+  the prompt hook parses; `stop_triggers.rs` holds the parser, and the daemon
   answers 400 with the offending line for a `stop-triggers` profile that
   doesn't parse). Settings' Guidance tab switches between them. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
   (the mode is written only when it isn't `additive`), outside the 24h
@@ -62,7 +62,7 @@ beside the terminal all day.
   Session chips and the drawer's per-row eye toggle add/remove sessions from a
   multi-select visible set (everything visible by default) rather than
   picking one session at a time.
-  Settings > Guidance > Stop-hook triggers edits each profile as a form
+  Settings > Guidance > Post reminders edits each profile as a form
   (`stop-form.js` parses the directive text into a model and re-emits it, keeping
   comments, unknown lines and order) or as raw text; the text stays the only store.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
@@ -77,12 +77,13 @@ beside the terminal all day.
   session's context), whether or not registering the session with canvasd
   succeeds — posting only needs a running canvasd, not a registered session
   (`canvas post` creates one server-side if it's missing).
-  `canvas hook stop` (the plugin's Stop hook, `cli/src/stop.rs`) reads the
-  transcript's last turn and, when a trigger the `stop-triggers` profile in
+  `canvas hook prompt` (the plugin's UserPromptSubmit hook, `cli/src/stop.rs`)
+  reads the transcript's last finished turn and, when a trigger the `stop-triggers` profile in
   effect for the session's cwd enables fired (an image looked at, a file
   changed outside scratch space, a closing report, a request to verify, a
-  long block, several links) and no `canvas post` ran, prints a Claude Code
-  `decision: block` once (`stop_hook_active` skips the reply); otherwise it
+  long block, several links) and no `canvas post` ran, prints a
+  one-line reminder that Claude Code adds to the new prompt's context (no block,
+  no error label, no re-sent reply; the post comes a turn late); otherwise it
   prints nothing. With nothing assigned or canvasd unreachable it uses
   `plugin/stop-triggers.txt`, compiled in.
   `canvas guidance` prints that same block unconditionally, for a person or
@@ -114,7 +115,7 @@ beside the terminal all day.
   blocks until a reply lands (default 30s); `canvas replies <card_id>` is
   the non-blocking single check.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
-  repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and Stop to
+  repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and UserPromptSubmit to
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
   guidance text (`include_str!`), and `skills/canvas/` is the skill agents
   load to know how to post. `canvas hook session-start` and `canvas
