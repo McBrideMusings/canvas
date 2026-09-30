@@ -134,12 +134,12 @@ body {
 .search-hint {
   flex: none;
   padding: 0 5px;
-  border: 1px solid var(--line2);
+  border: 1px solid var(--faint);
   border-radius: 4px;
   font: inherit;
   font-size: 11px;
   line-height: 16px;
-  color: var(--muted);
+  color: var(--fg3);
 }
 
 .search-clear {
