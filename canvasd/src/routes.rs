@@ -510,6 +510,15 @@ pub async fn set_profile_text(
     Path(kind): Path<String>,
     Json(req): Json<SetProfileTextRequest>,
 ) -> Response {
+    // A stop-triggers profile the hook can't parse would silently stop
+    // asking for posts, so refuse it here with the offending line.
+    if kind == crate::profiles::KIND_STOP_TRIGGERS {
+        if let Some(text) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
+            if let Err(message) = crate::stop_triggers::parse(text) {
+                return (StatusCode::BAD_REQUEST, message).into_response();
+            }
+        }
+    }
     {
         let mut config = state.profiles.write().await;
         config.set_profile_text(&kind, &req.name, req.text);

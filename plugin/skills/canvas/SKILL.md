@@ -171,9 +171,25 @@ canvas profile unassign --here        # back to the global profile or the defaul
 Other verbs: `canvas profile list` (profiles, the global and per-repo assignments, whether the
 built-in default exists), `canvas profile show <name>`, `canvas profile delete <name>`,
 `canvas profile assign <name>` (globally), and `--repo owner/name` in place of `--here` to
-name a repo directly. `--kind <k>` selects the profile kind; it defaults to `posting-guidance`,
-the only kind today. `--here` fails if the directory has no GitHub `origin`; every verb prints
+name a repo directly. `--kind <k>` selects the profile kind; it defaults to `posting-guidance`;
+`stop-triggers` is the other kind. `--here` fails if the directory has no GitHub `origin`; every verb prints
 one line on stderr and exits non-zero on any error.
 
 A change applies to sessions that start after it: the SessionStart hook reads the effective
 profile once, when the session starts.
+
+### Stop-hook triggers
+
+The Stop hook asks a session to post when its turn ends with something worth showing and no
+`canvas post`. Which turns count is the `stop-triggers` profile kind: one directive per line
+(`image`, `file`, `report`, `verify`, `links [N]`, `long-block [N]`, `phrase <text>`,
+`scratch <prefix>`, `no <directive>`, `off`, `on`), applied top to bottom. The same verbs
+apply with `--kind stop-triggers`:
+
+```
+canvas profile show --kind stop-triggers --effective   # the directives in effect here
+printf 'no links\nlong-block 30\n' | canvas profile set --kind stop-triggers quieter -
+canvas profile assign --kind stop-triggers quieter --here
+```
+
+`canvas profile set` refuses text that doesn't parse and names the line.

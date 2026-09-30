@@ -113,6 +113,17 @@
   <main class="prefs prefs-wide" id="section-guidance" role="tabpanel" aria-labelledby="tab-guidance" hidden>
     <div class="guidance-block">
       <div class="guidance-head">
+        <span class="pref-label-wide" id="profile-kind-label">Setting</span>
+        <span class="seg" role="group" aria-labelledby="profile-kind-label">
+          <button type="button" class="seg-btn" data-profile-kind="posting-guidance" aria-pressed="true">Posting guidance</button>
+          <button type="button" class="seg-btn" data-profile-kind="stop-triggers" aria-pressed="false">Stop-hook triggers</button>
+        </span>
+      </div>
+      <p class="pref-note" id="profile-kind-note"></p>
+    </div>
+
+    <div class="guidance-block">
+      <div class="guidance-head">
         <span class="pref-label-wide" id="profile-mode-label">Repo profiles</span>
         <span class="seg" role="group" aria-labelledby="profile-mode-label">
           <button type="button" class="seg-btn" data-profile-mode="additive" aria-pressed="false">Add to global</button>

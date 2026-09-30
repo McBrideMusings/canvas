@@ -6,9 +6,9 @@
 //! — separate from `stream.jsonl`: this isn't a card or a session, and it
 //! must not age out on the 24h retention window those go through.
 //!
-//! `posting-guidance` is the one kind actually shipped today — the settings
-//! page has no kind switcher and never will until a second kind has a real
-//! consumer; the kind parameter exists so that day doesn't need a rewrite.
+//! Two kinds ship: `posting-guidance` (text an agent reads) and
+//! `stop-triggers` (directives the Stop hook parses). The settings page's
+//! Guidance tab switches between them.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,9 +30,19 @@ pub const KIND_POSTING_GUIDANCE: &str = "posting-guidance";
 /// gets when nothing is assigned isn't invisible.
 const BUILTIN_POSTING_GUIDANCE: &str = include_str!("../../plugin/guidance.md");
 
+/// Which turns the plugin's Stop hook asks an agent to post; the text is
+/// directives, parsed by `stop_triggers`.
+pub const KIND_STOP_TRIGGERS: &str = "stop-triggers";
+
+const BUILTIN_STOP_TRIGGERS: &str = include_str!("../../plugin/stop-triggers.txt");
+
 /// The compiled-in default for `kind`, for kinds that have one.
 pub fn builtin_default(kind: &str) -> Option<&'static str> {
-    (kind == KIND_POSTING_GUIDANCE).then_some(BUILTIN_POSTING_GUIDANCE)
+    match kind {
+        KIND_POSTING_GUIDANCE => Some(BUILTIN_POSTING_GUIDANCE),
+        KIND_STOP_TRIGGERS => Some(BUILTIN_STOP_TRIGGERS),
+        _ => None,
+    }
 }
 
 fn is_default_mode(mode: &ProfileMode) -> bool {

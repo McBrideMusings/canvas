@@ -22,9 +22,11 @@ beside the terminal all day.
   assigned) followed by its repo's profile, joined by a blank line and never
   the same profile twice; in `replace` mode it gets the repo's profile alone,
   else the global one. `ProfileSet::compose` returns the joined text and the
-  ordered source names (`"built-in"` marks the default). `posting-guidance` is
-  the only kind that ships today, and there's no kind switcher in Settings
-  until a second one does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
+  ordered source names (`"built-in"` marks the default). Two kinds ship:
+  `posting-guidance` (text an agent reads) and `stop-triggers` (directives
+  the Stop hook parses; `stop_triggers.rs` holds the parser, and the daemon
+  answers 400 with the offending line for a `stop-triggers` profile that
+  doesn't parse). Settings' Guidance tab switches between them. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
   (the mode is written only when it isn't `additive`), outside the 24h
   `stream.jsonl` retention window; `AppState::open` loads it alongside the
   stream reload, so it's async.
@@ -72,6 +74,14 @@ beside the terminal all day.
   session's context), whether or not registering the session with canvasd
   succeeds — posting only needs a running canvasd, not a registered session
   (`canvas post` creates one server-side if it's missing).
+  `canvas hook stop` (the plugin's Stop hook, `cli/src/stop.rs`) reads the
+  transcript's last turn and, when a trigger the `stop-triggers` profile in
+  effect for the session's cwd enables fired (an image looked at, a file
+  changed outside scratch space, a closing report, a request to verify, a
+  long block, several links) and no `canvas post` ran, prints a Claude Code
+  `decision: block` once (`stop_hook_active` skips the reply); otherwise it
+  prints nothing. With nothing assigned or canvasd unreachable it uses
+  `plugin/stop-triggers.txt`, compiled in.
   `canvas guidance` prints that same block unconditionally, for a person or
   agent to read on demand.
   `canvas profile list|show|set|delete|assign|unassign` reads and changes the
@@ -101,7 +111,7 @@ beside the terminal all day.
   blocks until a reply lands (default 30s); `canvas replies <card_id>` is
   the non-blocking single check.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
-  repo root lists it): `hooks/hooks.json` wires SessionStart and SessionEnd to
+  repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and Stop to
   `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
   guidance text (`include_str!`), and `skills/canvas/` is the skill agents
   load to know how to post. `canvas hook session-start` and `canvas

@@ -797,6 +797,40 @@ async fn only_posting_guidance_reports_a_builtin_default() {
 }
 
 #[tokio::test]
+async fn stop_triggers_profiles_must_parse_and_have_a_built_in_default() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(put(
+            "/api/profiles/stop-triggers/definitions",
+            json!({"name": "loud", "text": "image\nlinks many"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).starts_with("line 2:"));
+
+    let response = app
+        .clone()
+        .oneshot(put(
+            "/api/profiles/stop-triggers/definitions",
+            json!({"name": "quiet", "text": "off"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(get("/api/profiles/stop-triggers"))
+        .await
+        .unwrap();
+    let p: ProfilesState = json_body(response).await;
+    assert!(p.builtin.unwrap().contains("long-block 15"));
+    assert!(p.profiles.contains_key("quiet") && !p.profiles.contains_key("loud"));
+}
+
+#[tokio::test]
 async fn global_profile_assignment_applies_to_every_repo() {
     let app = app();
     app.clone()

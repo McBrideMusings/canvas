@@ -14,6 +14,10 @@ struct HookInput {
     session_id: String,
     #[serde(default)]
     cwd: String,
+    #[serde(default)]
+    transcript_path: String,
+    #[serde(default)]
+    stop_hook_active: bool,
 }
 
 fn read_input() -> Result<HookInput, Box<dyn std::error::Error>> {
@@ -65,6 +69,32 @@ pub fn run(event: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
             let input = read_input()?;
             client::end_session(&input.session_id)?;
             Ok(None)
+        }
+        // Prints Claude Code's block decision when the turn had something to
+        // show and no post; prints nothing otherwise. A reply to the block
+        // arrives with `stop_hook_active`, so it blocks at most once.
+        "stop" => {
+            let input = read_input()?;
+            if input.stop_hook_active {
+                return Ok(None);
+            }
+            let transcript = std::fs::read_to_string(&input.transcript_path)?;
+            // The profile in effect for this directory; the compiled-in
+            // default when nothing is assigned, canvasd is unreachable, or
+            // the text no longer parses.
+            let builtin = || {
+                canvasd::stop_triggers::parse(
+                    canvasd::profiles::builtin_default(canvasd::profiles::KIND_STOP_TRIGGERS)
+                        .unwrap_or_default(),
+                )
+            };
+            let triggers =
+                client::fetch_profile_text(canvasd::profiles::KIND_STOP_TRIGGERS, &input.cwd)
+                    .and_then(|text| canvasd::stop_triggers::parse(&text).ok())
+                    .map_or_else(builtin, Ok)?;
+            Ok(crate::stop::reason(&transcript, &triggers).map(|reason| {
+                serde_json::json!({"decision": "block", "reason": reason}).to_string()
+            }))
         }
         other => Err(format!("unknown hook event: {other}").into()),
     }

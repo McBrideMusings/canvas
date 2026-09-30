@@ -7,3 +7,4 @@ pub mod install;
 pub mod post;
 pub mod profile;
 pub mod scan;
+pub mod stop;

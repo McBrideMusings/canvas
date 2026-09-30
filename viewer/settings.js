@@ -155,10 +155,30 @@
   }
 
   // --- Guidance tab: backed by canvasd, not localStorage. The store
-  // (canvasd/src/profiles.rs) is generalized to hold more than one "kind" of
-  // named profile, but posting-guidance is the only one that ships — no
-  // kind switcher here until a second kind has a real consumer.
-  const KIND = "posting-guidance";
+  // (canvasd/src/profiles.rs) holds one set of named profiles per "kind";
+  // the switcher at the top picks which kind every control below edits.
+  const KINDS = {
+    "posting-guidance": {
+      file: "plugin/guidance.md",
+      note:
+        "The text a session reads when it starts. It tells the agent when to post to Canvas.",
+      placeholder:
+        "Text added after the global profile (or built-in default) for sessions in a repo that uses this profile…",
+    },
+    "stop-triggers": {
+      file: "plugin/stop-triggers.txt",
+      note:
+        "Which turns the Stop hook asks an agent to post before it finishes. One directive per line, " +
+        "top to bottom, later lines override earlier ones: image, file, report, verify, links [N], " +
+        "long-block [N], phrase <text>, scratch <prefix>, no <directive>, off, on. " +
+        "Lines starting with # are notes. Open the built-in default below to see the full list.",
+      placeholder:
+        "Directives added after the global profile (or built-in default), e.g. no links, long-block 30, off",
+    },
+  };
+  let KIND = "posting-guidance";
+  const kindButtons = document.querySelectorAll("[data-profile-kind]");
+  const profileKindNoteEl = document.getElementById("profile-kind-note");
   const profilesStatusEl = document.getElementById("profiles-status");
   const profilesListEl = document.getElementById("profiles-list");
   const profileNewEl = document.getElementById("profile-new");
@@ -237,21 +257,32 @@
     return response.json();
   }
 
+  // A 400 carries the daemon's reason (which directive line is invalid), kept
+  // on `detail` so a save can show it instead of a bare "save failed".
   async function putJson(url, body) {
     const response = await fetch(url, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+    if (!response.ok) {
+      const err = new Error(`${url}: HTTP ${response.status}`);
+      err.detail = response.status === 400 ? (await response.text()).trim() : "";
+      throw err;
+    }
   }
 
-  function flashStatus(el, text) {
+  function flashStatus(el, text, ms = 2000) {
     el.textContent = text;
     clearTimeout(el._timer);
     el._timer = setTimeout(() => {
       el.textContent = "";
-    }, 2000);
+    }, ms);
+  }
+
+  // A save failure, with the daemon's reason when it gave one.
+  function flashFailure(el, err, fallback) {
+    flashStatus(el, err && err.detail ? err.detail : fallback, err && err.detail ? 8000 : 2000);
   }
 
   function fillProfileSelect(select, profileNames, selected) {
@@ -324,7 +355,7 @@
     textarea.disabled = true;
     const note = document.createElement("p");
     note.className = "pref-note";
-    note.textContent = "Compiled into this build of Canvas — edit plugin/guidance.md to change it.";
+    note.textContent = `Compiled into this build of Canvas — edit ${KINDS[KIND].file} to change it.`;
     detail.append(textarea, note);
 
     const toggle = () => {
@@ -471,7 +502,7 @@
           }
           flashStatus(status, "saved");
         } catch (e) {
-          flashStatus(status, "save failed");
+          flashFailure(status, e, "save failed");
         }
       });
 
@@ -595,7 +626,7 @@
     if (profileMode === "replace" && builtinText) {
       textarea.value = builtinText;
     } else {
-      textarea.placeholder = "Text added after the global profile (or built-in default) for sessions in a repo that uses this profile…";
+      textarea.placeholder = KINDS[KIND].placeholder;
     }
 
     const actions = document.createElement("div");
@@ -634,10 +665,27 @@
         await putJson(`/api/profiles/${KIND}/definitions`, { name, text });
         await loadProfilesTab(true);
       } catch (e) {
-        flashStatus(status, "add failed");
+        flashFailure(status, e, "add failed");
       }
     });
   });
+
+  function renderKind() {
+    for (const btn of kindButtons) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.profileKind === KIND));
+    }
+    profileKindNoteEl.textContent = KINDS[KIND].note;
+  }
+
+  for (const btn of kindButtons) {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.profileKind === KIND) return;
+      KIND = btn.dataset.profileKind;
+      renderKind();
+      loadProfilesTab(true);
+    });
+  }
+  renderKind();
 
   profileGlobalSelectEl.addEventListener("change", async () => {
     try {
