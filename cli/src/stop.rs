@@ -95,7 +95,9 @@ pub fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
     Some(format!(
         "This turn {}, and no `canvas post` ran. Post it to Canvas now \
          (`canvas post`; images as `![](/abs/path.png)`, files as `[name](/abs/path)`), \
-         then give your reply. If the post would only repeat the chat text, skip it.",
+         then end with one short line naming the card. Your reply is already shown: \
+         do not repeat or re-send it. If the post would only repeat the chat text, \
+         skip it and end with just \"Skipped the Canvas post.\"",
         triggers.join("; ")
     ))
 }
