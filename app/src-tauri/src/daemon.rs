@@ -19,6 +19,10 @@ pub struct DaemonStatus {
     pub installed_path: String,
     pub installed: bool,
     pub up_to_date: bool,
+    // A bundled binary exists and differs from the installed one: only a
+    // relaunch (whose setup() runs ensure_daemon) brings them level. False
+    // in a debug build, which bundles nothing, where up_to_date is always false.
+    pub relaunch_needed: bool,
     pub loaded: bool,
     pub running: bool,
     pub error: Option<String>,
@@ -208,6 +212,7 @@ fn failed(installed: &std::path::Path, error: String) -> DaemonStatus {
         installed_path: installed.display().to_string(),
         installed: installed.exists(),
         up_to_date: false,
+        relaunch_needed: false,
         loaded,
         running,
         error: Some(error),
@@ -225,12 +230,17 @@ pub fn query_status(app: &tauri::AppHandle, stored_error: Option<String>) -> Dae
     let installed = installed_path();
     let installed_bytes = std::fs::read(&installed).ok();
 
-    let up_to_date = tauri::Manager::path(app)
+    let bundled_bytes = tauri::Manager::path(app)
         .resource_dir()
         .ok()
         .map(|dir| dir.join("canvas"))
-        .and_then(|p| std::fs::read(p).ok())
-        .is_some_and(|bundled| installed_bytes.as_deref() == Some(bundled.as_slice()));
+        .and_then(|p| std::fs::read(p).ok());
+    let up_to_date = bundled_bytes
+        .as_deref()
+        .is_some_and(|bundled| installed_bytes.as_deref() == Some(bundled));
+    // A launch whose install failed would fail the same way again, so it offers
+    // no relaunch (and the error is what the Daemon tab shows instead).
+    let relaunch_needed = bundled_bytes.is_some() && !up_to_date && stored_error.is_none();
 
     let (loaded, running) = gui_target().ok().map(|gui| service_state(&gui)).unwrap_or((false, false));
 
@@ -238,6 +248,7 @@ pub fn query_status(app: &tauri::AppHandle, stored_error: Option<String>) -> Dae
         installed_path: installed.display().to_string(),
         installed: installed_bytes.is_some(),
         up_to_date,
+        relaunch_needed,
         loaded,
         running,
         error: stored_error,

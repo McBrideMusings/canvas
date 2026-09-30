@@ -69,6 +69,14 @@
     </div>
     <nav id="chips" class="chips" role="toolbar" aria-label="Filter by session"></nav>
   </div>
+  <div class="update-banner" id="update-banner" role="status" hidden>
+    <svg class="update-banner-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/></svg>
+    <span class="update-banner-text">Canvas was updated. Relaunch to finish — this restarts the daemon and clears the posts shown here.</span>
+    <button type="button" class="update-banner-relaunch" id="update-banner-relaunch">Relaunch</button>
+    <button type="button" class="update-banner-dismiss" id="update-banner-dismiss" aria-label="Dismiss until next launch">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
   <div class="body-split">
     <div class="main-col">
       <div class="pill-anchor"><button type="button" id="new-pill" class="new-pill" hidden></button></div>

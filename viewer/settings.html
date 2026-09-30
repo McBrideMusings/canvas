@@ -225,6 +225,7 @@
         <span class="daemon-grid-value">
           <span class="status-dot" id="daemon-uptodate-dot"></span>
           <span id="daemon-uptodate-text"></span>
+          <button type="button" class="btn btn-secondary daemon-relaunch" data-relaunch hidden>Relaunch</button>
         </span>
 
         <span class="daemon-grid-label">Registered with launchd</span>
@@ -252,6 +253,10 @@
         <span class="guidance-status" id="integrations-checked"></span>
         <button type="button" class="btn btn-secondary" id="integrations-refresh">Check now</button>
       </span>
+    </div>
+    <div class="relaunch-notice" id="integrations-relaunch" role="status" hidden>
+      <span>Canvas was updated. Relaunch to update the agent hooks — this restarts the daemon and clears the stream.</span>
+      <button type="button" class="btn btn-secondary" data-relaunch>Relaunch</button>
     </div>
     <div id="integrations-list"></div>
     <pre class="daemon-error" id="integrations-load-error" role="alert" hidden></pre>

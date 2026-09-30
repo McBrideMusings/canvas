@@ -49,6 +49,29 @@
     running: [document.getElementById("daemon-running-dot"), document.getElementById("daemon-running-text")],
   };
 
+  // Every [data-relaunch] button and the Integrations notice show together,
+  // while the bundled canvas differs from the installed one. Relaunching
+  // restarts the app (and with it the daemon), so the page never sees the reply.
+  const relaunchButtons = Array.from(document.querySelectorAll("[data-relaunch]"));
+  const integrationsRelaunchEl = document.getElementById("integrations-relaunch");
+
+  function showRelaunch(needed) {
+    for (const btn of relaunchButtons) {
+      if (btn.closest("#integrations-relaunch")) continue;
+      btn.hidden = !needed;
+    }
+    integrationsRelaunchEl.hidden = !needed;
+  }
+
+  for (const btn of relaunchButtons) {
+    btn.addEventListener("click", () => {
+      for (const b of relaunchButtons) b.disabled = true;
+      window.__TAURI__.core.invoke("relaunch").catch(() => {
+        for (const b of relaunchButtons) b.disabled = false;
+      });
+    });
+  }
+
   function setRow(row, ok, yes, no) {
     const [dot, text] = row;
     dot.dataset.state = ok ? "ok" : "error";
@@ -58,7 +81,8 @@
   function renderDaemonStatus(status) {
     daemonPathEl.textContent = status.installedPath;
     setRow(daemonRows.installed, status.installed, "Yes", "No");
-    setRow(daemonRows.upToDate, status.upToDate, "Yes", "No — reopen Canvas to update it");
+    setRow(daemonRows.upToDate, status.upToDate, "Yes", status.relaunchNeeded ? "No — relaunch to update it" : "No");
+    showRelaunch(status.relaunchNeeded);
     setRow(daemonRows.loaded, status.loaded, "Yes", "No");
     setRow(daemonRows.running, status.running, "Yes", "No");
     daemonCheckedAtEl.textContent = new Date().toLocaleTimeString();
@@ -232,6 +256,10 @@
 
   function refreshIntegrations() {
     if (!window.__TAURI__) return Promise.resolve();
+    window.__TAURI__.core
+      .invoke("daemon_status")
+      .then((status) => showRelaunch(status.relaunchNeeded))
+      .catch(() => {});
     return window.__TAURI__.core
       .invoke("integration_status")
       .then((rows) => {

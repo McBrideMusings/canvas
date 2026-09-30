@@ -55,6 +55,13 @@ beside the terminal all day.
   clears search and filters, scrolls to the card and rings it.
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
+  Its `relaunchNeeded` is true only when a bundled binary exists and differs from
+  the installed one (never in a debug build); then the main viewer shows a
+  dismissible banner (dismissed until the next launch), Settings > Daemon a
+  Relaunch button beside "Matches this app", and Settings > Integrations a
+  notice, each calling the `relaunch` command (`AppHandle::restart`, so the
+  next launch's `setup()` reinstalls the daemon and syncs integrations;
+  relaunching restarts the daemon and empties the in-memory stream).
   `integrations.rs` keeps each agent's hooks current by running the installed
   `canvas integrations list --json` and `install <agent>` (`CANVAS_BIN`
   names a stand-in binary in a debug build; the subprocess PATH gains `~/.local/bin`,

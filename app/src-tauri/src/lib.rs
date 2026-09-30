@@ -91,6 +91,16 @@ fn daemon_status(app: tauri::AppHandle, state: tauri::State<daemon::DaemonState>
     daemon::query_status(&app, stored_error)
 }
 
+// Restarts the app so setup() runs ensure_daemon and the integrations sync
+// against the binary bundled in this build. The daemon restarts with it and
+// its in-memory stream is emptied; the viewer's banner says so. Called from
+// the banner and the Settings buttons, never from a card (capabilities/viewer.json
+// grants it to Canvas's own pages only).
+#[tauri::command]
+fn relaunch(app: tauri::AppHandle) {
+    app.restart();
+}
+
 // settings.js's Integrations tab reads each agent's state from this and, for a
 // Retry or Update click, asks for one agent's install. Both run the `canvas`
 // CLI, which can take seconds, so they stay off the main thread.
@@ -170,6 +180,7 @@ pub fn run() {
             daemon_status,
             integration_status,
             integration_install,
+            relaunch,
             take_pending_card
         ])
         .setup(|app| {

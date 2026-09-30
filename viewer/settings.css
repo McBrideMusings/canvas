@@ -157,6 +157,28 @@ body {
   word-break: break-all;
 }
 
+.daemon-relaunch {
+  margin-left: auto;
+  flex: none;
+}
+
+.relaunch-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 4px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.relaunch-notice[hidden] {
+  display: none;
+}
+
 .daemon-error {
   margin: 0;
   padding: 10px 12px;

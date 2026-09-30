@@ -2629,6 +2629,43 @@
     setTimeout(() => el.classList.remove("ring"), 1900);
   }
 
+  // Out-of-date banner: shown while the app's bundled `canvas` differs from
+  // the installed one (daemon_status.relaunchNeeded). Dismissing hides it for
+  // this page's lifetime, i.e. until the next launch; Settings keeps its own
+  // Relaunch button.
+  const updateBannerEl = document.getElementById("update-banner");
+  const updateRelaunchEl = document.getElementById("update-banner-relaunch");
+  let updateBannerDismissed = false;
+
+  function pollUpdateBanner() {
+    if (updateBannerDismissed) return;
+    tauriCore
+      .invoke("daemon_status")
+      .then((status) => {
+        updateBannerEl.hidden = !status.relaunchNeeded;
+      })
+      .catch(() => {});
+  }
+
+  if (tauriCore) {
+    updateRelaunchEl.addEventListener("click", () => {
+      updateRelaunchEl.disabled = true;
+      updateRelaunchEl.textContent = "Relaunching…";
+      tauriCore.invoke("relaunch").catch(() => {
+        updateRelaunchEl.disabled = false;
+        updateRelaunchEl.textContent = "Relaunch";
+        toast("Couldn't relaunch");
+      });
+    });
+    document.getElementById("update-banner-dismiss").addEventListener("click", () => {
+      updateBannerDismissed = true;
+      updateBannerEl.hidden = true;
+    });
+    pollUpdateBanner();
+    setInterval(pollUpdateBanner, 60000);
+    window.addEventListener("focus", pollUpdateBanner);
+  }
+
   if (tauriCore) window.__TAURI__.event.listen("canvas-open-card", openPendingCard);
 
   connectEvents()

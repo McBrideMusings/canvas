@@ -12,6 +12,7 @@ fn main() {
             "daemon_status",
             "integration_status",
             "integration_install",
+            "relaunch",
             "take_pending_card",
         ]),
     ),
