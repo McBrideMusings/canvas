@@ -1498,15 +1498,6 @@
     const resizeScript = `
       <script>
         var canvasRoot = document.getElementById('__canvas_root');
-        // A table too wide for the card scrolls sideways in its own wrapper
-        // rather than squeezing its columns; the table itself keeps its
-        // layout, so a narrow or width:100% table renders as the post wrote it.
-        canvasRoot.querySelectorAll('table').forEach(function (table) {
-          var scroller = document.createElement('div');
-          scroller.className = '__cv-table';
-          table.parentNode.insertBefore(scroller, table);
-          scroller.appendChild(table);
-        });
         // A post's own <style> can pad or margin body and html (the wrapper
         // sits inside them). The wrapper's bottom edge measured from the
         // top of the document already carries everything above it; what
@@ -1824,10 +1815,6 @@
       `img[src*="/api/cards/"]:not(a img){cursor:zoom-in;}` +
       `#__canvas_root{overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;}` +
       `:where(#__canvas_root) *{max-width:100%;}` +
-      // Cells wrap only between words, so columns never shrink below their
-      // longest word; a table wider than the card scrolls in .__cv-table.
-      `.__cv-table{overflow-x:auto;}` +
-      `:where(#__canvas_root) :is(td,th){overflow-wrap:break-word;}` +
       `:where(#__canvas_root) :is(img,video){height:auto;}` +
       `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
       `</head><body><div id="__canvas_root">${html}</div>${postStyle}${resizeScript}</body></html>`
