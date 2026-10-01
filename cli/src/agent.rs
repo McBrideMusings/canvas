@@ -98,7 +98,8 @@ impl AgentAdapter for ClaudeCode {
     }
 
     /// Reads Claude Code's JSONL. A turn is the stretch after a real user
-    /// prompt (not a tool result, not a hook's `isMeta` feedback). Only the
+    /// prompt (not a tool result, not a hook's `isMeta` feedback, not a
+    /// background-task notification). Only the
     /// turn just before the new prompt counts: Claude Code may or may not have
     /// written the new prompt to the transcript when the hook runs, and a
     /// trailing prompt with no turn after it is skipped.
@@ -331,10 +332,14 @@ fn patched_paths(patch: &str) -> Vec<String> {
         .collect()
 }
 
-/// A real prompt: a user line, not `isMeta`, with text or an image in it
-/// (a line holding only tool results is the agent's own tool loop).
+/// A real prompt: a user line, not `isMeta` and not a background-task
+/// notification, with text or an image in it (a line holding only tool
+/// results is the agent's own tool loop).
 fn is_prompt(line: &Value) -> bool {
-    if line["type"] != "user" || line["isMeta"] == true {
+    if line["type"] != "user"
+        || line["isMeta"] == true
+        || line["origin"]["kind"] == "task-notification"
+    {
         return false;
     }
     match &line["message"]["content"] {
@@ -424,6 +429,21 @@ mod tests {
         let turn = Codex.last_turn(&rollout);
         assert!(turn.posted);
         assert_eq!(turn.last_text, "done");
+    }
+
+    #[test]
+    fn claude_task_notification_does_not_start_a_turn() {
+        let transcript = [
+            r#"{"type":"user","message":{"role":"user","content":"fix it"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/work/a.rs"}}]}}"#,
+            r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>done</task-notification>"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"next"}}"#,
+        ]
+        .join("\n");
+        let turn = ClaudeCode.last_turn(&transcript);
+        assert_eq!(turn.written_paths, vec!["/work/a.rs".to_string()]);
+        assert_eq!(turn.last_text, "ok");
     }
 
     #[test]
