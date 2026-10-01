@@ -19,6 +19,12 @@ pub enum CanvasEvent {
     CardUpserted(Card),
     CardRemoved(String),
     SessionRemoved(String),
+    /// A value pushed into a card's running script (`canvas data`). Sent to
+    /// viewers only: never written to the persisted stream.
+    CardData {
+        id: String,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Default)]
@@ -31,6 +37,11 @@ pub struct Inner {
     /// live interaction with a running session, not history worth carrying
     /// across a daemon restart the way a card's own content is.
     pub replies: HashMap<String, serde_json::Value>,
+    /// The latest value `canvas data` pushed into each card, last write wins.
+    /// In-memory only: the viewer replays it into a card whose iframe reloads
+    /// (an update, a theme change), and the next push after a daemon restart
+    /// refills it.
+    pub data: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -56,6 +67,7 @@ impl AppState {
                 sessions: HashMap::new(),
                 cards: VecDeque::new(),
                 replies: HashMap::new(),
+                data: HashMap::new(),
             })),
             events: tx,
             profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
@@ -97,7 +109,9 @@ impl AppState {
 
     pub fn publish(&self, event: CanvasEvent) {
         if let Some(store) = &self.store {
-            store.append(&event);
+            if !matches!(event, CanvasEvent::CardData { .. }) {
+                store.append(&event);
+            }
         }
         // No receivers (e.g. no SSE clients connected) is not an error.
         let _ = self.events.send(event);
@@ -114,7 +128,7 @@ impl Inner {
             CanvasEvent::CardUpserted(card) => self.upsert_card(card),
             CanvasEvent::CardRemoved(id) => {
                 self.cards.retain(|c| c.id != id);
-                self.replies.remove(&id);
+                self.forget(&id);
             }
             CanvasEvent::SessionRemoved(id) => {
                 self.sessions.remove(&id);
@@ -122,10 +136,21 @@ impl Inner {
                     self.cards.drain(..).partition(|c| c.session_id == id);
                 self.cards = kept;
                 for card in removed {
-                    self.replies.remove(&card.id);
+                    self.forget(&card.id);
+                }
+            }
+            CanvasEvent::CardData { id, value } => {
+                if self.cards.iter().any(|c| c.id == id) {
+                    self.data.insert(id, value);
                 }
             }
         }
+    }
+
+    /// Drop what is held beside a card that no longer exists.
+    fn forget(&mut self, card_id: &str) {
+        self.replies.remove(card_id);
+        self.data.remove(card_id);
     }
 
     /// Drop cards last touched before `cutoff`, then every session with no card
@@ -135,8 +160,14 @@ impl Inner {
         let fresh = |ts: &str| {
             DateTime::parse_from_rfc3339(ts).map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
         };
-        for card in self.cards.iter().filter(|c| !fresh(&c.at)) {
-            self.replies.remove(&card.id);
+        let stale: Vec<String> = self
+            .cards
+            .iter()
+            .filter(|c| !fresh(&c.at))
+            .map(|c| c.id.clone())
+            .collect();
+        for id in &stale {
+            self.forget(id);
         }
         self.cards.retain(|c| fresh(&c.at));
         let cards = &self.cards;
@@ -160,7 +191,7 @@ impl Inner {
         self.cards.push_front(card);
         while self.cards.len() > CARD_RING_CAPACITY {
             if let Some(evicted) = self.cards.pop_back() {
-                self.replies.remove(&evicted.id);
+                self.forget(&evicted.id);
             }
         }
     }

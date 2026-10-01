@@ -48,6 +48,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/cards/:id/reply",
             post(routes::post_card_reply).get(routes::get_card_reply),
         )
+        .route(
+            "/api/cards/:id/data",
+            put(routes::put_card_data).get(routes::get_card_data),
+        )
         .route("/api/open", post(routes::open_path))
         .route("/*path", any(viewer::asset))
         .with_state(state)

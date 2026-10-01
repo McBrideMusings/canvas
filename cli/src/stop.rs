@@ -271,9 +271,13 @@ mod tests {
         super::reason(&ClaudeCode, transcript, cfg)
     }
 
+    /// The volume triggers on, so each is exercised; the built-in default has
+    /// only `image` on.
     fn cfg() -> StopTriggers {
-        canvasd::stop_triggers::parse(canvasd::profiles::builtin_default("stop-triggers").unwrap())
-            .unwrap()
+        canvasd::stop_triggers::parse(
+            "image\nfile\nlinks 3\nlong-block 15\nscratch /private/tmp/\nscratch /tmp/\n",
+        )
+        .unwrap()
     }
 
     fn user(text: &str) -> String {
@@ -354,6 +358,26 @@ mod tests {
             say("it looks fine"),
         ]);
         assert!(reason(&t, &cfg()).unwrap().contains("screenshot"));
+    }
+
+    #[test]
+    fn the_built_in_default_reminds_for_an_image_and_not_for_volume() {
+        let default = canvasd::stop_triggers::parse(
+            canvasd::profiles::builtin_default("stop-triggers").unwrap(),
+        )
+        .unwrap();
+        let edit = transcript(&[
+            user("fix it"),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            say(&format!("```\n{}```", "line\n".repeat(20))),
+        ]);
+        assert_eq!(reason(&edit, &default), None);
+        let image = transcript(&[
+            user("look"),
+            tool("Read", serde_json::json!({"file_path":"/repo/shot.png"})),
+            say("it looks fine"),
+        ]);
+        assert!(reason(&image, &default).unwrap().contains("screenshot"));
     }
 
     #[test]

@@ -153,7 +153,7 @@ fn current_dir() -> Result<String, String> {
 }
 
 /// A file argument reads that file; no argument, or `-`, reads `stdin`.
-fn read_html<R: Read>(arg: Option<&str>, mut stdin: R) -> Result<String, String> {
+pub(crate) fn read_html<R: Read>(arg: Option<&str>, mut stdin: R) -> Result<String, String> {
     match arg {
         Some(path) if path != "-" => {
             std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))

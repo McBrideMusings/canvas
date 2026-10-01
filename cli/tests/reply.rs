@@ -163,6 +163,47 @@ fn replies_is_non_blocking_and_checks_again_later() {
 }
 
 #[test]
+fn data_pushes_a_json_value_to_a_card_and_refuses_bad_input() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+    let run = |id: &str, input: &str| {
+        let mut child = Command::new(canvas_bin())
+            .args(["data", id])
+            .env("CANVAS_SOCKET", &daemon.socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to run canvas data");
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let ok = run(&card_id, "{\"n\": 3}");
+    assert!(ok.status.success(), "{:?}", ok);
+    let stored = canvas_core::unix_http::request(
+        &daemon.socket,
+        "GET",
+        &format!("/api/cards/{card_id}/data"),
+        &[],
+        &[],
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&stored.body).unwrap(),
+        serde_json::json!({"n": 3})
+    );
+
+    let bad = run(&card_id, "not json");
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("JSON"));
+    let unknown = run("nope", "1");
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("404"));
+}
+
+#[test]
 fn a_second_daemon_refuses_a_socket_that_answers() {
     let daemon = spawn_daemon();
 

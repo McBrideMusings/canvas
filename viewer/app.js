@@ -1970,6 +1970,29 @@
     linkbarSource = null;
   }
 
+  // `canvas data` pushes a value into a card's running script as
+  // `{type: 'canvas-data', value}`. The latest value is also replayed once an
+  // iframe loads, because an update or a theme change builds a new one.
+  function postCardData(frame, value) {
+    if (frame && frame.contentWindow) {
+      frame.contentWindow.postMessage({ type: "canvas-data", value }, "*");
+    }
+  }
+
+  function replayCardData(cardId, frame) {
+    fetch(`/api/cards/${cardId}/data`)
+      .then((response) => (response.ok ? response.json() : undefined))
+      .then((value) => {
+        if (value !== undefined) postCardData(frame, value);
+      })
+      .catch(() => {});
+  }
+
+  function deliverCardData(cardId, value) {
+    const frame = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"] iframe`);
+    postCardData(frame, value);
+  }
+
   function postTargetKinds(frame, card) {
     if (!frame.contentWindow) return;
     const kinds = card.targets.map((t) => (/^https?:\/\//.test(t) ? "url" : "path"));
@@ -2130,6 +2153,7 @@
     iframe.addEventListener("load", () => {
       postTargetKinds(iframe, card);
       if (highlightQuery) postHighlight(iframe);
+      replayCardData(card.id, iframe);
     });
     body.appendChild(iframe);
 
@@ -2592,6 +2616,8 @@
     };
 
     handlers["card-upserted"] = (card) => upsertCard(card);
+
+    handlers["card-data"] = ({ id, value }) => deliverCardData(id, value);
 
     handlers["card-removed"] = ({ id }) => removeCard(id);
 

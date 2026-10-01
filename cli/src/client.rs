@@ -265,6 +265,20 @@ pub fn get_reply(card_id: &str) -> Result<Option<serde_json::Value>, String> {
     }
 }
 
+/// `canvas data`: pushes `value` into the named card's running script.
+pub fn push_data(card_id: &str, value: &serde_json::Value) -> Result<(), String> {
+    match call("PUT", &format!("/api/cards/{card_id}/data"), Some(value)) {
+        Ok(_) => Ok(()),
+        Err(Failure::Status(404)) => {
+            Err("canvasd returned HTTP 404 (no card with that id)".to_string())
+        }
+        Err(Failure::Status(413)) => {
+            Err("the value is over 256KB, the most a card takes".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// `canvas card`: one card as the daemon holds it, for an agent handed a
 /// card id (from a pasted post link) to read the HTML the viewer renders.
 pub fn get_card(card_id: &str) -> Result<Card, String> {

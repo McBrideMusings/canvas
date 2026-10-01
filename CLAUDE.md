@@ -107,8 +107,8 @@ beside the terminal all day.
   `canvas hook prompt` (the plugin's UserPromptSubmit hook, `cli/src/stop.rs`)
   reads the transcript's last finished turn and, when a trigger the `stop-triggers` profile in
   effect for the session's cwd enables fired (an image looked at, a file
-  changed outside scratch space, a long block, several links; `report` and
-  `verify` are opt-in, off in the default) and no `canvas post` ran, prints a
+  changed outside scratch space, a long block, several links, `report`,
+  `verify`; the default enables only the image trigger) and no `canvas post` ran, prints a
   one-line reminder that Claude Code adds to the new prompt's context (no block,
   no error label, no re-sent reply; the post comes a turn late); otherwise it
   prints nothing. With nothing assigned or canvasd unreachable it uses
@@ -149,6 +149,13 @@ beside the terminal all day.
   last write wins, in memory only. `canvas wait <card_id> [--timeout secs]`
   blocks until a reply lands (default 30s); `canvas replies <card_id>` is
   the non-blocking single check.
+  `canvas data <card_id> [file|-]` pushes one JSON value (up to 256KB) into a
+  running card: `PUT /api/cards/:id/data` keeps the latest (last write wins, in
+  memory, dropped with its card) and publishes a `card-data` SSE event, which
+  the viewer posts into that card's iframe as `{type:'canvas-data', value}`
+  without rebuilding it, and again after any iframe load. `--update` rebuilds
+  the iframe (`upsertCard`), so a dashboard posts its HTML once and streams
+  values with `canvas data`. The value is never written to `stream.jsonl`.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)
   detects each agent (its CLI on PATH), reports `current`, `out of date`,
   `not installed` or `needs review`, and installs; per agent it is

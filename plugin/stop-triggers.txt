@@ -1,9 +1,8 @@
 # When a turn ends with one of these and no `canvas post` ran in it, the next
-# prompt carries a reminder to post. One directive per line.
+# prompt carries a reminder to post. One directive per line. Only an image
+# looked at is on by default: a changed file, several links or a long block says
+# how much there was, not whether a diagram or figure would show it better.
 image
-file
-links 3
-long-block 15
 scratch /private/tmp/
 scratch /tmp/
 scratch /var/folders/

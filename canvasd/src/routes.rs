@@ -247,6 +247,40 @@ pub async fn post_card_reply(
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// `canvas data`: pushes one JSON value into a card's running script without
+/// rebuilding its iframe. The viewer relays it as
+/// `postMessage({type:'canvas-data', value})`; the latest value is kept (last
+/// write wins, in memory) so the viewer can replay it into an iframe that
+/// reloads. 404 when `id` names no card; 413 past `MAX_DATA_BYTES`.
+const MAX_DATA_BYTES: usize = 256 * 1024;
+
+pub async fn put_card_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(value): Json<serde_json::Value>,
+) -> Response {
+    let size = serde_json::to_vec(&value).map(|b| b.len()).unwrap_or(0);
+    if size > MAX_DATA_BYTES {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let mut inner = state.inner.write().await;
+    if !inner.cards.iter().any(|c| c.id == id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    inner.data.insert(id.clone(), value.clone());
+    state.publish(CanvasEvent::CardData { id, value });
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// The latest value `put_card_data` stored for this card; 404 until one has.
+pub async fn get_card_data(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let inner = state.inner.read().await;
+    match inner.data.get(&id) {
+        Some(value) => (StatusCode::OK, Json(value.clone())).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Polled by `canvas wait` and `canvas replies`. 200 with the stored value
 /// once `post_card_reply` has been called for this id, 404 until then.
 pub async fn get_card_reply(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -260,11 +294,11 @@ pub async fn get_card_reply(State(state): State<AppState>, Path(id): Path<String
 pub async fn delete_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let removed = {
         let mut inner = state.inner.write().await;
-        let before = inner.cards.len();
-        inner.cards.retain(|c| c.id != id);
-        let removed = inner.cards.len() != before;
+        let removed = inner.cards.iter().any(|c| c.id == id);
         if removed {
-            state.publish(CanvasEvent::CardRemoved(id));
+            let event = CanvasEvent::CardRemoved(id);
+            inner.apply(event.clone());
+            state.publish(event);
         }
         removed
     };
@@ -292,9 +326,10 @@ pub async fn clear_session_cards(
         .filter(|c| c.session_id == id)
         .map(|c| c.id.clone())
         .collect();
-    inner.cards.retain(|c| c.session_id != id);
-    for card_id in &removed {
-        state.publish(CanvasEvent::CardRemoved(card_id.clone()));
+    for card_id in removed {
+        let event = CanvasEvent::CardRemoved(card_id);
+        inner.apply(event.clone());
+        state.publish(event);
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -302,11 +337,12 @@ pub async fn clear_session_cards(
 pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let removed = {
         let mut inner = state.inner.write().await;
-        if inner.sessions.remove(&id).is_none() {
+        if !inner.sessions.contains_key(&id) {
             false
         } else {
-            inner.cards.retain(|c| c.session_id != id);
-            state.publish(CanvasEvent::SessionRemoved(id));
+            let event = CanvasEvent::SessionRemoved(id);
+            inner.apply(event.clone());
+            state.publish(event);
             true
         }
     };
@@ -341,6 +377,12 @@ pub async fn events(
         Ok(CanvasEvent::SessionRemoved(id)) => Some(Ok(SseEvent::default()
             .event("session-removed")
             .data(serde_json::to_string(&serde_json::json!({"id": id})).unwrap_or_default()))),
+        Ok(CanvasEvent::CardData { id, value }) => {
+            Some(Ok(SseEvent::default().event("card-data").data(
+                serde_json::to_string(&serde_json::json!({"id": id, "value": value}))
+                    .unwrap_or_default(),
+            )))
+        }
         Err(_) => None,
     });
 

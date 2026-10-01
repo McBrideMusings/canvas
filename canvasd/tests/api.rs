@@ -814,7 +814,7 @@ async fn stop_triggers_profiles_must_parse_and_have_a_built_in_default() {
         .await
         .unwrap();
     let p: ProfilesState = json_body(response).await;
-    assert!(p.builtin.unwrap().contains("long-block 15"));
+    assert!(p.builtin.unwrap().contains("image"));
     assert!(p.profiles.contains_key("quiet") && !p.profiles.contains_key("loud"));
 }
 
@@ -1127,6 +1127,98 @@ async fn card_reply_on_unknown_card_is_404() {
         .oneshot(get("/api/cards/does-not-exist/reply"))
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn card_data_round_trips_and_the_last_write_wins() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let uri = format!("/api/cards/{}/data", card.id);
+
+    let response = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    for value in [json!({"n": 1}), json!({"n": 2, "rows": [1, 2, 3]})] {
+        let response = app.clone().oneshot(put(&uri, value)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    let response = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!({"n": 2, "rows": [1, 2, 3]}));
+}
+
+#[tokio::test]
+async fn card_data_reaches_viewers_as_a_card_data_event() {
+    use futures::StreamExt;
+
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    app.clone()
+        .oneshot(put(
+            &format!("/api/cards/{}/data", card.id),
+            json!({"n": 7}),
+        ))
+        .await
+        .unwrap();
+
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: card-data"), "{text}");
+    assert!(
+        text.contains(&card.id) && text.contains("\"n\":7"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn card_data_on_unknown_card_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(put("/api/cards/does-not-exist/data", json!({"n": 1})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn oversized_card_data_is_rejected() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let uri = format!("/api/cards/{}/data", card.id);
+
+    let response = app
+        .clone()
+        .oneshot(put(&uri, json!("x".repeat(300 * 1024))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let response = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn deleting_a_card_drops_its_data() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let uri = format!("/api/cards/{}/data", card.id);
+    app.clone().oneshot(put(&uri, json!(1))).await.unwrap();
+
+    app.clone()
+        .oneshot(delete(&format!("/api/cards/{}", card.id)))
+        .await
+        .unwrap();
+    let response = app.clone().oneshot(get(&uri)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 

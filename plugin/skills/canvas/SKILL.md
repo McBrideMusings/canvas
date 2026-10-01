@@ -1,6 +1,6 @@
 ---
 name: canvas
-description: Post a self-contained HTML, Markdown or text card to Canvas, the live stream of Claude Code sessions on this Mac. Post generously and deliberately for anything that reads better rendered than as chat Markdown — a file you created or changed, a screenshot, a chart or table, a diagram of a structure, more than ~15 lines of code or output, or several links worth clicking. Skip one-line status updates and anything that would just repeat the chat text.
+description: Post a self-contained HTML card to Canvas, the live stream of Claude Code sessions on this Mac, when the answer needs a figure chat can't carry — a diagram of a structure or flow, a chart or table of numbers, an image or before/after, an annotated diff, a control the user answers from. Build it as a document (panels, headings that tell the story, inline SVG), following DOCUMENTS.md. Don't post for volume alone: a changed file, long code, a list of links or a closing report as Markdown blocks stays in chat.
 ---
 
 # Canvas
@@ -10,21 +10,28 @@ that sits open beside the terminal. Cards from every session share one
 stream, newest first; a chip per session filters it. Nothing creates a card automatically — a card exists only because a
 post created it.
 
+A card is a document the user reads, not a second copy of the chat. Post one
+only when it carries a figure chat can't, and build it the way
+[DOCUMENTS.md](DOCUMENTS.md) describes: numbered panels, headings that tell
+the story when read alone, the structure drawn as inline SVG.
+
 ## How to post
 
 Run `canvas post` with the content as a file argument, or piped in on
 stdin:
 
 ```
-canvas post /path/to/plan.md
-canvas post /path/to/report.html --format html
+canvas post /path/to/report.html
+canvas post /path/to/notes.md
 echo 'done' | canvas post
 canvas post - <<'EOF'
-## Plan
-- Step one
-- Step two
+## Task: migrate the schema
+- [ ] step one
 EOF
 ```
+
+Markdown and text exist for a status checklist you keep current with
+`--update`; a card that explains something is HTML.
 
 `--update <card_id>` replaces an existing card's content in place instead of
 creating a new one — the `card_id` a prior `canvas post` reported in its
@@ -154,6 +161,31 @@ Use `wait` when the next step genuinely depends on the answer and there's
 nothing else to do meanwhile. Use `replies` when checking in between other
 work — post a card with a question, keep going, and poll `replies` before
 acting on the default the card describes.
+
+### Pushing live data into a card
+
+`--update` replaces a card's HTML, and the viewer builds a new iframe for it, so the
+page loses its script state, form inputs and scroll. For a dashboard that changes while
+you work, post the HTML once and push values into the running page:
+
+```
+canvas data <card_id> values.json    # or "-" for stdin; one JSON value, up to 256KB
+```
+
+The viewer delivers each value to that card's script as a message, without rebuilding
+the iframe:
+
+```js
+addEventListener('message', (e) => {
+  if (e.source === parent && e.data && e.data.type === 'canvas-data') render(e.data.value);
+});
+```
+
+The latest value is kept (last write wins, in memory) and sent again whenever the
+card's iframe reloads, so a theme change or an `--update` still shows current numbers;
+the first paint of the page should handle having no value yet. A daemon restart clears
+it, and the next `canvas data` refills it. `canvas data` exits non-zero with one line on
+stderr for an unknown card id, a value that isn't JSON or one over 256KB.
 
 ### Result
 

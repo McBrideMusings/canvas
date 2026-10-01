@@ -89,6 +89,41 @@ async fn restart_rebuilds_the_same_state() {
 }
 
 #[tokio::test]
+async fn pushed_card_data_is_not_written_to_the_stream() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let posted = send(
+        &app,
+        "POST",
+        "/api/posts",
+        Some(json!({"session_id": "s1", "cwd": "/a", "agent": "claude-code", "html": "<p>x</p>"})),
+    )
+    .await;
+    let id = serde_json::from_slice::<Value>(&posted).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let lines_before = {
+        state.flush_store();
+        line_count(&dir)
+    };
+    send(
+        &app,
+        "PUT",
+        &format!("/api/cards/{id}/data"),
+        Some(json!({"n": 1})),
+    )
+    .await;
+    state.flush_store();
+    assert_eq!(line_count(&dir), lines_before);
+
+    let app = restart(state, &dir).await;
+    let bytes = send(&app, "GET", &format!("/api/cards/{id}/data"), None).await;
+    assert!(bytes.is_empty(), "data survived a restart: {bytes:?}");
+}
+
+#[tokio::test]
 async fn deletions_stay_deleted_after_restart() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;

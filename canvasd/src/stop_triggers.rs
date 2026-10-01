@@ -121,11 +121,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_built_in_default_leaves_gate_shaped_triggers_off() {
+    fn the_built_in_default_reminds_only_for_an_image() {
         let t = parse(include_str!("../../plugin/stop-triggers.txt")).unwrap();
-        assert!(t.enabled && t.image && t.file && !t.report && !t.verify);
-        assert_eq!(t.links, Some(3));
-        assert_eq!(t.long_block, Some(15));
+        assert!(t.enabled && t.image && !t.file && !t.report && !t.verify);
+        assert_eq!(t.links, None);
+        assert_eq!(t.long_block, None);
         assert!(t.phrases.is_empty());
         assert!(t.scratch.contains(&"/tmp/".to_string()));
     }
