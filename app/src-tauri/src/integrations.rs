@@ -18,9 +18,13 @@ use std::time::{Duration, Instant};
 
 use tauri::Manager;
 
-// How long one `canvas integrations` call may run before it is killed. A real
-// install runs `claude plugin` or `codex` commands that finish in seconds.
-const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+// How long `canvas integrations list` may run before it is killed.
+const LIST_TIMEOUT: Duration = Duration::from_secs(60);
+
+// How long `canvas integrations install` may run before it is killed. It runs
+// `claude plugin` or `codex` commands, which can be slow; a Retry click waits
+// on the per-agent install lock for up to this long.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 // After the child exits, how long to wait for its output pipes to close.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
@@ -97,10 +101,6 @@ fn last_line(stderr: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-fn run(args: &[&str]) -> Result<String, String> {
-    run_bin(&canvas_bin(), args, RUN_TIMEOUT)
-}
-
 // Runs `bin` for at most `timeout`. A call that outlives it is killed along
 // with its process group (`canvas integrations install` spawns `claude` and
 // `codex`), and the error is one line, since it lands in `IntegrationState`.
@@ -170,7 +170,11 @@ fn kill_group(child: &mut Child) {
 }
 
 fn list() -> Result<Vec<IntegrationRow>, String> {
-    let json = run(&["integrations", "list", "--json"])?;
+    let json = run_bin(
+        &canvas_bin(),
+        &["integrations", "list", "--json"],
+        LIST_TIMEOUT,
+    )?;
     serde_json::from_str(&json)
         .map_err(|e| format!("couldn't read `canvas integrations list`: {e}"))
 }
@@ -198,7 +202,7 @@ pub fn install(state: &IntegrationState, agent: &str) -> Result<(), String> {
 fn install_with(bin: &Path, state: &IntegrationState, agent: &str) -> Result<(), String> {
     let lock = state.install_lock(agent);
     let _installing = lock.lock().unwrap_or_else(|e| e.into_inner());
-    let result = run_bin(bin, &["integrations", "install", agent], RUN_TIMEOUT).map(|_| ());
+    let result = run_bin(bin, &["integrations", "install", agent], INSTALL_TIMEOUT).map(|_| ());
     let mut errors = state.errors.lock().unwrap();
     match &result {
         Ok(()) => {
