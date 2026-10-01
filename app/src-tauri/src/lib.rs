@@ -195,7 +195,7 @@ pub fn run() {
             std::thread::spawn(move || bridge::forward_events(handle));
             app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
             app.manage(PendingCard(std::sync::Mutex::new(None)));
-            app.manage(integrations::IntegrationState(Default::default()));
+            app.manage(integrations::IntegrationState::default());
             // After the daemon step, which installs the `canvas` this runs.
             // Off the setup thread: `claude plugin` calls can take seconds.
             if !cfg!(debug_assertions) {

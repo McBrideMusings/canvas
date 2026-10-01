@@ -13,7 +13,7 @@ use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
@@ -38,8 +38,22 @@ pub struct IntegrationRow {
     pub error: Option<String>,
 }
 
-// Agent name -> the stderr line of its last failed install.
-pub struct IntegrationState(pub Mutex<HashMap<String, String>>);
+#[derive(Default)]
+pub struct IntegrationState {
+    // Agent name -> the stderr line of its last failed install.
+    errors: Mutex<HashMap<String, String>>,
+    // Agent name -> held for the length of that agent's install subprocess, so
+    // a Retry click during the launch-time pass waits instead of running a
+    // second install over the same hooks file and plugin state.
+    installing: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl IntegrationState {
+    fn install_lock(&self, agent: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.installing.lock().unwrap();
+        locks.entry(agent.to_string()).or_default().clone()
+    }
+}
 
 // The installed binary, which the daemon step has just brought up to date;
 // CANVAS_BIN points at a stand-in instead (how the failing-install case is
@@ -165,7 +179,7 @@ fn list() -> Result<Vec<IntegrationRow>, String> {
 // whatever `list` says.
 pub fn status(state: &IntegrationState) -> Result<Vec<IntegrationRow>, String> {
     let mut rows = list()?;
-    let errors = state.0.lock().unwrap();
+    let errors = state.errors.lock().unwrap();
     for row in &mut rows {
         if let Some(e) = errors.get(&row.agent) {
             row.error = Some(e.clone());
@@ -178,8 +192,14 @@ pub fn install(state: &IntegrationState, agent: &str) -> Result<(), String> {
     if !AGENTS.contains(&agent) {
         return Err(format!("unknown agent {agent}"));
     }
-    let result = run(&["integrations", "install", agent]).map(|_| ());
-    let mut errors = state.0.lock().unwrap();
+    install_with(&canvas_bin(), state, agent)
+}
+
+fn install_with(bin: &Path, state: &IntegrationState, agent: &str) -> Result<(), String> {
+    let lock = state.install_lock(agent);
+    let _installing = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_bin(bin, &["integrations", "install", agent], RUN_TIMEOUT).map(|_| ());
+    let mut errors = state.errors.lock().unwrap();
     match &result {
         Ok(()) => {
             errors.remove(agent);
@@ -254,7 +274,7 @@ fi
         }
         std::env::set_var("CANVAS_BIN", &stub);
 
-        let state = IntegrationState(Mutex::new(HashMap::new()));
+        let state = IntegrationState::default();
         install_outdated_in(&state);
         let rows = status(&state).unwrap();
         let codex = rows.iter().find(|r| r.agent == "codex").unwrap();
@@ -311,13 +331,54 @@ fi
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // A stand-in whose `install` records when it starts and ends, one line per
+    // event, tagged with the agent. Two installs for one agent never interleave
+    // (start,end,start,end); two agents' installs do.
+    #[test]
+    fn installs_for_one_agent_run_one_after_the_other() {
+        let dir = std::env::temp_dir().join(format!("canvas-lock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("canvas");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\necho \"start $3\" >> {log}\nsleep 0.5\necho \"end $3\" >> {log}\n",
+                log = dir.join("log").display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let state = IntegrationState::default();
+        std::thread::scope(|s| {
+            for agent in ["codex", "codex", "claude-code"] {
+                let (stub, state) = (&stub, &state);
+                s.spawn(move || install_with(stub, state, agent).unwrap());
+            }
+        });
+
+        let log = std::fs::read_to_string(dir.join("log")).unwrap();
+        let codex: Vec<&str> = log.lines().filter(|l| l.ends_with("codex")).collect();
+        assert_eq!(
+            codex,
+            ["start codex", "end codex", "start codex", "end codex"]
+        );
+        let first_end = log.lines().position(|l| l == "end codex").unwrap();
+        let claude_start = log.lines().position(|l| l == "start claude-code").unwrap();
+        assert!(claude_start < first_end, "different agents should overlap");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn install_refuses_an_agent_outside_the_fixed_list() {
-        let state = IntegrationState(Mutex::new(HashMap::new()));
+        let state = IntegrationState::default();
         assert_eq!(
             install(&state, "rm -rf").unwrap_err(),
             "unknown agent rm -rf"
         );
-        assert!(state.0.lock().unwrap().is_empty());
+        assert!(state.errors.lock().unwrap().is_empty());
     }
 }
