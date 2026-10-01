@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -14,6 +14,7 @@ use canvas_core::{
     StateResponse, UpdateCardRequest,
 };
 use futures::stream::Stream;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use uuid::Uuid;
@@ -464,15 +465,73 @@ pub async fn events(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-const ALLOWED_IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg"];
+const ALLOWED_MEDIA_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", // images
+    "mp4", "m4v", "mov", "webm", // video
+];
 
-/// Serves the `index`th image of a stored card. The request names a card, not
-/// a path, so no caller can read a file no card shows — and a card id is a
-/// random UUID another origin can't learn, since `/api/state` and
-/// `/api/events` send no CORS headers.
+/// Longest slice served for one request. A player asking for `bytes=0-` gets
+/// this much and asks again for the rest, so a large clip is never read whole.
+const MAX_RANGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What a `Range` header asks of a file of `len` bytes.
+enum ByteRange {
+    /// Inclusive `(start, end)`, already clamped to the file and `MAX_RANGE_BYTES`.
+    Span(u64, u64),
+    /// A well-formed single range that starts past the end: answer 416.
+    Unsatisfiable,
+    /// Not a single `bytes=` range: ignore the header and send the whole file.
+    Ignore,
+}
+
+fn parse_byte_range(header: &str, len: u64) -> ByteRange {
+    let Some(spec) = header.trim().strip_prefix("bytes=") else {
+        return ByteRange::Ignore;
+    };
+    let Some((a, b)) = spec.split_once('-') else {
+        return ByteRange::Ignore;
+    };
+    if spec.contains(',') {
+        return ByteRange::Ignore;
+    }
+    let (start, end) = if a.is_empty() {
+        match b.parse::<u64>() {
+            Ok(n) if n > 0 && len > 0 => (len.saturating_sub(n), len - 1),
+            Ok(_) => return ByteRange::Unsatisfiable,
+            Err(_) => return ByteRange::Ignore,
+        }
+    } else {
+        let Ok(start) = a.parse::<u64>() else {
+            return ByteRange::Ignore;
+        };
+        let end = if b.is_empty() {
+            u64::MAX
+        } else {
+            match b.parse::<u64>() {
+                Ok(e) => e,
+                Err(_) => return ByteRange::Ignore,
+            }
+        };
+        if start > end {
+            return ByteRange::Ignore;
+        }
+        (start, end)
+    };
+    if start >= len {
+        return ByteRange::Unsatisfiable;
+    }
+    ByteRange::Span(start, end.min(len - 1).min(start + MAX_RANGE_BYTES - 1))
+}
+
+/// Serves the `index`th image or video of a stored card, honouring a single
+/// `Range` request (a video element will not play without one). The request
+/// names a card, not a path, so no caller can read a file no card shows — and
+/// a card id is a random UUID another origin can't learn, since `/api/state`
+/// and `/api/events` send no CORS headers.
 pub async fn get_card_image(
     State(state): State<AppState>,
     Path((id, index)): Path<(String, usize)>,
+    headers: HeaderMap,
 ) -> Response {
     let image = {
         let inner = state.inner.read().await;
@@ -495,22 +554,60 @@ pub async fn get_card_image(
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    if !ALLOWED_IMAGE_EXTS.contains(&ext.as_str()) {
+    if !ALLOWED_MEDIA_EXTS.contains(&ext.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
 
-    match tokio::fs::read(path).await {
-        Ok(bytes) => {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            (
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let content_type = (header::CONTENT_TYPE, mime.essence_str().to_string());
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(len) = file.metadata().await.map(|m| m.len()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let span = match range.map(|r| parse_byte_range(r, len)) {
+        None | Some(ByteRange::Ignore) => None,
+        Some(ByteRange::Span(start, end)) => Some((start, end)),
+        Some(ByteRange::Unsatisfiable) => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{len}"))],
+            )
+                .into_response();
+        }
+    };
+    let Some((start, end)) = span else {
+        return match tokio::fs::read(path).await {
+            Ok(bytes) => (
                 StatusCode::OK,
-                [(header::CONTENT_TYPE, mime.essence_str().to_string())],
+                [content_type, (header::ACCEPT_RANGES, "bytes".to_string())],
                 bytes,
             )
-                .into_response()
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+                .into_response(),
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
+        };
+    };
+    let mut buf = vec![0u8; (end - start + 1) as usize];
+    let read = async {
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+        file.read_exact(&mut buf).await
+    };
+    if read.await.is_err() {
+        return StatusCode::NOT_FOUND.into_response();
     }
+    (
+        StatusCode::PARTIAL_CONTENT,
+        [
+            content_type,
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+            (header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}")),
+        ],
+        buf,
+    )
+        .into_response()
 }
 
 /// The settings page's read: every named profile for `kind`, the global

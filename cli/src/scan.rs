@@ -1,5 +1,5 @@
-//! Pure scan over converted post HTML: finds `<img src>` and `<a href>`
-//! attributes that name a local file or a link worth making clickable
+//! Pure scan over converted post HTML: finds `<img src>`, `<video src>`,
+//! `<source src>` and `<a href>` attributes that name a local file or a link worth making clickable
 //! inside the sandboxed iframe, and rewrites them to placeholders the
 //! daemon and viewer resolve. No I/O of its own — callers inject an
 //! `exists` predicate, which is the test seam.
@@ -12,12 +12,14 @@ pub struct Scanned {
     pub warnings: Vec<String>,
 }
 
-/// Scans `html` for `<img src="...">` and `<a href="...">` attributes.
+/// Scans `html` for `<img src="...">`, `<video src="...">`, `<source src="...">`
+/// and `<a href="...">` attributes.
 ///
-/// - An `<img src>` that is an absolute path (`/...`) for which `exists`
+/// - An `<img>`, `<video>` or `<source>` `src` that is an absolute path (`/...`) for which `exists`
 ///   returns true is appended to `images` and its `src` rewritten to
 ///   `canvas-image:<n>` (`n` = its index in `images`), a placeholder
-///   canvasd resolves to `/api/cards/<id>/images/<n>` on card creation.
+///   canvasd resolves to `/api/cards/<id>/images/<n>` on card creation. A
+///   video shares that list and route, so one mechanism serves both.
 /// - An `<a href>` that is an absolute path for which `exists` returns
 ///   true, or that starts with `http://`/`https://`, is appended to
 ///   `targets` and its `href` rewritten to `#canvas-open-<n>` (`n` = its
@@ -26,7 +28,7 @@ pub struct Scanned {
 /// - An `<a>` to an existing local file whose only content is an existing
 ///   local `<img>` is dropped first, leaving the `<img>`, so a click on that
 ///   image opens the viewer's lightbox and not the file.
-/// - An absolute path (img or a) that does not exist produces one warning
+/// - An absolute path (img, video, source or a) that does not exist produces one warning
 ///   string and is left untouched.
 /// - Everything else — relative paths, `data:`, other schemes, non-img/a
 ///   tags — is left untouched.
@@ -52,37 +54,41 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
         };
 
         match name.as_deref() {
-            Some("img") => match find_attr_value_range(tag, "src") {
-                Some((vs, ve)) => {
-                    let value = &tag[vs..ve];
-                    if value.starts_with('/') {
-                        if exists(value) {
-                            let idx = images.len();
-                            images.push(value.to_string());
-                            // Written as exactly `src="canvas-image:<n>"`, with no
-                            // whitespace around `=`: canvasd matches that one shape.
-                            let quote = &tag[vs - 1..vs];
-                            let before_quote = tag[..vs - 1].trim_end();
-                            let name_end = before_quote
-                                .strip_suffix('=')
-                                .unwrap_or(before_quote)
-                                .trim_end();
-                            out.push_str(name_end);
-                            out.push('=');
-                            out.push_str(quote);
-                            out.push_str(&format!("canvas-image:{idx}"));
-                            out.push_str(&tag[ve..]);
+            Some(tag_kind @ ("img" | "video" | "source")) => {
+                match find_attr_value_range(tag, "src") {
+                    Some((vs, ve)) => {
+                        let value = &tag[vs..ve];
+                        if value.starts_with('/') {
+                            if exists(value) {
+                                let idx = images.len();
+                                images.push(value.to_string());
+                                // Written as exactly `src="canvas-image:<n>"`, with no
+                                // whitespace around `=`: canvasd matches that one shape.
+                                let quote = &tag[vs - 1..vs];
+                                let before_quote = tag[..vs - 1].trim_end();
+                                let name_end = before_quote
+                                    .strip_suffix('=')
+                                    .unwrap_or(before_quote)
+                                    .trim_end();
+                                out.push_str(name_end);
+                                out.push('=');
+                                out.push_str(quote);
+                                out.push_str(&format!("canvas-image:{idx}"));
+                                out.push_str(&tag[ve..]);
+                            } else {
+                                let what = if tag_kind == "img" { "image" } else { "video" };
+                                warnings.push(format!(
+                                    "canvas post: {what} not found, left as-is: {value}"
+                                ));
+                                out.push_str(tag);
+                            }
                         } else {
-                            warnings
-                                .push(format!("canvas post: image not found, left as-is: {value}"));
                             out.push_str(tag);
                         }
-                    } else {
-                        out.push_str(tag);
                     }
+                    None => out.push_str(tag),
                 }
-                None => out.push_str(tag),
-            },
+            }
             Some("a") => match find_attr_value_range(tag, "href") {
                 Some((vs, ve)) => {
                     let value = &tag[vs..ve];
@@ -178,7 +184,7 @@ fn has_existing_local(tag: &str, attr: &str, exists: &impl Fn(&str) -> bool) -> 
 /// `>` inside a quoted attribute value doesn't end the tag early. Returns
 /// the byte range `[start, end)` including the angle brackets. `None` past
 /// the last `<` or if a tag is left unterminated.
-fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
+pub(crate) fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = html.as_bytes();
     let mut i = from;
     while i < bytes.len() {
@@ -211,7 +217,7 @@ fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
 }
 
 /// The lowercased tag name of an opening tag, e.g. `"img"` or `"a"`.
-fn tag_name(tag: &str) -> Option<String> {
+pub(crate) fn tag_name(tag: &str) -> Option<String> {
     let inner = tag.strip_prefix('<')?;
     let end = inner
         .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
@@ -226,7 +232,7 @@ fn tag_name(tag: &str) -> Option<String> {
 /// whitespace-tolerant around `=`) inside `tag`, and returns the byte range
 /// of `value` (excluding the quotes), both relative to `tag`. The attribute
 /// name must be preceded by whitespace, so `xsrc="..."` never matches `src`.
-fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
     let lower = tag.to_ascii_lowercase();
     let bytes = tag.as_bytes();
     let mut search_from = 0usize;
@@ -279,6 +285,30 @@ mod tests {
         assert!(s.warnings.is_empty());
         assert!(s.html.contains(r#"src="canvas-image:0""#));
         assert!(!s.html.contains("/abs/x.png"));
+    }
+
+    #[test]
+    fn existing_local_video_and_source_share_the_image_list() {
+        let html = r#"<video src="/abs/a.webm" controls></video><video><source src="/abs/b.mp4" type="video/mp4"></video><img src="/abs/x.png">"#;
+        let s = scan(
+            html,
+            exists_in(&["/abs/a.webm", "/abs/b.mp4", "/abs/x.png"]),
+        );
+        assert_eq!(s.images, vec!["/abs/a.webm", "/abs/b.mp4", "/abs/x.png"]);
+        assert!(s.html.contains(r#"<video src="canvas-image:0" controls>"#));
+        assert!(s
+            .html
+            .contains(r#"<source src="canvas-image:1" type="video/mp4">"#));
+    }
+
+    #[test]
+    fn missing_local_video_warns_and_is_untouched() {
+        let html = r#"<video src="/nope.webm"></video>"#;
+        let s = scan(html, exists_in(&[]));
+        assert!(s.images.is_empty());
+        assert_eq!(s.warnings.len(), 1);
+        assert!(s.warnings[0].contains("video not found"));
+        assert_eq!(s.html, html);
     }
 
     #[test]

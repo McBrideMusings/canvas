@@ -16,6 +16,7 @@ const DEFAULT_REFRESH_SECS: u64 = 30;
 use crate::agent::{self, AgentAdapter};
 use crate::client;
 use crate::format::{self, Format};
+use crate::inline_css;
 use crate::scan;
 
 /// The parsed `canvas post` arguments: the positional path (or `-`/absent
@@ -91,8 +92,9 @@ pub fn run(args: PostArgs) -> Result<(), String> {
     let input = read_html(args.arg, std::io::stdin())?;
     validate(&input)?;
     let converted = format::convert(&input, format);
-    let scanned = scan::scan(&converted, |path| std::path::Path::new(path).exists());
-    for warning in &scanned.warnings {
+    let inlined = inline_css::inline_stylesheets(&converted, |path| std::fs::read(path).ok());
+    let scanned = scan::scan(&inlined.html, |path| std::path::Path::new(path).exists());
+    for warning in inlined.warnings.iter().chain(&scanned.warnings) {
         eprintln!("{warning}");
     }
     let card = match args.update_id {

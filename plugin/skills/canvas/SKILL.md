@@ -62,7 +62,8 @@ or let it infer from the file's extension (`.md`/`.markdown`, `.txt`,
 Markdown renders with tables and strikethrough, and raw HTML embedded in the
 Markdown source passes through unchanged. Text renders as an HTML-escaped
 `<pre>` block. HTML passes through as-is and must be self-contained: inline
-styles or a `<style>` block, no external stylesheet.
+styles or a `<style>` block. A local stylesheet is the one exception: `canvas
+post` inlines it (see "Local stylesheets" below).
 
 Canvas has a light and a dark theme, chosen by a button in its title bar, and
 a card always renders in the active one. The viewer forces the page's
@@ -87,10 +88,60 @@ arrow keys step through the card's other images. A link to an existing local
 file or to any `http://`/`https://` URL — `[plan](/abs/plan.md)` or
 `<a href="…">` — opens on click. A link to a local file whose only content
 is an existing local image loses the link, so that image opens the lightbox;
-an image inside a link to a URL, or beside other text, opens the link. Only those two forms are picked up: a bare path in the text
-stays plain text. An absolute local path that doesn't exist is left
-unchanged (a broken image or a dead link) and `canvas post` warns about it on
-stderr — the post still lands.
+an image inside a link to a URL, or beside other text, opens the link. A local video — `<video src="/abs/clip.webm">`, or `<source src="/abs/clip.mp4">`
+inside a `<video>`, in HTML or in Markdown's raw-HTML passthrough — plays inline
+the same way (WebM/VP9 and MP4/H.264 play; `.m4v` and `.mov` are served too).
+Canvas adds no attributes to your tag; it does not open a video in the lightbox,
+since the player has its own controls and fullscreen. Only these forms are
+picked up: a bare path in the text stays plain text. An absolute local path that
+doesn't exist is left unchanged (a broken image, video or dead link) and `canvas
+post` warns about it on stderr — the post still lands.
+
+Animated GIF, animated WebP and APNG files keep animating, inline and in the
+lightbox: the daemon serves the file's own bytes.
+
+### Local stylesheets
+
+`<link rel="stylesheet" href="/abs/tokens.css">` is replaced by a `<style>`
+block holding that file, and the `url(...)` references inside it — fonts, images,
+absolute or relative to the stylesheet — become `data:` URIs, so the card carries
+the project's real CSS. Each embedded asset is capped at 512 KB; a larger one, a
+missing file, or an asset of an unknown type is left as written and `canvas post`
+warns on stderr. `http(s)` links, `data:` URLs and `@import` are not followed. A
+relative `href` is not picked up; use the absolute path.
+
+### Motion
+
+Pick the form by what the reviewer needs:
+
+- **Animated image** (GIF, animated WebP, APNG): a loop to glance at. Lowest cost.
+- **Video** (`<video src="/abs/clip.webm">`): a recording of one run, with a scrubber.
+  Write `controls muted loop playsinline autoplay` for a short silent clip; a
+  browser only autoplays a muted video.
+- **Live animation card**: the real HTML/CSS/JS running in the card. Use it when
+  the reviewer must replay it on demand or judge exact timing and easing, which a
+  recording's frame rate blurs.
+
+A live animation card:
+
+- Runs ordinary inline `<script>`; the card's CSP allows inline scripts, and
+  external ones only from cdnjs, jsdelivr and unpkg.
+- Carries everything itself, because it cannot fetch: CSS inline or via a local
+  `<link rel="stylesheet" href="/abs/…">` (inlined for you), fonts and images as
+  `data:` URIs, or as a local `<img src="/abs/…">`. A `@font-face` file in a local
+  stylesheet is embedded for you; do not rely on any other host.
+- Plays on its own in a loop (`animation-iteration-count: infinite`, with
+  `alternate` or a pause between runs) and has a visible **Replay** button that
+  restarts it: remove the animation class, read `el.offsetWidth` to force a
+  reflow, add the class back. Scripted timelines restart from zero the same way.
+- Honours `@media (prefers-reduced-motion: reduce)` by showing the end state
+  without movement, or by starting paused behind a Play button. Canvas passes the
+  system setting through unchanged; it does not rewrite this query.
+- Follows the theme rules above: a light palette on `:root`, overridden under
+  `@media (prefers-color-scheme: dark)`, no `html`/`body` background or color. The
+  card is rebuilt when the theme changes, so the animation restarts then.
+- Stays within its frame: an overflowing element is clipped, and `transform`
+  moves do not change the card's height.
 
 ### Size and layout
 

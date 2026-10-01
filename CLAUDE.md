@@ -150,7 +150,13 @@ beside the terminal all day.
   already know it (e.g. after a daemon restart) — and unlike a hook it fails
   loudly — one line on stderr, non-zero exit — on any error, including when
   `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
-  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`. Hook
+  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`. A local
+  `<video src>` or `<source src>` joins `images` and is served by the same
+  `/api/cards/:id/images/:n` route (which honours `Range`, since a video needs
+  it); the viewer's lightbox skips those entries and the card CSP carries
+  `media-src`. A local `<link rel="stylesheet" href="/abs/x.css">` is replaced
+  by a `<style>` block with its `url()` assets as data URIs, before the scan
+  (`cli/src/inline_css.rs`). Hook
   dispatch never starts a tokio runtime; only `canvas daemon` does.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item

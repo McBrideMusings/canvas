@@ -1560,7 +1560,8 @@
       "script-src https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com 'unsafe-inline'; " +
       "style-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com; " +
       "font-src https://fonts.gstatic.com data:; " +
-      "img-src * data: canvas:;";
+      "img-src * data: canvas:; " +
+      "media-src * data: canvas:;";
     // Measure the content wrapper, not documentElement: documentElement's
     // scrollHeight is clamped to at least the iframe's own current viewport
     // height, so once the parent sets a height it can never report a
@@ -2123,7 +2124,7 @@
       const card = cardForFrameSource(event.source);
       if (!card) return;
       const index = data.index;
-      if (!Number.isInteger(index) || index < 0 || index >= card.images.length) {
+      if (!Number.isInteger(index) || !lightboxIndexes(card).includes(index)) {
         return;
       }
       openLightbox(card, index);
@@ -2724,6 +2725,17 @@
   // the arrow buttons and keys step through that card's images in post order.
   let lightbox = null; // { card, index } while open
 
+  // A card's `images` also lists its local videos (one serving route for both).
+  // A video plays in place with its own controls, so the lightbox skips it.
+  const VIDEO_PATH = /\.(mp4|m4v|mov|webm)$/i;
+  function lightboxIndexes(card) {
+    const out = [];
+    card.images.forEach((path, i) => {
+      if (!VIDEO_PATH.test(path)) out.push(i);
+    });
+    return out;
+  }
+
   // Zoom is relative to the fitted image: scale 1 is "fit", and tx/ty move the
   // image from the window centre (the image's transform-origin). Pan is only
   // allowed while the scaled image is larger than the window, and stops at its
@@ -2775,13 +2787,14 @@
 
   function paintLightbox() {
     const { card, index } = lightbox;
-    const count = card.images.length;
+    const list = lightboxIndexes(card);
+    const count = list.length;
     resetZoom();
     overlayImgEl.src = `/api/cards/${encodeURIComponent(card.id)}/images/${index}`;
     overlayPrevEl.hidden = count < 2;
     overlayNextEl.hidden = count < 2;
     overlayCountEl.hidden = count < 2;
-    overlayCountEl.textContent = `${index + 1} of ${count}`;
+    overlayCountEl.textContent = `${list.indexOf(index) + 1} of ${count}`;
   }
 
   function openLightbox(card, index) {
@@ -2804,8 +2817,9 @@
   }
 
   function stepLightbox(delta) {
-    const count = lightbox.card.images.length;
-    lightbox.index = (lightbox.index + delta + count) % count;
+    const list = lightboxIndexes(lightbox.card);
+    const at = list.indexOf(lightbox.index);
+    lightbox.index = list[(at + delta + list.length) % list.length];
     paintLightbox();
   }
 
@@ -2891,8 +2905,8 @@
     else if (e.key === "+" || e.key === "=") zoomTo(zoom.scale * ZOOM_KEY_STEP);
     else if (e.key === "-") zoomTo(zoom.scale / ZOOM_KEY_STEP);
     else if (e.key === "0") resetZoom();
-    else if (e.key === "ArrowLeft" && lightbox.card.images.length > 1) stepLightbox(-1);
-    else if (e.key === "ArrowRight" && lightbox.card.images.length > 1) stepLightbox(1);
+    else if (e.key === "ArrowLeft" && lightboxIndexes(lightbox.card).length > 1) stepLightbox(-1);
+    else if (e.key === "ArrowRight" && lightboxIndexes(lightbox.card).length > 1) stepLightbox(1);
   });
 
   async function loadState() {

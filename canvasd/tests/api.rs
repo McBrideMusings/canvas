@@ -480,6 +480,67 @@ async fn card_image_serves_the_cards_images_and_rejects_others() {
 }
 
 #[tokio::test]
+async fn card_video_serves_whole_and_by_byte_range() {
+    let app = app();
+    let dir = std::env::temp_dir().join(format!("canvasd-video-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("clip.webm");
+    std::fs::write(&clip, b"0123456789").unwrap();
+    let card = card_with_images(&app, vec![clip.to_string_lossy().to_string()]).await;
+    let uri = format!("/api/cards/{}/images/0", card.id);
+
+    let ranged = |range: &'static str| {
+        let app = app.clone();
+        let uri = uri.clone();
+        async move {
+            let request = Request::builder()
+                .uri(&uri)
+                .header("range", range)
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let content_range = response
+                .headers()
+                .get("content-range")
+                .map(|v| v.to_str().unwrap().to_string());
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (status, content_range, body)
+        }
+    };
+
+    let whole = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(whole.headers()["content-type"], "video/webm");
+    assert_eq!(whole.headers()["accept-ranges"], "bytes");
+
+    let (status, content_range, body) = ranged("bytes=2-4").await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(content_range.as_deref(), Some("bytes 2-4/10"));
+    assert_eq!(&body[..], b"234");
+
+    let (status, content_range, body) = ranged("bytes=7-").await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(content_range.as_deref(), Some("bytes 7-9/10"));
+    assert_eq!(&body[..], b"789");
+
+    let (status, content_range, body) = ranged("bytes=-3").await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(content_range.as_deref(), Some("bytes 7-9/10"));
+    assert_eq!(&body[..], b"789");
+
+    let (status, _, body) = ranged("bytes=0-1,5-6").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(&body[..], b"0123456789");
+
+    let (status, content_range, _) = ranged("bytes=10-").await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(content_range.as_deref(), Some("bytes */10"));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
 async fn image_placeholder_is_resolved_to_the_cards_image_route_and_serves() {
     let app = app();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

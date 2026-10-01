@@ -5,6 +5,7 @@ pub mod data;
 pub mod format;
 pub mod guidance;
 pub mod hook;
+pub mod inline_css;
 pub mod integrations;
 pub mod pin;
 pub mod post;

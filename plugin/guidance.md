@@ -21,4 +21,6 @@ In HTML, Canvas picks the light or dark theme, not the post, and it forces the p
 
 In HTML, a `<pre>` block renders dark with light text; give any background you paint inside one (diff rows, highlights) a dark `color` of its own.
 
+Motion shows in a card three ways: an animated GIF, WebP or APNG as an ordinary image; a local video as `<video src="/abs/clip.webm" controls muted loop playsinline autoplay>`; or, when the reviewer must replay it or judge exact timing, the real HTML/CSS/JS running in the card. A live animation card carries its own CSS (a local `<link rel="stylesheet" href="/abs/x.css">` is inlined for you), loops on its own, has a Replay button and honours `prefers-reduced-motion`; the canvas skill has the details.
+
 Size a card on purpose. The viewer sets the width (846px of content at the default window size, and never wider); you set the height. A document can run several screens; each panel should still read in about one. Clicking any image opens it full size in a lightbox, so screenshots can sit smaller in the card (`<img src="/abs/shot.png" width="360">`, or side by side for a before/after).
