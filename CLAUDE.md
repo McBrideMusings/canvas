@@ -107,8 +107,8 @@ beside the terminal all day.
   `canvas hook prompt` (the plugin's UserPromptSubmit hook, `cli/src/stop.rs`)
   reads the transcript's last finished turn and, when a trigger the `stop-triggers` profile in
   effect for the session's cwd enables fired (an image looked at, a file
-  changed outside scratch space, a closing report, a request to verify, a
-  long block, several links) and no `canvas post` ran, prints a
+  changed outside scratch space, a long block, several links; `report` and
+  `verify` are opt-in, off in the default) and no `canvas post` ran, prints a
   one-line reminder that Claude Code adds to the new prompt's context (no block,
   no error label, no re-sent reply; the post comes a turn late); otherwise it
   prints nothing. With nothing assigned or canvasd unreachable it uses

@@ -445,10 +445,23 @@ mod tests {
     }
 
     #[test]
-    fn closing_report_and_long_blocks_remind() {
-        let t = transcript(&[user("q"), say("**Run:**\n```\nx\n```\n**Look for:** y")]);
-        assert!(reason(&t, &cfg()).unwrap().contains("closing report"));
+    fn a_gate_alone_does_not_remind_but_a_changed_file_still_does() {
+        let gate = "**Run:**\n```\nx\n```\n**Look for:** y\n\nPlease verify, then type `go`.";
+        let t = transcript(&[user("q"), say(gate)]);
+        assert_eq!(reason(&t, &cfg()), None);
 
+        let t = transcript(&[
+            user("q"),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            say(gate),
+        ]);
+        assert!(reason(&t, &cfg())
+            .unwrap()
+            .contains("created or changed a file"));
+    }
+
+    #[test]
+    fn long_blocks_remind() {
         let long = format!("```\n{}```", "line\n".repeat(16));
         let t = transcript(&[user("q"), say(&long)]);
         assert!(reason(&t, &cfg()).unwrap().contains("over 15 lines"));
@@ -458,10 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn verification_requests_and_several_links_remind() {
-        let t = transcript(&[user("q"), say("Please verify the header looks right.")]);
-        assert!(reason(&t, &cfg()).unwrap().contains("verify"));
-
+    fn several_links_remind() {
         let links = "See https://a.example, https://b.example and https://c.example";
         let t = transcript(&[user("q"), say(links)]);
         assert!(reason(&t, &cfg()).unwrap().contains("links"));
@@ -482,5 +492,20 @@ mod tests {
         assert_eq!(reason(&t, &parse("image")), None);
         assert_eq!(reason(&t, &parse("file\noff")), None);
         assert_eq!(reason(&t, &parse("file\nscratch /repo/")), None);
+    }
+
+    #[test]
+    fn report_and_verify_remind_only_when_the_profile_enables_them() {
+        let gate = transcript(&[user("q"), say("**Look for:** y")]);
+        let ask = transcript(&[user("q"), say("Please verify the header.")]);
+        let parse = |text| canvasd::stop_triggers::parse(text).unwrap();
+        assert!(reason(&gate, &parse("report"))
+            .unwrap()
+            .contains("closing report"));
+        assert!(reason(&ask, &parse("verify\nphrase please verify"))
+            .unwrap()
+            .contains("verify"));
+        assert_eq!(reason(&gate, &cfg()), None);
+        assert_eq!(reason(&ask, &cfg()), None);
     }
 }

@@ -24,7 +24,7 @@ under different rules and read as noise. It reads this repo's transcripts and it
 candidate with its user text, reply tail, transcript path and turn uuid.
 
 Its triggers come from `plugin/stop-triggers.txt` at run time, so a trigger edit changes
-the next run. It does not model the `report` trigger (a closing report) or the hook's
+the next run. It does not model the `report` trigger (a closing report, off in the default) or the hook's
 exact parser, so a hook that stayed silent is a candidate, not proof of a hook bug.
 
 ## Signals

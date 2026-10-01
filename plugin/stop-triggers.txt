@@ -2,19 +2,8 @@
 # prompt carries a reminder to post. One directive per line.
 image
 file
-report
-verify
 links 3
 long-block 15
-phrase **run:**
-phrase please verify
-phrase please confirm
-phrase please check
-phrase please test
-phrase can you verify
-phrase can you confirm
-phrase can you try
-phrase try it
 scratch /private/tmp/
 scratch /tmp/
 scratch /var/folders/

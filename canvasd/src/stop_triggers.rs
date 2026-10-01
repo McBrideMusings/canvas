@@ -121,12 +121,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_built_in_default_parses_to_every_trigger_on() {
+    fn the_built_in_default_leaves_gate_shaped_triggers_off() {
         let t = parse(include_str!("../../plugin/stop-triggers.txt")).unwrap();
-        assert!(t.enabled && t.image && t.file && t.report && t.verify);
+        assert!(t.enabled && t.image && t.file && !t.report && !t.verify);
         assert_eq!(t.links, Some(3));
         assert_eq!(t.long_block, Some(15));
-        assert!(t.phrases.contains(&"please verify".to_string()));
+        assert!(t.phrases.is_empty());
         assert!(t.scratch.contains(&"/tmp/".to_string()));
     }
 
