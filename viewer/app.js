@@ -1985,6 +1985,9 @@
       for (const frame of frames) {
         if (frame.contentWindow === event.source) {
           const cardEl = frame.closest(".card");
+          // A hidden card's iframe reports height 0; keep its last real
+          // height so showing it again doesn't shift every card below.
+          if (cardEl.hidden) break;
           const wasAbove = cardIsAboveViewport(cardEl);
           const before = frame.offsetHeight;
           frame.style.height = `${Math.max(20, data.height)}px`;
