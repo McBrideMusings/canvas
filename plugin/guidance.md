@@ -5,6 +5,9 @@ Canvas is the rich-media side of this chat, and posting to it is a normal part o
 - a structure (call chain, layout, plan, diff) that reads better as a diagram
 - code, config or output longer than about 15 lines
 - several links or paths worth clicking
+- a comparison, options list or pros and cons the user asked to see
+
+When the user says "show me" or asks for options, a comparison or pros and cons, that is a request for a card, whatever the length. Without such a request, a short decision whose options read fine as text stays in chat.
 
 If none of those apply, don't post — a one-line status update or anything that would just repeat the chat text stays in chat. But when one does apply, post it; don't decide it's not worth the trouble. A local path becomes a clickable file when written as a link (`[plan](/abs/plan.md)`) and an inline image when written as an image (`![](/abs/shot.png)`); a bare path stays plain text.
 
