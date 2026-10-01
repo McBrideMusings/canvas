@@ -145,7 +145,8 @@
   // Integrations tab: one row per coding agent, from the app's
   // integration_status (which runs `canvas integrations list --json`). A row
   // is one of: not found, current, out of date, installing (this page's own
-  // state, while integration_install runs), needs review, or install failed
+  // click, or the app's `installing` flag for a launch-time install or a
+  // Retry queued behind one), needs review, or install failed
   // with the CLI's stderr line. Only Canvas.app can answer, so outside it the
   // tab is hidden like Daemon's.
   const integrationsTabEl = document.getElementById("tab-integrations");
@@ -164,13 +165,14 @@
     review: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.5"/>',
   };
   let integrationRows = [];
+  let integrationsPoll = null;
   const installing = new Set();
 
   // What one row shows: its state, the phrase, an optional hint or error,
   // and the button label (none when there is nothing to do).
   function integrationView(row) {
     const name = AGENT_NAMES[row.agent] || row.agent;
-    if (installing.has(row.agent)) return { state: "busy", phrase: "Installing…", action: "Installing…" };
+    if (installing.has(row.agent) || row.installing) return { state: "busy", phrase: "Installing…", action: "Installing…" };
     if (!row.found) {
       const cmd = AGENT_COMMANDS[row.agent] || row.agent;
       return { state: "notfound", phrase: "Not found", hint: `The ${cmd} command isn't on your PATH. Canvas sets it up once you install it.` };
@@ -254,6 +256,16 @@
     for (const row of integrationRows) integrationsListEl.append(integrationRowEl(row));
   }
 
+  // An install the app is running (launch time, or a queued Retry) ends
+  // without this page being told, so check again until none is. Only while
+  // the Integrations tab is showing in a visible window.
+  function scheduleIntegrationsPoll(again) {
+    clearTimeout(integrationsPoll);
+    if (again && !document.hidden && integrationsTabEl.getAttribute("aria-selected") === "true") {
+      integrationsPoll = setTimeout(refreshIntegrations, 2000);
+    }
+  }
+
   function refreshIntegrations() {
     if (!window.__TAURI__) return Promise.resolve();
     window.__TAURI__.core
@@ -267,10 +279,12 @@
         integrationsErrorEl.hidden = true;
         integrationsCheckedEl.textContent = `Checked ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
         renderIntegrations();
+        scheduleIntegrationsPoll(rows.some((r) => r.installing));
       })
       .catch((e) => {
         integrationsErrorEl.textContent = String(e);
         integrationsErrorEl.hidden = false;
+        scheduleIntegrationsPoll(integrationRows.some((r) => r.installing));
       });
   }
 
@@ -297,8 +311,12 @@
   // keeps running — pause the poll while the page isn't visible instead of
   // ticking a background window forever.
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopDaemonPolling();
-    else if (daemonTabEl.getAttribute("aria-selected") === "true") startDaemonPolling();
+    if (document.hidden) {
+      stopDaemonPolling();
+      clearTimeout(integrationsPoll);
+    } else if (integrationsTabEl.getAttribute("aria-selected") === "true") {
+      refreshIntegrations();
+    } else if (daemonTabEl.getAttribute("aria-selected") === "true") startDaemonPolling();
   });
 
   // Section tabs: one visible <main> at a time, no persisted selection —

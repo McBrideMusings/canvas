@@ -40,6 +40,10 @@ pub struct IntegrationRow {
     pub found: bool,
     pub status: Option<String>,
     pub error: Option<String>,
+    // True while an install for this agent is running or waiting on the lock.
+    // Set by `status`; `canvas integrations list` doesn't print it.
+    #[serde(default)]
+    pub installing: bool,
 }
 
 #[derive(Default)]
@@ -50,12 +54,40 @@ pub struct IntegrationState {
     // a Retry click during the launch-time pass waits instead of running a
     // second install over the same hooks file and plugin state.
     installing: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    // Agent name -> installs running or waiting on that lock.
+    pending: Mutex<HashMap<String, usize>>,
 }
 
 impl IntegrationState {
     fn install_lock(&self, agent: &str) -> Arc<Mutex<()>> {
         let mut locks = self.installing.lock().unwrap();
         locks.entry(agent.to_string()).or_default().clone()
+    }
+
+    // Counts one install for `agent` until the guard drops, so a panic can't
+    // leave the agent marked as installing.
+    fn pending(&self, agent: &str) -> PendingGuard<'_> {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(agent.to_string())
+            .or_default() += 1;
+        PendingGuard(self, agent.to_string())
+    }
+}
+
+struct PendingGuard<'a>(&'a IntegrationState, String);
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        let mut pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = pending.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                pending.remove(&self.1);
+            }
+        }
     }
 }
 
@@ -184,7 +216,9 @@ fn list() -> Result<Vec<IntegrationRow>, String> {
 pub fn status(state: &IntegrationState) -> Result<Vec<IntegrationRow>, String> {
     let mut rows = list()?;
     let errors = state.errors.lock().unwrap();
+    let pending = state.pending.lock().unwrap();
     for row in &mut rows {
+        row.installing = pending.contains_key(&row.agent);
         if let Some(e) = errors.get(&row.agent) {
             row.error = Some(e.clone());
         }
@@ -200,6 +234,7 @@ pub fn install(state: &IntegrationState, agent: &str) -> Result<(), String> {
 }
 
 fn install_with(bin: &Path, state: &IntegrationState, agent: &str) -> Result<(), String> {
+    let _pending = state.pending(agent);
     let lock = state.install_lock(agent);
     let _installing = lock.lock().unwrap_or_else(|e| e.into_inner());
     let result = run_bin(bin, &["integrations", "install", agent], INSTALL_TIMEOUT).map(|_| ());
@@ -280,6 +315,7 @@ fi
 
         let state = IntegrationState::default();
         install_outdated_in(&state);
+        assert!(state.pending.lock().unwrap().is_empty());
         let rows = status(&state).unwrap();
         let codex = rows.iter().find(|r| r.agent == "codex").unwrap();
         assert_eq!(
@@ -364,6 +400,7 @@ fi
             }
         });
 
+        assert!(state.pending.lock().unwrap().is_empty());
         let log = std::fs::read_to_string(dir.join("log")).unwrap();
         let codex: Vec<&str> = log.lines().filter(|l| l.ends_with("codex")).collect();
         assert_eq!(
@@ -373,6 +410,34 @@ fi
         let first_end = log.lines().position(|l| l == "end codex").unwrap();
         let claude_start = log.lines().position(|l| l == "start claude-code").unwrap();
         assert!(claude_start < first_end, "different agents should overlap");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // `status` marks an agent installing from when an install is requested, even
+    // while it waits on the lock, until it finishes.
+    #[test]
+    fn an_agent_is_pending_from_request_to_finish() {
+        let dir = std::env::temp_dir().join(format!("canvas-pending-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("canvas");
+        std::fs::write(&stub, "#!/bin/sh\nsleep 1\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let state = IntegrationState::default();
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                let (stub, state) = (&stub, &state);
+                s.spawn(move || install_with(stub, state, "codex").unwrap());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            // One install is running and the other waits on its lock.
+            let pending = state.pending.lock().unwrap().get("codex").copied();
+            assert_eq!(pending, Some(2));
+        });
+        assert!(state.pending.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
