@@ -54,6 +54,11 @@
   // restarts the app (and with it the daemon), so the page never sees the reply.
   const relaunchButtons = Array.from(document.querySelectorAll("[data-relaunch]"));
   const integrationsRelaunchEl = document.getElementById("integrations-relaunch");
+  const relaunchErrors = Array.from(document.querySelectorAll("[data-relaunch-error]"));
+
+  function showRelaunchError(failed) {
+    for (const el of relaunchErrors) el.hidden = !failed;
+  }
 
   function showRelaunch(needed) {
     for (const btn of relaunchButtons) {
@@ -61,13 +66,16 @@
       btn.hidden = !needed;
     }
     integrationsRelaunchEl.hidden = !needed;
+    if (!needed) showRelaunchError(false);
   }
 
   for (const btn of relaunchButtons) {
     btn.addEventListener("click", () => {
+      showRelaunchError(false);
       for (const b of relaunchButtons) b.disabled = true;
       window.__TAURI__.core.invoke("relaunch").catch(() => {
         for (const b of relaunchButtons) b.disabled = false;
+        showRelaunchError(true);
       });
     });
   }

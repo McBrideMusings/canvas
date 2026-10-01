@@ -162,6 +162,19 @@ body {
   flex: none;
 }
 
+.relaunch-error {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+.relaunch-error[hidden] {
+  display: none;
+}
+
+.relaunch-error:not([hidden]) + .daemon-relaunch {
+  margin-left: 0;
+}
+
 .relaunch-notice {
   display: flex;
   align-items: center;
