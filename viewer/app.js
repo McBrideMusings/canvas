@@ -1252,6 +1252,7 @@
     if (lightbox && lightbox.card.id === id) closeLightbox();
     cards.delete(id);
     postTextLower.delete(id);
+    cardDataPushes.delete(id);
     unseen.cardIds.delete(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) {
@@ -1979,16 +1980,25 @@
     }
   }
 
+  // How many values each card has been pushed live. A replay that started
+  // before a push finished after it would overwrite the newer value with the
+  // older stored one, so a replay posts only if no push arrived meanwhile.
+  const cardDataPushes = new Map();
+
   function replayCardData(cardId, frame) {
+    const pushes = cardDataPushes.get(cardId) || 0;
     fetch(`/api/cards/${cardId}/data`)
       .then((response) => (response.ok ? response.json() : undefined))
       .then((value) => {
-        if (value !== undefined) postCardData(frame, value);
+        if (value !== undefined && (cardDataPushes.get(cardId) || 0) === pushes) {
+          postCardData(frame, value);
+        }
       })
       .catch(() => {});
   }
 
   function deliverCardData(cardId, value) {
+    cardDataPushes.set(cardId, (cardDataPushes.get(cardId) || 0) + 1);
     const frame = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"] iframe`);
     postCardData(frame, value);
   }
