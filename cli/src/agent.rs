@@ -48,6 +48,9 @@ pub trait AgentAdapter: Sync {
     /// The environment variable the agent sets in its tool shells to the
     /// session id.
     fn session_env(&self) -> &'static str;
+    /// The agent process that owns this shell, which the daemon watches to
+    /// know when the session is over; `None` when it can't be found.
+    fn pid(&self) -> Option<u32>;
     /// Parses the JSON a hook of this agent receives on stdin.
     fn parse_hook(&self, stdin: &str) -> Result<HookInput, serde_json::Error>;
     /// The last finished turn in this agent's transcript text; an empty
@@ -91,6 +94,11 @@ impl AgentAdapter for ClaudeCode {
     /// a plain shell command to learn which session it's running in.
     fn session_env(&self) -> &'static str {
         "CLAUDE_CODE_SESSION_ID"
+    }
+
+    /// Claude Code sets `CLAUDE_PID` in its tool shells to its own pid.
+    fn pid(&self) -> Option<u32> {
+        std::env::var("CLAUDE_PID").ok()?.trim().parse().ok()
     }
 
     fn parse_hook(&self, stdin: &str) -> Result<HookInput, serde_json::Error> {
@@ -187,6 +195,12 @@ impl AgentAdapter for Codex {
     /// hooks get on stdin and to the `id` in the rollout's `session_meta`.
     fn session_env(&self) -> &'static str {
         "CODEX_THREAD_ID"
+    }
+
+    /// Codex names no pid in the environment, so this walks up from the CLI
+    /// to the first process called `codex`.
+    fn pid(&self) -> Option<u32> {
+        ancestor_pid("codex")
     }
 
     /// Codex hooks write the same `session_id`, `cwd` and `transcript_path`
@@ -380,6 +394,31 @@ pub fn session_envs() -> Vec<&'static str> {
 /// What a hook runs as when no `--agent` flag is given.
 pub fn default_adapter() -> &'static dyn AgentAdapter {
     &ClaudeCode
+}
+
+/// The nearest ancestor of this process whose executable is named `name`,
+/// found by asking `ps` for each parent in turn.
+fn ancestor_pid(name: &str) -> Option<u32> {
+    fn ps(field: &str, pid: u32) -> Option<String> {
+        let out = std::process::Command::new("ps")
+            .args(["-o", &format!("{field}="), "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+    let mut pid = std::process::id();
+    // A parent chain is never deeper than this; the bound stops a loop.
+    for _ in 0..32 {
+        pid = ps("ppid", pid)?.parse().ok().filter(|&p| p > 1)?;
+        if ps("comm", pid).is_some_and(|comm| {
+            std::path::Path::new(&comm)
+                .file_name()
+                .is_some_and(|n| n == name)
+        }) {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 
 use std::io::Read;
 
-use canvas_core::{Pin, PinScope};
+use canvas_core::{Pin, PinScope, PostRequest};
 
 use crate::agent::{self, AgentAdapter};
 use crate::client;
@@ -92,15 +92,16 @@ pub fn run(args: PostArgs) -> Result<(), String> {
             let pin = build_pin(&args)?;
             let (adapter, session_id) = session()?;
             let cwd = current_dir()?;
-            client::post_explicit(
-                adapter.agent(),
-                &session_id,
-                &cwd,
-                scanned.html,
-                scanned.images,
-                scanned.targets,
+            client::post_explicit(PostRequest {
+                session_id,
+                cwd,
+                agent: adapter.agent(),
+                html: scanned.html,
+                images: scanned.images,
+                targets: scanned.targets,
                 pin,
-            )?
+                pid: adapter.pid(),
+            })?
         }
     };
     println!(

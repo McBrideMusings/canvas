@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use canvas_core::unix_http::{self, Response};
 use canvas_core::{
-    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, Pin,
-    PostRequest, ProfilesState, SetProfileTextRequest, UpdateCardRequest,
+    AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, PostRequest,
+    ProfilesState, SetProfileTextRequest, UpdateCardRequest,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -99,24 +99,7 @@ pub fn end_session(session_id: &str) -> Result<(), String> {
 /// agent that ran it, so this returns a one-line, human-readable message on
 /// every failure instead of the raw `Failure`, and returns the card the
 /// daemon created on success so the caller can report its id.
-pub fn post_explicit(
-    agent: Agent,
-    session_id: &str,
-    cwd: &str,
-    html: String,
-    images: Vec<String>,
-    targets: Vec<String>,
-    pin: Option<Pin>,
-) -> Result<Card, String> {
-    let body = PostRequest {
-        session_id: session_id.to_string(),
-        cwd: cwd.to_string(),
-        agent,
-        html,
-        images,
-        targets,
-        pin,
-    };
+pub fn post_explicit(body: PostRequest) -> Result<Card, String> {
     let result = post_json("/api/posts", body);
     handle_card_response(result)
 }

@@ -1489,3 +1489,124 @@ fn pruning_by_age_keeps_a_pinned_card() {
     let ids: Vec<&str> = inner.cards.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, ["held"]);
 }
+
+async fn scoped_post(
+    app: &axum::Router,
+    session_id: &str,
+    pid: Option<u32>,
+    slot: &str,
+    scope: &str,
+) -> Card {
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({
+                "session_id": session_id, "cwd": std::env::temp_dir(), "agent": "claude-code",
+                "html": "<p>x</p>", "pid": pid, "pin": {"slot": slot, "scope": scope},
+            }),
+        ))
+        .await
+        .unwrap();
+    json_body(response).await
+}
+
+async fn card_now(app: &axum::Router, id: &str) -> Option<Card> {
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{id}")))
+        .await
+        .unwrap();
+    if response.status() != StatusCode::OK {
+        return None;
+    }
+    Some(json_body(response).await)
+}
+
+#[tokio::test]
+async fn a_dead_agent_process_ends_its_session_and_releases_its_session_pins() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let session_pin = scoped_post(&app, "s1", Some(child.id()), "mine", "session").await;
+    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
+    let no_pid_pin = scoped_post(&app, "s2", None, "other", "session").await;
+
+    assert_eq!(
+        state
+            .sweep_dead_sessions(canvasd::state::process_alive)
+            .await,
+        0
+    );
+    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_some());
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(
+        state
+            .sweep_dead_sessions(canvasd::state::process_alive)
+            .await,
+        1
+    );
+
+    let inner = state.inner.read().await;
+    assert!(inner.sessions["s1"].ended_at.is_some());
+    assert!(inner.sessions["s2"].ended_at.is_none());
+    drop(inner);
+    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_none());
+    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
+    assert!(card_now(&app, &no_pid_pin.id).await.unwrap().pin.is_some());
+    // Already ended: a second sweep finds nothing.
+    assert_eq!(
+        state
+            .sweep_dead_sessions(canvasd::state::process_alive)
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ending_a_session_releases_only_its_session_pins() {
+    let app = app();
+    let session_pin = scoped_post(&app, "s1", None, "mine", "session").await;
+    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
+
+    let response = app
+        .clone()
+        .oneshot(post("/api/sessions/s1/end", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_none());
+    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
+}
+
+#[tokio::test]
+async fn deleting_a_session_keeps_its_repo_pins() {
+    let app = app();
+    let session_pin = scoped_post(&app, "s1", None, "mine", "session").await;
+    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
+
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/s1"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(card_now(&app, &session_pin.id).await.is_none());
+    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
+    let state: StateResponse =
+        json_body(app.clone().oneshot(get("/api/state")).await.unwrap()).await;
+    assert!(state.sessions.iter().any(|s| s.id == "s1"));
+
+    let response = app
+        .clone()
+        .oneshot(delete("/api/sessions/s1/cards"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
+}

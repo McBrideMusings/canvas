@@ -44,6 +44,7 @@ fn ensure_session(
     cwd: &str,
     agent: Agent,
     repo: Option<String>,
+    pid: Option<u32>,
 ) -> Option<Session> {
     if inner.sessions.contains_key(session_id) {
         return None;
@@ -56,6 +57,7 @@ fn ensure_session(
         repo,
         started_at: now(),
         ended_at: None,
+        pid,
     };
     inner.sessions.insert(session.id.clone(), session.clone());
     Some(session)
@@ -77,14 +79,7 @@ pub async fn end_session(
 ) -> impl IntoResponse {
     let updated = {
         let mut inner = state.inner.write().await;
-        if let Some(session) = inner.sessions.get_mut(&id) {
-            session.ended_at = Some(now());
-            let session = session.clone();
-            state.publish(CanvasEvent::SessionUpserted(session.clone()));
-            Some(session)
-        } else {
-            None
-        }
+        state.end_session(&mut inner, &id)
     };
 
     match updated {
@@ -158,8 +153,14 @@ pub async fn post_explicit(
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
-        let created_session =
-            ensure_session(&mut inner, &req.session_id, &req.cwd, req.agent, repo);
+        let created_session = ensure_session(
+            &mut inner,
+            &req.session_id,
+            &req.cwd,
+            req.agent,
+            repo,
+            req.pid,
+        );
         // A post to a held slot replaces that card in place, keeping its id.
         let held = req.pin.as_ref().and_then(|pin| {
             let key = pin_key(inner.sessions.get(&req.session_id)?);
@@ -359,7 +360,8 @@ pub async fn delete_card(State(state): State<AppState>, Path(id): Path<String>) 
     StatusCode::OK.into_response()
 }
 
-/// Removes every card of a session and leaves the session registered. One
+/// Removes every card of a session but its repo-scoped pins, and leaves the
+/// session registered. One
 /// `card-removed` event per card, so viewers and the persisted log drop them
 /// the same way a single delete does.
 pub async fn clear_session_cards(
@@ -370,10 +372,17 @@ pub async fn clear_session_cards(
     if !inner.sessions.contains_key(&id) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    remove_unpinned_cards(&state, &mut inner, &id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// One `card-removed` event for each of a session's cards that is not a
+/// repo-scoped pin.
+fn remove_unpinned_cards(state: &AppState, inner: &mut crate::state::Inner, id: &str) {
     let removed: Vec<String> = inner
         .cards
         .iter()
-        .filter(|c| c.session_id == id)
+        .filter(|c| c.session_id == id && !c.is_repo_pinned())
         .map(|c| c.id.clone())
         .collect();
     for card_id in removed {
@@ -381,7 +390,6 @@ pub async fn clear_session_cards(
         inner.apply(event.clone());
         state.publish(event);
     }
-    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -389,6 +397,15 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
         let mut inner = state.inner.write().await;
         if !inner.sessions.contains_key(&id) {
             false
+        } else if inner
+            .cards
+            .iter()
+            .any(|c| c.session_id == id && c.is_repo_pinned())
+        {
+            // A repo-scoped pin outlives its session, and a pinned card needs
+            // its session to resolve its slot: drop only the other cards.
+            remove_unpinned_cards(&state, &mut inner, &id);
+            true
         } else {
             let event = CanvasEvent::SessionRemoved(id);
             inner.apply(event.clone());

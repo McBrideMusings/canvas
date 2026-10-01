@@ -11,7 +11,11 @@ beside the terminal all day.
   `CANVAS_DATA_DIR`, default `~/Library/Application Support/canvas`; on start
   the last 24h reload, dropping any session with no post left, and the file is rewritten compacted; each session
   records the `agent` that started it — `claude-code` and `codex` are the values —
-  required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code), SSE push to
+  required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code;
+  it also records the agent's `pid` from its first post (`CLAUDE_PID` for Claude
+  Code, the first `codex` ancestor for Codex), and a 30s sweep ends a session whose
+  pid is gone, releasing its session-scoped pins; sessions with no pid are never
+  swept), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
   reuse instead of growing its own bespoke override: a "kind" owns its own
@@ -159,7 +163,9 @@ beside the terminal all day.
 - Pinned posts: `canvas post --pin <slot> [--pin-scope session|repo] [--widget <file>]`
   holds the card in a slot, unique within the poster's repo (its cwd when it has
   none); a later post to a held slot replaces that card in place, keeping its id,
-  and takes over its session. `canvas unpin <slot|card_id>` clears `pin` and the card
+  and takes over its session. A session-scoped pin returns to the feed when its
+  session ends; a repo-scoped pin survives session end, session delete and clearing
+  a session's cards. `canvas unpin <slot|card_id>` clears `pin` and the card
   returns to the feed at its own `at`; `canvas data --slot <slot>` pushes to the
   card in the slot (`GET /api/pins?cwd=&slot=` resolves it; `DELETE
   /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or

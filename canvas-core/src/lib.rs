@@ -32,6 +32,11 @@ pub struct Session {
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+    /// The agent process that owns the session, sent with its first post. The
+    /// daemon ends the session when this process is gone; a session without
+    /// one is never swept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// How long a pinned card lives: until its own session ends (`Session`), or
@@ -57,6 +62,13 @@ pub struct Pin {
     /// shows a plain tile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_html: Option<String>,
+}
+
+impl Card {
+    /// The card holds a slot that outlives its session.
+    pub fn is_repo_pinned(&self) -> bool {
+        self.pin.as_ref().is_some_and(|p| p.scope == PinScope::Repo)
+    }
 }
 
 /// One deliberate `canvas post`, shown as one card. Every post creates its
@@ -92,6 +104,9 @@ pub struct PostRequest {
     /// Holds the card in a slot; see [`Pin`].
     #[serde(default)]
     pub pin: Option<Pin>,
+    /// Recorded on the session only when this post creates it.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 /// Body for `PUT /api/cards/:id` — replaces an existing card's content in

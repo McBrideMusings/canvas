@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use canvas_core::{Card, Session};
+use canvas_core::{Card, PinScope, Session};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
@@ -107,6 +107,47 @@ impl AppState {
         }
     }
 
+    /// Ends a session the way the session-end route does: stamps `ended_at`,
+    /// publishes it, and releases the session's session-scoped pins back to the
+    /// feed. A repo-scoped pin stays held. `None` when the id names no session.
+    pub fn end_session(&self, inner: &mut Inner, id: &str) -> Option<Session> {
+        let session = inner.sessions.get_mut(id)?;
+        session.ended_at = Some(chrono::Utc::now().to_rfc3339());
+        let session = session.clone();
+        self.publish(CanvasEvent::SessionUpserted(session.clone()));
+        let released: Vec<Card> = inner
+            .cards
+            .iter()
+            .filter(|c| {
+                c.session_id == id && c.pin.as_ref().is_some_and(|p| p.scope == PinScope::Session)
+            })
+            .cloned()
+            .collect();
+        for mut card in released {
+            card.pin = None;
+            inner.upsert_card(card.clone());
+            self.publish(CanvasEvent::CardUpserted(card));
+        }
+        Some(session)
+    }
+
+    /// Ends every running session whose agent process `is_alive` rejects.
+    /// Returns how many it ended. A session with no pid is never swept.
+    pub async fn sweep_dead_sessions(&self, is_alive: impl Fn(u32) -> bool) -> usize {
+        let mut inner = self.inner.write().await;
+        let dead: Vec<String> = inner
+            .sessions
+            .values()
+            .filter(|s| s.ended_at.is_none() && s.pid.is_some_and(|pid| !is_alive(pid)))
+            .map(|s| s.id.clone())
+            .collect();
+        for id in &dead {
+            eprintln!("canvasd: agent process of session {id} is gone; ending it");
+            self.end_session(&mut inner, id);
+        }
+        dead.len()
+    }
+
     pub fn publish(&self, event: CanvasEvent) {
         if let Some(store) = &self.store {
             if !matches!(event, CanvasEvent::CardData { .. }) {
@@ -116,6 +157,33 @@ impl AppState {
         // No receivers (e.g. no SSE clients connected) is not an error.
         let _ = self.events.send(event);
     }
+}
+
+/// Whether a process with this pid exists (`kill(pid, 0)`). A process owned by
+/// another user answers `EPERM`, which still means it is alive.
+pub fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe {
+        libc::kill(pid, 0) == 0
+            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+}
+
+/// How often the daemon checks that each session's agent process still runs.
+pub const LIVENESS_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs [`AppState::sweep_dead_sessions`] every [`LIVENESS_SWEEP_INTERVAL`].
+pub fn spawn_liveness_sweep(state: AppState) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(LIVENESS_SWEEP_INTERVAL);
+        loop {
+            tick.tick().await;
+            state.sweep_dead_sessions(process_alive).await;
+        }
+    });
 }
 
 /// What a pin slot is unique within: the session's GitHub repo, else its cwd.
