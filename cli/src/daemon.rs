@@ -29,6 +29,7 @@ async fn serve() {
         }
     };
     canvasd::state::spawn_liveness_sweep(state.clone());
+    canvasd::refresh::spawn_refresh_loop(state.clone());
     let app = build_router(state);
 
     let listener =

@@ -8,7 +8,10 @@
 
 use std::io::Read;
 
-use canvas_core::{Pin, PinScope, PostRequest};
+use canvas_core::{Pin, PinScope, PostRequest, Refresh, MIN_REFRESH_SECS};
+
+/// How often `--refresh` runs when `--every` is not given.
+const DEFAULT_REFRESH_SECS: u64 = 30;
 
 use crate::agent::{self, AgentAdapter};
 use crate::client;
@@ -18,8 +21,8 @@ use crate::scan;
 /// The parsed `canvas post` arguments: the positional path (or `-`/absent
 /// for stdin), an explicit `--format md|text|html`, an optional
 /// `--update <card_id>` to replace an existing card instead of creating one,
-/// and `--pin <slot>` with its `--pin-scope session|repo` and `--widget <file>`
-/// to hold the card in a pin slot.
+/// and `--pin <slot>` with its `--pin-scope session|repo`, `--widget <file>`
+/// and `--refresh <cmd> [--every <secs>]` to hold the card in a pin slot.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PostArgs<'a> {
     pub arg: Option<&'a str>,
@@ -28,6 +31,8 @@ pub struct PostArgs<'a> {
     pub pin: Option<&'a str>,
     pub pin_scope: Option<&'a str>,
     pub widget: Option<&'a str>,
+    pub refresh: Option<&'a str>,
+    pub every: Option<&'a str>,
 }
 
 /// A malformed `canvas post` argument list. Carries no detail: the caller
@@ -38,8 +43,8 @@ pub struct UsageError;
 /// Parses the arguments to `canvas post` (everything after `post` itself).
 /// Each flag may appear before or after the single positional path/`-`.
 /// Returns `Err` on a usage error: a flag with no following value, a flag
-/// given twice, a second positional argument, or `--pin-scope`/`--widget`
-/// without `--pin`. Does not validate the flag values themselves — `run` does.
+/// given twice, a second positional argument, `--pin-scope`/`--widget`/
+/// `--refresh`/`--every` without `--pin`, or `--every` without `--refresh`. Does not validate the flag values themselves — `run` does.
 pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
     let mut parsed = PostArgs::default();
     let mut i = 0;
@@ -50,6 +55,8 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
             "--pin" => &mut parsed.pin,
             "--pin-scope" => &mut parsed.pin_scope,
             "--widget" => &mut parsed.widget,
+            "--refresh" => &mut parsed.refresh,
+            "--every" => &mut parsed.every,
             other if parsed.arg.is_none() => {
                 parsed.arg = Some(other);
                 i += 1;
@@ -63,7 +70,14 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
         }
         i += 2;
     }
-    if parsed.pin.is_none() && (parsed.pin_scope.is_some() || parsed.widget.is_some()) {
+    let pin_only = parsed.pin_scope.is_some()
+        || parsed.widget.is_some()
+        || parsed.refresh.is_some()
+        || parsed.every.is_some();
+    if parsed.pin.is_none() && pin_only {
+        return Err(UsageError);
+    }
+    if parsed.every.is_some() && parsed.refresh.is_none() {
         return Err(UsageError);
     }
     Ok(parsed)
@@ -146,10 +160,35 @@ fn build_pin(args: &PostArgs) -> Result<Option<Pin>, String> {
         }
         None => None,
     };
+    let refresh = match args.refresh {
+        Some(command) => {
+            if command.trim().is_empty() {
+                return Err("--refresh needs a command".to_string());
+            }
+            let every_secs = match args.every {
+                None => DEFAULT_REFRESH_SECS,
+                Some(v) => v
+                    .parse::<u64>()
+                    .map_err(|_| format!("--every needs a whole number of seconds, got {v:?}"))?,
+            };
+            if every_secs < MIN_REFRESH_SECS {
+                return Err(format!(
+                    "--every must be at least {MIN_REFRESH_SECS} seconds"
+                ));
+            }
+            Some(Refresh {
+                command: command.to_string(),
+                every_secs,
+            })
+        }
+        None => None,
+    };
     Ok(Some(Pin {
         slot: slot.to_string(),
         scope,
         widget_html,
+        refresh,
+        refresh_error: None,
     }))
 }
 
@@ -363,6 +402,32 @@ mod tests {
         let rest = args(&["--pin", "s", "--pin-scope", "global"]);
         let err = build_pin(&parse_args(&rest).unwrap()).unwrap_err();
         assert!(err.contains("\"global\""), "{err}");
+    }
+
+    #[test]
+    fn refresh_builds_a_pin_with_the_given_interval() {
+        let rest = args(&["--pin", "s", "--refresh", "date", "--every", "7"]);
+        let pin = build_pin(&parse_args(&rest).unwrap()).unwrap().unwrap();
+        assert_eq!(
+            pin.refresh,
+            Some(Refresh {
+                command: "date".to_string(),
+                every_secs: 7
+            })
+        );
+    }
+
+    #[test]
+    fn an_interval_under_the_minimum_is_an_error() {
+        let rest = args(&["--pin", "s", "--refresh", "date", "--every", "2"]);
+        let err = build_pin(&parse_args(&rest).unwrap()).unwrap_err();
+        assert_eq!(err, "--every must be at least 5 seconds");
+    }
+
+    #[test]
+    fn refresh_without_a_pin_or_every_without_refresh_is_an_error() {
+        assert!(parse_args(&args(&["a.md", "--refresh", "date"])).is_err());
+        assert!(parse_args(&args(&["a.md", "--pin", "s", "--every", "9"])).is_err());
     }
 
     #[test]

@@ -1483,6 +1483,8 @@ fn pruning_by_age_keeps_a_pinned_card() {
             slot: "s".to_string(),
             scope: PinScope::Session,
             widget_html: None,
+            refresh: None,
+            refresh_error: None,
         }),
     ));
     inner.prune_before(chrono::Utc::now());

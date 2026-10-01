@@ -177,7 +177,13 @@ beside the terminal all day.
   and takes over its session. A session-scoped pin returns to the feed when its
   session ends; a repo-scoped pin survives session end, session delete and clearing
   a session's cards. `canvas unpin <slot|card_id>` clears `pin` and the card
-  returns to the feed at its own `at`; `canvas data --slot <slot>` pushes to the
+  returns to the feed at its own `at`; `--refresh '<cmd>' [--every <secs>]` (5s
+  minimum, default 30s) makes the daemon (`canvasd/src/refresh.rs`, a 1s tick) run
+  `sh -c <cmd>` in the session's cwd while the pin exists and its session is live,
+  one run at a time, killed after 60s: stdout JSON goes out as `canvas data` does,
+  anything else sets the pin's `refreshError` (first stderr line or the reason, cleared
+  by the next success) and doubles the wait per failure up to 10 min;
+  `canvas data --slot <slot>` pushes to the
   card in the slot (`GET /api/pins?cwd=&slot=` resolves it; `DELETE
   /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or
   pruned by age, but counts toward the 500. The window's always-on-top toggle is

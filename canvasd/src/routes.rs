@@ -150,6 +150,14 @@ pub async fn post_explicit(
     if req.pin.as_ref().is_some_and(|p| p.slot.trim().is_empty()) {
         return (StatusCode::BAD_REQUEST, "a pin needs a slot name").into_response();
     }
+    let mut req = req;
+    if let Some(pin) = req.pin.as_mut() {
+        // Only the daemon records a refresh error.
+        pin.refresh_error = None;
+        if let Some(Err(reason)) = pin.refresh.as_ref().map(crate::refresh::check) {
+            return (StatusCode::BAD_REQUEST, reason).into_response();
+        }
+    }
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
@@ -303,7 +311,7 @@ pub async fn post_card_reply(
 /// `postMessage({type:'canvas-data', value})`; the latest value is kept (last
 /// write wins, in memory) so the viewer can replay it into an iframe that
 /// reloads. 404 when `id` names no card; 413 past `MAX_DATA_BYTES`.
-const MAX_DATA_BYTES: usize = 256 * 1024;
+pub const MAX_DATA_BYTES: usize = 256 * 1024;
 
 pub async fn put_card_data(
     State(state): State<AppState>,

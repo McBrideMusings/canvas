@@ -62,6 +62,27 @@ pub struct Pin {
     /// shows a plain tile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_html: Option<String>,
+    /// A command the daemon runs to keep the card's data current; absent means
+    /// nothing runs and the agent pushes with `canvas data --slot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<Refresh>,
+    /// The first stderr line (or the reason) of the latest failed refresh run;
+    /// set by the daemon, cleared by the next success, ignored in a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
+}
+
+/// The shortest `every_secs` a refresh may ask for.
+pub const MIN_REFRESH_SECS: u64 = 5;
+
+/// A shell command the daemon runs in the session's cwd every `every_secs`
+/// while the pin exists and its session is live. It prints one JSON value to
+/// stdout, which reaches the card the way `canvas data` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refresh {
+    pub command: String,
+    pub every_secs: u64,
 }
 
 impl Card {

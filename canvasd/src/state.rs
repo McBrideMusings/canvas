@@ -49,6 +49,9 @@ pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
     pub profiles: Arc<RwLock<ProfilesConfig>>,
+    /// One refresh loop per refreshing card; see [`crate::refresh`].
+    pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
+    pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -71,6 +74,8 @@ impl AppState {
             })),
             events: tx,
             profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
+            refreshes: Arc::default(),
+            generation: Arc::default(),
             store: None,
             data_dir: None,
         }
@@ -86,6 +91,8 @@ impl AppState {
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
             profiles: Arc::new(RwLock::new(profiles)),
+            refreshes: Arc::default(),
+            generation: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
