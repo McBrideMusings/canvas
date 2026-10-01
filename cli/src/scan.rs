@@ -23,6 +23,9 @@ pub struct Scanned {
 ///   `targets` and its `href` rewritten to `#canvas-open-<n>` (`n` = its
 ///   index in `targets`), which the viewer's click bridge turns into an
 ///   open request.
+/// - An `<a>` to an existing local file whose only content is an existing
+///   local `<img>` is dropped first, leaving the `<img>`, so a click on that
+///   image opens the viewer's lightbox and not the file.
 /// - An absolute path (img or a) that does not exist produces one warning
 ///   string and is left untouched.
 /// - Everything else — relative paths, `data:`, other schemes, non-img/a
@@ -31,6 +34,8 @@ pub struct Scanned {
 /// Document order is preserved as index order in both `images` and
 /// `targets`.
 pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
+    let unwrapped = unwrap_image_links(html, &exists);
+    let html = unwrapped.as_str();
     let mut out = String::with_capacity(html.len());
     let mut images = Vec::new();
     let mut targets = Vec::new();
@@ -111,6 +116,62 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
         targets,
         warnings,
     }
+}
+
+/// Removes the `<a>` around an existing local image when that link points at
+/// an existing local file and holds nothing but the image: the viewer opens a
+/// linked image's file instead of its lightbox, and a click on a card image
+/// should always open the lightbox.
+fn unwrap_image_links(html: &str, exists: &impl Fn(&str) -> bool) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut pos = 0usize;
+    while let Some((start, end)) = next_tag(html, pos) {
+        let tag = &html[start..end];
+        if tag_name(tag).as_deref() == Some("a") && has_existing_local(tag, "href", exists) {
+            if let Some((img_start, img_end, close_end)) = sole_image_in_link(html, end, exists) {
+                out.push_str(&html[pos..start]);
+                out.push_str(&html[img_start..img_end]);
+                pos = close_end;
+                continue;
+            }
+        }
+        out.push_str(&html[pos..end]);
+        pos = end;
+    }
+    out.push_str(&html[pos..]);
+    out
+}
+
+/// After an `<a>` opening tag ending at `after_open`, the byte ranges of the
+/// image tag and the end of `</a>`, when the link holds only an existing
+/// local `<img>` (whitespace aside).
+fn sole_image_in_link(
+    html: &str,
+    after_open: usize,
+    exists: &impl Fn(&str) -> bool,
+) -> Option<(usize, usize, usize)> {
+    let (img_start, img_end) = next_tag(html, after_open)?;
+    if !html[after_open..img_start].trim().is_empty() {
+        return None;
+    }
+    let img = &html[img_start..img_end];
+    if tag_name(img).as_deref() != Some("img") || !has_existing_local(img, "src", exists) {
+        return None;
+    }
+    let (close_start, close_end) = next_tag(html, img_end)?;
+    if !html[img_end..close_start].trim().is_empty()
+        || !html[close_start..close_end].eq_ignore_ascii_case("</a>")
+    {
+        return None;
+    }
+    Some((img_start, img_end, close_end))
+}
+
+fn has_existing_local(tag: &str, attr: &str, exists: &impl Fn(&str) -> bool) -> bool {
+    find_attr_value_range(tag, attr).is_some_and(|(vs, ve)| {
+        let value = &tag[vs..ve];
+        value.starts_with('/') && exists(value)
+    })
 }
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
@@ -233,6 +294,29 @@ mod tests {
         let s = scan(html, exists_in(&["/abs/file"]));
         assert_eq!(s.targets, vec!["/abs/file".to_string()]);
         assert!(s.html.contains(r##"href="#canvas-open-0""##));
+    }
+
+    #[test]
+    fn link_holding_only_a_local_image_is_unwrapped() {
+        let html = "<figure><a href=\"/abs/x.png\">\n <img src=\"/abs/x.png\" width=\"190\">\n</a></figure>";
+        let s = scan(html, exists_in(&["/abs/x.png"]));
+        assert_eq!(
+            s.html,
+            "<figure><img src=\"canvas-image:0\" width=\"190\"></figure>"
+        );
+        assert_eq!(s.images, vec!["/abs/x.png".to_string()]);
+        assert!(s.targets.is_empty());
+    }
+
+    #[test]
+    fn links_with_other_content_or_a_url_keep_their_image() {
+        let html = concat!(
+            r#"<a href="/abs/x.png"><img src="/abs/x.png"> caption</a>"#,
+            r#"<a href="https://example.com"><img src="/abs/x.png"></a>"#,
+        );
+        let s = scan(html, exists_in(&["/abs/x.png"]));
+        assert_eq!(s.targets.len(), 2);
+        assert_eq!(s.images.len(), 2);
     }
 
     #[test]

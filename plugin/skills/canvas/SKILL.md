@@ -78,8 +78,9 @@ or `<img src="/abs/shot.png">` in HTML — renders inline in the card, where
 you put it. Clicking it opens it full size in the viewer's lightbox, and the
 arrow keys step through the card's other images. A link to an existing local
 file or to any `http://`/`https://` URL — `[plan](/abs/plan.md)` or
-`<a href="…">` — opens on click; an image inside a link opens the link, not
-the lightbox. Only those two forms are picked up: a bare path in the text
+`<a href="…">` — opens on click. A link to a local file whose only content
+is an existing local image loses the link, so that image opens the lightbox;
+an image inside a link to a URL, or beside other text, opens the link. Only those two forms are picked up: a bare path in the text
 stays plain text. An absolute local path that doesn't exist is left
 unchanged (a broken image or a dead link) and `canvas post` warns about it on
 stderr — the post still lands.
