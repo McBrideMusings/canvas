@@ -15,11 +15,18 @@ dismissals, and a deleted card is gone from `stream.jsonl`.
 ## Run the extractor first
 
 ```bash
-python3 /Users/pierce/Projects/canvas/.claude/skills/audit-canvas-hook/transcript_signals.py --since YYYY-MM-DD
+python3 /Users/pierce/Projects/canvas/.claude/skills/audit-canvas-hook/transcript_signals.py --since YYYY-MM-DD[THH:MM]
 ```
 
-Pass `--since` as the day the guidance, triggers or hook last changed. Older turns ran
-under different rules and read as noise. It reads this repo's transcripts and its
+Pass `--since` as the day the guidance, triggers or hook last changed (a UTC date, or a
+date and time like `2026-09-30T19:45`). Older turns ran under different rules and read as
+noise.
+
+Never pass a `--since` earlier than `2026-09-30T19:45` UTC (3:45pm EDT). Before then the
+UserPromptSubmit hook had not run in any session, so every `FN trigger-missed` turn from
+that time is a turn with no hook to fire.
+
+The extractor reads this repo's transcripts and its
 `~/.worktrees` ones by default; `--path <dir|file.jsonl>` overrides. `--json` gives every
 candidate with its user text, reply tail, transcript path and turn uuid.
 

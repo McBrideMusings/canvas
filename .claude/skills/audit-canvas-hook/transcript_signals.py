@@ -6,7 +6,7 @@ posting hook could have seen (files changed, images read, the final reply's leng
 links) and what happened (a `canvas post` ran, a reminder arrived, the user asked for a
 post or objected to one). It prints candidates, not verdicts: the skill's lens judges each.
 
-    transcript_signals.py [--since YYYY-MM-DD] [--path DIR_OR_JSONL ...] [--json] [--limit N]
+    transcript_signals.py [--since YYYY-MM-DD[THH:MM]] [--path DIR_OR_JSONL ...] [--json] [--limit N]
 """
 import argparse
 import glob
@@ -246,7 +246,7 @@ def read_turns(path, since, seen):
                     elif name == "Bash" and is_post_call(inp.get("command", "")):
                         cmd = inp["command"]
                         cur["posts"].append({"update": "--update" in cmd, "body": post_body(cmd)})
-    return [t for t in turns if t["ts"][:10] >= since] if since else turns
+    return [t for t in turns if t["ts"] >= since] if since else turns
 
 
 def clip(s, n):
@@ -302,6 +302,8 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--limit", type=int, default=8, help="examples per signal in text output")
     args = ap.parse_args()
+    if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?", args.since):
+        ap.error("--since must be YYYY-MM-DD or YYYY-MM-DDTHH:MM, in UTC")
     cfg, seen, turns, files = load_config(), set(), [], corpus_files(args.path)
     for f in files:
         turns += read_turns(f, args.since, seen)
