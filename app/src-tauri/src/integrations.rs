@@ -9,11 +9,21 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Mutex;
+use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::Manager;
+
+// How long one `canvas integrations` call may run before it is killed. A real
+// install runs `claude plugin` or `codex` commands that finish in seconds.
+const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+
+// After the child exits, how long to wait for its output pipes to close.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 // The agent names `canvas integrations install` accepts. A command argument
 // outside this list never reaches a subprocess.
@@ -74,17 +84,75 @@ fn last_line(stderr: &[u8]) -> Option<String> {
 }
 
 fn run(args: &[&str]) -> Result<String, String> {
-    let bin = canvas_bin();
-    let out = Command::new(&bin)
+    run_bin(&canvas_bin(), args, RUN_TIMEOUT)
+}
+
+// Runs `bin` for at most `timeout`. A call that outlives it is killed along
+// with its process group (`canvas integrations install` spawns `claude` and
+// `codex`), and the error is one line, since it lands in `IntegrationState`.
+fn run_bin(bin: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let mut child = Command::new(bin)
         .args(args)
         .env("PATH", search_path())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
         .map_err(|e| format!("couldn't run {}: {e}", bin.display()))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                kill_group(&mut child);
+                return Err(format!(
+                    "`canvas {}` didn't finish within {}s and was stopped",
+                    args.join(" "),
+                    timeout.as_secs()
+                ));
+            }
+            Err(e) => {
+                kill_group(&mut child);
+                return Err(format!("couldn't wait for {}: {e}", bin.display()));
+            }
+        }
+    };
+    // The child has exited, so both pipes close once any grandchild that
+    // inherited them does too; a reader that never finishes is not waited on.
+    let stdout = stdout.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    let stderr = stderr.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+    if status.success() {
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     } else {
-        Err(last_line(&out.stderr).unwrap_or_else(|| format!("canvas exited with {}", out.status)))
+        Err(last_line(&stderr).unwrap_or_else(|| format!("canvas exited with {status}")))
     }
+}
+
+// Reads a pipe to its end on its own thread, so a full pipe can't stall the
+// child while the caller polls for its exit.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+fn kill_group(child: &mut Child) {
+    let group = format!("-{}", child.id());
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &group])
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn list() -> Result<Vec<IntegrationRow>, String> {
@@ -211,6 +279,35 @@ fi
         );
 
         std::env::remove_var("CANVAS_BIN");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A stand-in that sleeps past the limit and leaves a grandchild holding
+    // its pipes: the call returns a one-line error at the limit, not after the sleep.
+    #[test]
+    fn a_hung_call_is_killed_at_the_timeout() {
+        let dir = std::env::temp_dir().join(format!("canvas-hang-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("canvas");
+        std::fs::write(&stub, "#!/bin/sh\nsleep 30 &\nsleep 30\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let started = Instant::now();
+        let err = run_bin(
+            &stub,
+            &["integrations", "install", "codex"],
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            err,
+            "`canvas integrations install codex` didn't finish within 1s and was stopped"
+        );
+        assert!(!err.contains('\n'));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
