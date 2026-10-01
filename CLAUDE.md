@@ -93,6 +93,17 @@ beside the terminal all day.
   image toggles fit and 2.5x, wheel or pinch zooms at the cursor (1x to 8x),
   drag pans while zoomed, `+` `-` `0` zoom and reset, and only the X button,
   Esc or a click on the bare backdrop closes it.
+  A pinned card (`card.pin`) never enters `#cards`: `app.js` puts it on the pin
+  shelf, a `.shelf` section under the toolbar that exists only while something is
+  pinned (label `Pinned · N`, widgets in slot order). A widget is the pin's
+  `widgetHtml` in a sandboxed iframe built like a card's, else the card's first
+  heading (else its first text line, else the slot), under one transparent button; a widget is replaced one at a time and
+  never moved (moving an iframe reloads it). Past the row's width the extra
+  widgets go inert behind an edge fade and a `+N` button that wraps the row.
+  A click opens the card as a `.sheet` dialog over the dimmed feed (Escape,
+  the scrim or Close dismisses it and focus returns to the widget); a pin's
+  `refreshError` shows as a `.w-error` mark and a `.sheet-error` line. A card
+  gaining or losing `pin` through `card-upserted` moves between feed and shelf.
   Settings > Guidance > Post reminders edits each profile as a form
   (`stop-form.js` parses the directive text into a model and re-emits it, keeping
   comments, unknown lines and order) or as raw text; the text stays the only store.
