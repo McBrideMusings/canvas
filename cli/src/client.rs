@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use canvas_core::unix_http::{self, Response};
 use canvas_core::{
-    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
+    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, Pin,
     PostRequest, ProfilesState, SetProfileTextRequest, UpdateCardRequest,
 };
 
@@ -106,6 +106,7 @@ pub fn post_explicit(
     html: String,
     images: Vec<String>,
     targets: Vec<String>,
+    pin: Option<Pin>,
 ) -> Result<Card, String> {
     let body = PostRequest {
         session_id: session_id.to_string(),
@@ -114,6 +115,7 @@ pub fn post_explicit(
         html,
         images,
         targets,
+        pin,
     };
     let result = post_json("/api/posts", body);
     handle_card_response(result)
@@ -275,6 +277,31 @@ pub fn push_data(card_id: &str, value: &serde_json::Value) -> Result<(), String>
         Err(Failure::Status(413)) => {
             Err("the value is over 256KB, the most a card takes".to_string())
         }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The card holding `slot` in the repo `cwd` belongs to; `None` when no card
+/// does.
+pub fn find_pinned(cwd: &str, slot: &str) -> Result<Option<Card>, String> {
+    let path = format!(
+        "/api/pins?cwd={}&slot={}",
+        percent_encode(cwd),
+        percent_encode(slot)
+    );
+    match call("GET", &path, None) {
+        Ok(response) => into_json(response).map(Some),
+        Err(Failure::Status(404)) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `canvas unpin`: releases a card's slot. `Ok(false)` when `card_id` names no
+/// pinned card.
+pub fn unpin_card(card_id: &str) -> Result<bool, String> {
+    match call("DELETE", &format!("/api/cards/{card_id}/pin"), None) {
+        Ok(_) => Ok(true),
+        Err(Failure::Status(404)) => Ok(false),
         Err(e) => Err(e.to_string()),
     }
 }

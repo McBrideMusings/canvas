@@ -156,6 +156,15 @@ beside the terminal all day.
   without rebuilding it, and again after any iframe load. `--update` rebuilds
   the iframe (`upsertCard`), so a dashboard posts its HTML once and streams
   values with `canvas data`. The value is never written to `stream.jsonl`.
+- Pinned posts: `canvas post --pin <slot> [--pin-scope session|repo] [--widget <file>]`
+  holds the card in a slot, unique within the poster's repo (its cwd when it has
+  none); a later post to a held slot replaces that card in place, keeping its id,
+  and takes over its session. `canvas unpin <slot|card_id>` clears `pin` and the card
+  returns to the feed at its own `at`; `canvas data --slot <slot>` pushes to the
+  card in the slot (`GET /api/pins?cwd=&slot=` resolves it; `DELETE
+  /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or
+  pruned by age, but counts toward the 500. The window's always-on-top toggle is
+  "keep on top" (`get_keep_on_top`/`set_keep_on_top`), not a pin.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)
   detects each agent (its CLI on PATH), reports `current`, `out of date`,
   `not installed` or `needs review`, and installs; per agent it is

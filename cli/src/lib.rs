@@ -6,6 +6,7 @@ pub mod format;
 pub mod guidance;
 pub mod hook;
 pub mod integrations;
+pub mod pin;
 pub mod post;
 pub mod profile;
 pub mod scan;

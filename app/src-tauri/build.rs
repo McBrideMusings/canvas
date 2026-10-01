@@ -6,8 +6,8 @@ fn main() {
     tauri_build::Attributes::new().app_manifest(
       tauri_build::AppManifest::new()
         .commands(&[
-            "set_pinned",
-            "get_pinned",
+            "set_keep_on_top",
+            "get_keep_on_top",
             "open_settings",
             "daemon_status",
             "integration_status",

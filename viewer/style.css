@@ -424,7 +424,7 @@ body {
   outline-offset: -2px;
 }
 
-/* A pressed toggle (aria-pressed="true", e.g. the pin once pinned) gets a
+/* A pressed toggle (aria-pressed="true", e.g. keep-on-top once on) gets a
    subtle tinted background instead of the plain hover grey. */
 .icon-btn[aria-pressed="true"] {
   background: var(--accent-soft);

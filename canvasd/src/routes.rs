@@ -19,7 +19,7 @@ use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
 use crate::repo::github_repo;
-use crate::state::{AppState, CanvasEvent};
+use crate::state::{pin_key, AppState, CanvasEvent};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -152,12 +152,20 @@ pub async fn post_explicit(
 ) -> impl IntoResponse {
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
+    if req.pin.as_ref().is_some_and(|p| p.slot.trim().is_empty()) {
+        return (StatusCode::BAD_REQUEST, "a pin needs a slot name").into_response();
+    }
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     let card = {
         let mut inner = state.inner.write().await;
         let created_session =
             ensure_session(&mut inner, &req.session_id, &req.cwd, req.agent, repo);
-        let id = Uuid::new_v4().to_string();
+        // A post to a held slot replaces that card in place, keeping its id.
+        let held = req.pin.as_ref().and_then(|pin| {
+            let key = pin_key(inner.sessions.get(&req.session_id)?);
+            inner.pinned_in(key, &pin.slot).map(|c| c.id.clone())
+        });
+        let id = held.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
         let card = Card {
             html: resolve_image_placeholders(&req.html, &id),
             id,
@@ -165,8 +173,13 @@ pub async fn post_explicit(
             at: now(),
             images: req.images,
             targets: req.targets,
+            pin: req.pin,
         };
-        inner.push_card(card.clone());
+        if held.is_some() {
+            inner.upsert_card(card.clone());
+        } else {
+            inner.push_card(card.clone());
+        }
         // Published under the lock, so the persisted log records changes in
         // the order they were applied.
         if let Some(session) = created_session {
@@ -210,6 +223,7 @@ pub async fn update_card(
             html: resolve_image_placeholders(&req.html, &id),
             images: req.images,
             targets: req.targets,
+            pin: inner.cards[idx].pin.clone(),
         };
         inner.upsert_card(card.clone());
         state.publish(CanvasEvent::CardUpserted(card.clone()));
@@ -217,6 +231,42 @@ pub async fn update_card(
     };
 
     (StatusCode::OK, Json(updated)).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct PinQuery {
+    cwd: String,
+    slot: String,
+}
+
+/// The card holding `slot` in the repo `cwd` belongs to (its GitHub repo, else
+/// `cwd` itself); 404 when none does. `canvas data --slot` and `canvas unpin`
+/// resolve a slot to a card id here.
+pub async fn get_pinned(State(state): State<AppState>, Query(query): Query<PinQuery>) -> Response {
+    let key = github_repo(&query.cwd).await.unwrap_or(query.cwd);
+    let inner = state.inner.read().await;
+    match inner.pinned_in(&key, &query.slot) {
+        Some(card) => Json(card.clone()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Releases a card's slot. The card stays, back in the feed at its own `at`;
+/// 404 when `id` names no card or the card holds no slot.
+pub async fn unpin_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let mut inner = state.inner.write().await;
+    let Some(mut card) = inner
+        .cards
+        .iter()
+        .find(|c| c.id == id && c.pin.is_some())
+        .cloned()
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    card.pin = None;
+    inner.upsert_card(card.clone());
+    state.publish(CanvasEvent::CardUpserted(card.clone()));
+    (StatusCode::OK, Json(card)).into_response()
 }
 
 /// A card's own script cannot reach this route at all — its iframe has no

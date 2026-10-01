@@ -34,6 +34,31 @@ pub struct Session {
     pub ended_at: Option<String>,
 }
 
+/// How long a pinned card lives: until its own session ends (`Session`), or
+/// as long as anything in its repo keeps it (`Repo`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PinScope {
+    #[default]
+    Session,
+    Repo,
+}
+
+/// A card held in a slot: it shows as a widget on the pin shelf instead of in
+/// the feed. The slot is unique within the poster's repo (its cwd when it has
+/// none), so a post to a held slot replaces that card in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pin {
+    pub slot: String,
+    #[serde(default)]
+    pub scope: PinScope,
+    /// The small HTML the shelf renders for this card; absent means the shelf
+    /// shows a plain tile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_html: Option<String>,
+}
+
 /// One deliberate `canvas post`, shown as one card. Every post creates its
 /// own card — there is no open/closed lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +72,8 @@ pub struct Card {
     pub images: Vec<String>,
     #[serde(default)]
     pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Pin>,
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
@@ -62,6 +89,9 @@ pub struct PostRequest {
     pub images: Vec<String>,
     #[serde(default)]
     pub targets: Vec<String>,
+    /// Holds the card in a slot; see [`Pin`].
+    #[serde(default)]
+    pub pin: Option<Pin>,
 }
 
 /// Body for `PUT /api/cards/:id` — replaces an existing card's content in

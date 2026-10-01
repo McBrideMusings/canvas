@@ -29,7 +29,7 @@
   const colourButtons = Array.from(document.querySelectorAll("[data-color-by]"));
 
   // Daemon tab: only Canvas.app's WKWebView injects window.__TAURI__ (see
-  // app.js's own get_pinned/open_settings calls) — a plain browser tab has
+  // app.js's own get_keep_on_top/open_settings calls) — a plain browser tab has
   // nothing to report here, since it's canvasd itself answering the page.
   // Every fact daemon_status returns gets its own row rather than folding
   // them into one dot: a daemon can be installed but not registered with

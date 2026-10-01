@@ -8,19 +8,26 @@
 
 use std::io::Read;
 
+use canvas_core::{Pin, PinScope};
+
 use crate::agent::{self, AgentAdapter};
 use crate::client;
 use crate::format::{self, Format};
 use crate::scan;
 
 /// The parsed `canvas post` arguments: the positional path (or `-`/absent
-/// for stdin), an explicit `--format md|text|html`, and an optional
-/// `--update <card_id>` to replace an existing card instead of creating one.
-#[derive(Debug, PartialEq, Eq)]
+/// for stdin), an explicit `--format md|text|html`, an optional
+/// `--update <card_id>` to replace an existing card instead of creating one,
+/// and `--pin <slot>` with its `--pin-scope session|repo` and `--widget <file>`
+/// to hold the card in a pin slot.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct PostArgs<'a> {
     pub arg: Option<&'a str>,
     pub format_flag: Option<&'a str>,
     pub update_id: Option<&'a str>,
+    pub pin: Option<&'a str>,
+    pub pin_scope: Option<&'a str>,
+    pub widget: Option<&'a str>,
 }
 
 /// A malformed `canvas post` argument list. Carries no detail: the caller
@@ -29,75 +36,60 @@ pub struct PostArgs<'a> {
 pub struct UsageError;
 
 /// Parses the arguments to `canvas post` (everything after `post` itself).
-/// `--format <value>` may appear before or after the single positional
-/// path/`-`. Returns `Err` on a usage error: `--format` with no following
-/// value, `--format` given twice, or a second positional argument. Does not
-/// validate the format value itself — `resolve_format` does that.
+/// Each flag may appear before or after the single positional path/`-`.
+/// Returns `Err` on a usage error: a flag with no following value, a flag
+/// given twice, a second positional argument, or `--pin-scope`/`--widget`
+/// without `--pin`. Does not validate the flag values themselves — `run` does.
 pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
-    let mut arg: Option<&str> = None;
-    let mut format_flag: Option<&str> = None;
-    let mut update_id: Option<&str> = None;
+    let mut parsed = PostArgs::default();
     let mut i = 0;
     while i < rest.len() {
-        match rest[i].as_str() {
-            "--format" => {
-                if format_flag.is_some() {
-                    return Err(UsageError);
-                }
-                match rest.get(i + 1) {
-                    Some(v) => {
-                        format_flag = Some(v.as_str());
-                        i += 2;
-                    }
-                    None => return Err(UsageError),
-                }
-            }
-            "--update" => {
-                if update_id.is_some() {
-                    return Err(UsageError);
-                }
-                match rest.get(i + 1) {
-                    Some(v) => {
-                        update_id = Some(v.as_str());
-                        i += 2;
-                    }
-                    None => return Err(UsageError),
-                }
-            }
-            other if arg.is_none() => {
-                arg = Some(other);
+        let flag = match rest[i].as_str() {
+            "--format" => &mut parsed.format_flag,
+            "--update" => &mut parsed.update_id,
+            "--pin" => &mut parsed.pin,
+            "--pin-scope" => &mut parsed.pin_scope,
+            "--widget" => &mut parsed.widget,
+            other if parsed.arg.is_none() => {
+                parsed.arg = Some(other);
                 i += 1;
+                continue;
             }
             _ => return Err(UsageError),
+        };
+        match (flag.is_some(), rest.get(i + 1)) {
+            (false, Some(v)) => *flag = Some(v.as_str()),
+            _ => return Err(UsageError),
         }
+        i += 2;
     }
-    Ok(PostArgs {
-        arg,
-        format_flag,
-        update_id,
-    })
+    if parsed.pin.is_none() && (parsed.pin_scope.is_some() || parsed.widget.is_some()) {
+        return Err(UsageError);
+    }
+    Ok(parsed)
 }
 
-/// `arg` is the file path (or `-`/absent for stdin); `format_flag` is an
-/// explicit `--format md|text|html`, when given. `update_id`, when given,
-/// replaces that card's content in place instead of creating a new one —
-/// the session/cwd that created it aren't touched.
-pub fn run(
-    arg: Option<&str>,
-    format_flag: Option<&str>,
-    update_id: Option<&str>,
-) -> Result<(), String> {
-    let format = resolve_format(arg, format_flag)?;
-    let input = read_html(arg, std::io::stdin())?;
+/// Runs `canvas post` for parsed `args`. `--update` replaces that card's
+/// content in place instead of creating a new one — the session/cwd that
+/// created it aren't touched.
+pub fn run(args: PostArgs) -> Result<(), String> {
+    let format = resolve_format(args.arg, args.format_flag)?;
+    let input = read_html(args.arg, std::io::stdin())?;
     validate(&input)?;
     let converted = format::convert(&input, format);
     let scanned = scan::scan(&converted, |path| std::path::Path::new(path).exists());
     for warning in &scanned.warnings {
         eprintln!("{warning}");
     }
-    let card = match update_id {
-        Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
+    let card = match args.update_id {
+        Some(id) => {
+            if args.pin.is_some() {
+                return Err("--pin cannot be combined with --update".to_string());
+            }
+            client::update_card(id, scanned.html, scanned.images, scanned.targets)?
+        }
         None => {
+            let pin = build_pin(&args)?;
             let (adapter, session_id) = session()?;
             let cwd = current_dir()?;
             client::post_explicit(
@@ -107,6 +99,7 @@ pub fn run(
                 scanned.html,
                 scanned.images,
                 scanned.targets,
+                pin,
             )?
         }
     };
@@ -119,6 +112,44 @@ pub fn run(
         })
     );
     Ok(())
+}
+
+/// The slot `--pin` names, with its scope (default session) and the widget
+/// file converted like a card body. A widget is a small tile: unlike the card
+/// it carries no local images or clickable links.
+fn build_pin(args: &PostArgs) -> Result<Option<Pin>, String> {
+    let Some(slot) = args.pin else {
+        return Ok(None);
+    };
+    if slot.trim().is_empty() {
+        return Err("--pin needs a slot name".to_string());
+    }
+    let scope = match args.pin_scope {
+        None | Some("session") => PinScope::Session,
+        Some("repo") => PinScope::Repo,
+        Some(other) => {
+            return Err(format!(
+                "unknown --pin-scope {other:?} (expected session or repo)"
+            ))
+        }
+    };
+    let widget_html = match args.widget {
+        Some(path) => {
+            let widget =
+                std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))?;
+            if widget.trim().is_empty() {
+                return Err("no HTML in the --widget file (empty input)".to_string());
+            }
+            let format = resolve_format(Some(path), None)?;
+            Some(format::convert(&widget, format))
+        }
+        None => None,
+    };
+    Ok(Some(Pin {
+        slot: slot.to_string(),
+        scope,
+        widget_html,
+    }))
 }
 
 /// `--format`, else the file extension, else Markdown (including for stdin
@@ -230,8 +261,7 @@ mod tests {
             parsed,
             PostArgs {
                 arg: Some("file.md"),
-                format_flag: None,
-                update_id: None,
+                ..Default::default()
             }
         );
     }
@@ -245,7 +275,7 @@ mod tests {
             PostArgs {
                 arg: Some("file.md"),
                 format_flag: Some("html"),
-                update_id: None,
+                ..Default::default()
             }
         );
     }
@@ -259,7 +289,7 @@ mod tests {
             PostArgs {
                 arg: Some("file.md"),
                 format_flag: Some("html"),
-                update_id: None,
+                ..Default::default()
             }
         );
     }
@@ -282,8 +312,8 @@ mod tests {
             parsed,
             PostArgs {
                 arg: Some("file.md"),
-                format_flag: None,
                 update_id: Some("card-123"),
+                ..Default::default()
             }
         );
     }
@@ -296,6 +326,42 @@ mod tests {
     #[test]
     fn update_missing_its_value_is_an_error() {
         assert!(parse_args(&args(&["file.md", "--update"])).is_err());
+    }
+
+    #[test]
+    fn pin_flags_are_parsed() {
+        let rest = args(&[
+            "a.md",
+            "--pin",
+            "status",
+            "--pin-scope",
+            "repo",
+            "--widget",
+            "w.html",
+        ]);
+        assert_eq!(
+            parse_args(&rest).unwrap(),
+            PostArgs {
+                arg: Some("a.md"),
+                pin: Some("status"),
+                pin_scope: Some("repo"),
+                widget: Some("w.html"),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn pin_scope_or_widget_without_a_pin_is_an_error() {
+        assert!(parse_args(&args(&["a.md", "--pin-scope", "repo"])).is_err());
+        assert!(parse_args(&args(&["a.md", "--widget", "w.html"])).is_err());
+    }
+
+    #[test]
+    fn a_bad_pin_scope_names_the_value() {
+        let rest = args(&["--pin", "s", "--pin-scope", "global"]);
+        let err = build_pin(&parse_args(&rest).unwrap()).unwrap_err();
+        assert!(err.contains("\"global\""), "{err}");
     }
 
     #[test]

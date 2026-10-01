@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] | canvas card <card_id> | canvas data <card_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--pin <slot> [--pin-scope session|repo] [--widget <file>]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -60,7 +60,7 @@ fn main() {
                     std::process::exit(2);
                 }
             };
-            if let Err(e) = canvas::post::run(parsed.arg, parsed.format_flag, parsed.update_id) {
+            if let Err(e) = canvas::post::run(parsed) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -75,6 +75,17 @@ fn main() {
                 }
             };
             if let Err(e) = canvas::profile::run(parsed) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some("unpin") => {
+            // Run on purpose, so failures are loud like `canvas post`.
+            let Some(target) = args.get(2) else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            };
+            if let Err(e) = canvas::pin::unpin(target) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -105,11 +116,15 @@ fn main() {
         }
         Some("data") => {
             // Run on purpose, so failures are loud like `canvas post`.
-            let Some(card_id) = args.get(2) else {
-                eprintln!("{USAGE}");
-                std::process::exit(2);
+            let (target, file) = match (args.get(2).map(String::as_str), args.get(3)) {
+                (Some("--slot"), Some(slot)) => (canvas::data::Target::Slot(slot), args.get(4)),
+                (Some("--slot"), None) | (None, _) => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+                (Some(card_id), file) => (canvas::data::Target::Card(card_id), file),
             };
-            if let Err(e) = canvas::data::run(card_id, args.get(3).map(String::as_str)) {
+            if let Err(e) = canvas::data::run(target, file.map(String::as_str)) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

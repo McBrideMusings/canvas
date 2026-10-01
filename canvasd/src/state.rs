@@ -118,6 +118,11 @@ impl AppState {
     }
 }
 
+/// What a pin slot is unique within: the session's GitHub repo, else its cwd.
+pub fn pin_key(session: &Session) -> &str {
+    session.repo.as_deref().unwrap_or(&session.cwd)
+}
+
 impl Inner {
     /// Apply a change the way the handlers made it.
     pub fn apply(&mut self, event: CanvasEvent) {
@@ -153,23 +158,25 @@ impl Inner {
         self.data.remove(card_id);
     }
 
-    /// Drop cards last touched before `cutoff`, then every session with no card
-    /// left: a session exists only once it has posted, however recently it
-    /// started or ended.
+    /// Drop cards last touched before `cutoff` (never a pinned one), then every
+    /// session with no card left: a session exists only once it has posted,
+    /// however recently it started or ended.
     pub fn prune_before(&mut self, cutoff: DateTime<Utc>) {
-        let fresh = |ts: &str| {
-            DateTime::parse_from_rfc3339(ts).map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
+        let keep = |c: &Card| {
+            c.pin.is_some()
+                || DateTime::parse_from_rfc3339(&c.at)
+                    .map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
         };
         let stale: Vec<String> = self
             .cards
             .iter()
-            .filter(|c| !fresh(&c.at))
+            .filter(|c| !keep(c))
             .map(|c| c.id.clone())
             .collect();
         for id in &stale {
             self.forget(id);
         }
-        self.cards.retain(|c| fresh(&c.at));
+        self.cards.retain(keep);
         let cards = &self.cards;
         self.sessions
             .retain(|id, _| cards.iter().any(|c| &c.session_id == id));
@@ -186,13 +193,33 @@ impl Inner {
         self.push_card(card);
     }
 
-    /// Push a new card at the front, evicting the oldest if the ring is full.
+    /// Push a new card at the front, evicting the oldest unpinned card while
+    /// the ring is over capacity. A pinned card is never evicted, but it counts
+    /// toward the capacity, so it leaves less room for unpinned cards.
     pub fn push_card(&mut self, card: Card) {
         self.cards.push_front(card);
         while self.cards.len() > CARD_RING_CAPACITY {
-            if let Some(evicted) = self.cards.pop_back() {
+            // Index 0 is the card just pushed; it is never the one evicted.
+            let Some(idx) = self.cards.iter().rposition(|c| c.pin.is_none()) else {
+                break;
+            };
+            if idx == 0 {
+                break;
+            }
+            if let Some(evicted) = self.cards.remove(idx) {
                 self.forget(&evicted.id);
             }
         }
+    }
+
+    /// The card holding `slot` under `key` (see [`pin_key`]).
+    pub fn pinned_in(&self, key: &str, slot: &str) -> Option<&Card> {
+        self.cards.iter().find(|c| {
+            c.pin.as_ref().is_some_and(|p| p.slot == slot)
+                && self
+                    .sessions
+                    .get(&c.session_id)
+                    .is_some_and(|s| pin_key(s) == key)
+        })
     }
 }

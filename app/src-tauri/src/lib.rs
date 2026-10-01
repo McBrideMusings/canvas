@@ -10,17 +10,17 @@ mod integrations;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
-// Where the pin state file lives: a single byte, "1" pinned or "0" unpinned,
+// Where the keep-on-top state file lives: a single byte, "1" on or "0" off,
 // in the app's data dir. Plain text rather than serde_json — one bool isn't
 // worth a new dependency or a parser.
-fn pinned_state_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn keep_on_top_state_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("pinned"))
+    Ok(dir.join("keep-on-top"))
 }
 
-fn read_pinned_state(app: &tauri::AppHandle) -> bool {
-    let Ok(path) = pinned_state_path(app) else {
+fn read_keep_on_top_state(app: &tauri::AppHandle) -> bool {
+    let Ok(path) = keep_on_top_state_path(app) else {
         return false;
     };
     std::fs::read_to_string(path)
@@ -28,25 +28,25 @@ fn read_pinned_state(app: &tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-fn write_pinned_state(app: &tauri::AppHandle, pinned: bool) -> Result<(), String> {
-    let path = pinned_state_path(app)?;
-    std::fs::write(path, if pinned { "1" } else { "0" }).map_err(|e| e.to_string())
+fn write_keep_on_top_state(app: &tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = keep_on_top_state_path(app)?;
+    std::fs::write(path, if on { "1" } else { "0" }).map_err(|e| e.to_string())
 }
 
 // canvasd's own page (viewer/app.js) invokes these two to toggle and read the
 // main window's always-on-top state; see capabilities/viewer.json for the
 // window and origin scoping that lets the canvas:// page reach them.
 #[tauri::command]
-fn set_pinned(app: tauri::AppHandle, pinned: bool) -> Result<(), String> {
+fn set_keep_on_top(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+        window.set_always_on_top(on).map_err(|e| e.to_string())?;
     }
-    write_pinned_state(&app, pinned)
+    write_keep_on_top_state(&app, on)
 }
 
 #[tauri::command]
-fn get_pinned(app: tauri::AppHandle) -> bool {
-    read_pinned_state(&app)
+fn get_keep_on_top(app: tauri::AppHandle) -> bool {
+    read_keep_on_top_state(&app)
 }
 
 // Builds the Settings window on canvasd's own /settings.html, or brings the
@@ -174,8 +174,8 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(bridge::proxy(request)));
         })
         .invoke_handler(tauri::generate_handler![
-            set_pinned,
-            get_pinned,
+            set_keep_on_top,
+            get_keep_on_top,
             open_settings,
             daemon_status,
             integration_status,
@@ -219,10 +219,10 @@ pub fn run() {
             }
 
             // Applies whatever pin state was saved from a previous run before
-            // the window is ever shown, so a pinned window stays on top of
+            // the window is ever shown, so a keep-on-top window stays on top of
             // others from the first frame after relaunch.
             if let Some(window) = app.get_webview_window("main") {
-                if read_pinned_state(app.handle()) {
+                if read_keep_on_top_state(app.handle()) {
                     let _ = window.set_always_on_top(true);
                 }
             }

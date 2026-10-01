@@ -430,32 +430,32 @@
   // Only Canvas.app's WKWebView injects window.__TAURI__ (withGlobalTauri in
   // tauri.conf.json); a plain browser tab never sees it, which is how the
   // button knows to stay hidden there.
-  const pinToggleEl = document.getElementById("pin-toggle");
+  const keepOnTopEl = document.getElementById("keep-on-top-toggle");
   const tauriCore = window.__TAURI__ && window.__TAURI__.core;
 
-  pinToggleEl.appendChild(buildIcon("pin"));
+  keepOnTopEl.appendChild(buildIcon("pin"));
 
-  function applyPinnedState(pinned) {
-    pinToggleEl.setAttribute("aria-pressed", pinned ? "true" : "false");
-    pinToggleEl.setAttribute(
+  function applyKeepOnTop(on) {
+    keepOnTopEl.setAttribute("aria-pressed", on ? "true" : "false");
+    keepOnTopEl.setAttribute(
       "aria-label",
-      pinned ? "Unpin window" : "Pin window on top"
+      on ? "Stop keeping window on top" : "Keep window on top"
     );
-    setButtonIcon(pinToggleEl, pinned ? "pin-fill" : "pin");
+    setButtonIcon(keepOnTopEl, on ? "pin-fill" : "pin");
   }
 
   if (tauriCore) {
-    pinToggleEl.hidden = false;
+    keepOnTopEl.hidden = false;
     tauriCore
-      .invoke("get_pinned")
-      .then((pinned) => applyPinnedState(!!pinned))
+      .invoke("get_keep_on_top")
+      .then((on) => applyKeepOnTop(!!on))
       .catch(() => {});
 
-    pinToggleEl.addEventListener("click", async () => {
-      const nextPinned = pinToggleEl.getAttribute("aria-pressed") !== "true";
+    keepOnTopEl.addEventListener("click", async () => {
+      const nextOn = keepOnTopEl.getAttribute("aria-pressed") !== "true";
       try {
-        await tauriCore.invoke("set_pinned", { pinned: nextPinned });
-        applyPinnedState(nextPinned);
+        await tauriCore.invoke("set_keep_on_top", { on: nextOn });
+        applyKeepOnTop(nextOn);
       } catch (e) {
         // Refused invoke (wrong origin, missing capability) — leave the
         // button's displayed state as it was.
@@ -463,7 +463,7 @@
     });
   }
 
-  // The theme button sits between Pin and Sessions. The icon shows the mode
+  // The theme button sits between Keep on top and Sessions. The icon shows the mode
   // a click switches to. A change rebuilds every card, because a card's
   // iframe bakes the theme into its document.
   const themeToggleEl = document.getElementById("theme-toggle");
