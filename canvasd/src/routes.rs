@@ -20,7 +20,7 @@ use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
 use crate::repo::github_repo;
-use crate::state::{pin_key, AppState, CanvasEvent};
+use crate::state::{pin_key, AppState, CanvasEvent, SnapshotReply};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -354,6 +354,136 @@ pub async fn focus_card(State(state): State<AppState>, Path(id): Path<String>) -
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
+/// How long `snapshot_card` waits for a viewer to answer: the viewer waits
+/// up to 3s for the card to settle, the app up to 5s each for the capture
+/// and the upload.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The response header that says the PNG stops at the window's edge because
+/// the card is taller than the window.
+pub const CLIPPED_HEADER: &str = "x-canvas-clipped";
+
+/// Removes a snapshot request from the waiting map however its handler ends,
+/// including when the CLI hangs up and axum drops the handler mid-wait.
+struct Waiting<'a> {
+    state: &'a AppState,
+    request: &'a str,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.state.snapshots.lock().unwrap().remove(self.request);
+    }
+}
+
+/// `canvas snapshot`: asks the open viewers to capture the card as rendered
+/// and answers the first PNG one sends back to `deliver_snapshot`, with
+/// `x-canvas-clipped: true` when the card ran past the window. 409 when no
+/// viewer is open, 422 with the viewer's reason when it could not capture the
+/// card (filtered out, pinned), 504 when no viewer answered in time.
+pub async fn snapshot_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if !state.inner.read().await.cards.iter().any(|c| c.id == id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let request = Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.snapshots.lock().unwrap().insert(request.clone(), tx);
+    let _waiting = Waiting {
+        state: &state,
+        request: &request,
+    };
+    let viewers = state.publish(CanvasEvent::CardSnapshot {
+        id: id.clone(),
+        request: request.clone(),
+    });
+    canvas_core::log::info(
+        "snapshot requested",
+        &[("card", &id), ("request", &request), ("viewers", &viewers)],
+    );
+    if viewers == 0 {
+        return (
+            StatusCode::CONFLICT,
+            "no Canvas viewer is open to capture the card",
+        )
+            .into_response();
+    }
+    match tokio::time::timeout(SNAPSHOT_TIMEOUT, rx).await {
+        Ok(Ok(SnapshotReply::Png { png, clipped })) => {
+            canvas_core::log::info(
+                "snapshot captured",
+                &[
+                    ("card", &id),
+                    ("request", &request),
+                    ("bytes", &png.len()),
+                    ("clipped", &clipped),
+                ],
+            );
+            let mut response = ([(header::CONTENT_TYPE, "image/png")], png).into_response();
+            if clipped {
+                response
+                    .headers_mut()
+                    .insert(CLIPPED_HEADER, header::HeaderValue::from_static("true"));
+            }
+            response
+        }
+        Ok(Ok(SnapshotReply::Failed(reason))) => {
+            canvas_core::log::info(
+                "snapshot refused",
+                &[("card", &id), ("request", &request), ("reason", &reason)],
+            );
+            (StatusCode::UNPROCESSABLE_ENTITY, reason).into_response()
+        }
+        _ => {
+            canvas_core::log::warn(
+                "snapshot timed out",
+                &[("card", &id), ("request", &request)],
+            );
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "no Canvas viewer answered within {}s",
+                    SNAPSHOT_TIMEOUT.as_secs()
+                ),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// A viewer's answer to a `card-snapshot` event: an `image/png` body (with
+/// `x-canvas-clipped: true` when the card ran past the window), or
+/// `{"error": "..."}` saying why it could not capture the card. 404 when no
+/// request with that id is waiting (it timed out, or another viewer answered).
+pub async fn deliver_snapshot(
+    State(state): State<AppState>,
+    Path(request): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let is_png = headers
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes().starts_with(b"image/png"));
+    let reply = if is_png {
+        SnapshotReply::Png {
+            png: body.to_vec(),
+            clipped: headers
+                .get(CLIPPED_HEADER)
+                .is_some_and(|v| v.as_bytes() == b"true"),
+        }
+    } else {
+        let reason = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| "the viewer could not capture the card".to_string());
+        SnapshotReply::Failed(reason)
+    };
+    let Some(tx) = state.snapshots.lock().unwrap().remove(&request) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let _ = tx.send(reply);
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// The latest value `put_card_data` stored for this card; 404 until one has.
 pub async fn get_card_data(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let inner = state.inner.read().await;
@@ -484,6 +614,12 @@ pub async fn events(
         Ok(CanvasEvent::CardFocus(id)) => Some(Ok(SseEvent::default()
             .event("card-focus")
             .data(serde_json::to_string(&serde_json::json!({"id": id})).unwrap_or_default()))),
+        Ok(CanvasEvent::CardSnapshot { id, request }) => {
+            Some(Ok(SseEvent::default().event("card-snapshot").data(
+                serde_json::to_string(&serde_json::json!({"id": id, "request": request}))
+                    .unwrap_or_default(),
+            )))
+        }
         Err(_) => None,
     });
 

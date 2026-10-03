@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas focus <card_id> | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas focus <card_id> | canvas snapshot <card_id> <out.png> | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -163,6 +163,17 @@ fn main() {
                 std::process::exit(2);
             };
             if let Err(e) = canvas::focus::run(card_id) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some("snapshot") => {
+            // Run on purpose, so failures are loud like `canvas post`.
+            let (Some(card_id), Some(out), None) = (args.get(2), args.get(3), args.get(4)) else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            };
+            if let Err(e) = canvas::snapshot::run(card_id, out) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

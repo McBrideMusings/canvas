@@ -64,6 +64,16 @@ is open. `canvas post --focus` (also with `--update`) does the same for the
 card it just wrote and adds `"viewers"` to its JSON; with no window open it
 warns on stderr and still exits 0, since the card was written.
 
+`canvas snapshot <card_id> <out.png>` writes a PNG of the card as the open
+Canvas window renders it, in the active theme, so you can look at what you
+posted. It prints `{"path": "...", "width": N, "height": N, "clipped": false}`
+(pixels, at the screen's density). Right after a post it waits a few seconds
+for the card to finish arriving. It exits 1 with one stderr line when no window is open, or
+when the window can't show the card: pinned, its session archived or hidden,
+or filtered out by the search (`canvas focus <card_id>` clears the last two).
+Only the part inside the window is captured: a card taller than the window
+is cut at the window's bottom edge, and the output says `"clipped": true`.
+
 Input is Markdown, plain text, or HTML — pick with `--format md|text|html`,
 or let it infer from the file's extension (`.md`/`.markdown`, `.txt`,
 `.html`/`.htm`); stdin or an unrecognised extension defaults to Markdown.

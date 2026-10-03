@@ -14,7 +14,25 @@ use std::time::Duration;
 pub struct Response {
     pub status: u16,
     pub content_type: Option<String>,
+    /// Every header line, names lowercased, in the order they came.
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl Response {
+    /// The first header named `name` (lowercase).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+struct Head {
+    status: u16,
+    content_type: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 /// An open response whose body is read incrementally.
@@ -47,7 +65,7 @@ fn send(
     Ok(stream)
 }
 
-fn read_head(reader: &mut BufReader<UnixStream>) -> io::Result<(u16, Option<String>)> {
+fn read_head(reader: &mut BufReader<UnixStream>) -> io::Result<Head> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let status = line
@@ -56,6 +74,7 @@ fn read_head(reader: &mut BufReader<UnixStream>) -> io::Result<(u16, Option<Stri
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed status line"))?;
     let mut content_type = None;
+    let mut headers = Vec::new();
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
@@ -66,12 +85,17 @@ fn read_head(reader: &mut BufReader<UnixStream>) -> io::Result<(u16, Option<Stri
         }
         let line = line.trim_end();
         if line.is_empty() {
-            return Ok((status, content_type));
+            return Ok(Head {
+                status,
+                content_type,
+                headers,
+            });
         }
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-type") {
                 content_type = Some(value.trim().to_string());
             }
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
         }
     }
 }
@@ -87,12 +111,13 @@ pub fn request(
 ) -> io::Result<Response> {
     let stream = send(socket, method, path, headers, body, timeout)?;
     let mut reader = BufReader::new(stream);
-    let (status, content_type) = read_head(&mut reader)?;
+    let head = read_head(&mut reader)?;
     let mut body = Vec::new();
     reader.read_to_end(&mut body)?;
     Ok(Response {
-        status,
-        content_type,
+        status: head.status,
+        content_type: head.content_type,
+        headers: head.headers,
         body,
     })
 }
@@ -103,7 +128,7 @@ pub fn request(
 pub fn open_stream(socket: &Path, path: &str, timeout: Duration) -> io::Result<Stream> {
     let stream = send(socket, "GET", path, &[], &[], Some(timeout))?;
     let mut reader = BufReader::new(stream);
-    let (status, _) = read_head(&mut reader)?;
+    let status = read_head(&mut reader)?.status;
     Ok(Stream {
         status,
         body: reader,

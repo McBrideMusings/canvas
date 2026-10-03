@@ -1330,3 +1330,11 @@ html.full-width .empty-state {
   color: var(--danger);
   font-size: 12px;
 }
+
+/* `canvas snapshot` captures a card's rect of the window; what floats over
+   the feed is hidden for that moment so it never lands in the picture. */
+html.snapshotting .to-top,
+html.snapshotting .new-pill,
+html.snapshotting .toasts {
+  visibility: hidden;
+}

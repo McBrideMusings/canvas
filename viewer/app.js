@@ -2062,6 +2062,7 @@
           const wasAbove = cardIsAboveViewport(cardEl);
           const before = frame.offsetHeight;
           frame.style.height = `${Math.max(20, data.height)}px`;
+          frame.dataset.sized = "1";
           // An arriving card clips at --arrive-height, measured before this
           // iframe reported its real height; keep the clip at the content's
           // height so the post is never cut off mid-slide.
@@ -3005,6 +3006,13 @@
     // the window, which an agent never raises over other apps.
     handlers["card-focus"] = ({ id }) => openCardLink(id);
 
+    // One at a time: a second snapshot's scroll would move the first card
+    // out from under its capture.
+    let snapshots = Promise.resolve();
+    handlers["card-snapshot"] = ({ id, request }) => {
+      snapshots = snapshots.then(() => snapshotCard(id, request)).catch(() => {});
+    };
+
     handlers["card-removed"] = ({ id }) => removeCard(id);
 
     handlers["session-removed"] = ({ id }) => removeSession(id);
@@ -3046,6 +3054,62 @@
     void el.offsetWidth;
     el.classList.add("ring");
     setTimeout(() => el.classList.remove("ring"), 1900);
+  }
+
+  // Resolves once the card has stopped moving: its iframe has reported its
+  // height, the arrival slide and ring are over (a timer ends both by 1.9s),
+  // and its place in the stream and height held for 100ms. Gives up after 3s and lets the capture take it as it is.
+  // Timers, not requestAnimationFrame, which a hidden window never runs.
+  async function cardSettled(el) {
+    const frame = el.querySelector(".card-body iframe");
+    const deadline = Date.now() + 3000;
+    let last = "";
+    while (Date.now() < deadline) {
+      const box = el.getBoundingClientRect();
+      const now = `${box.top + streamEl.scrollTop}:${box.height}`;
+      const moving = el.classList.contains("arriving") || el.classList.contains("ring");
+      const ready = frame?.dataset.sized && !moving;
+      if (ready && now === last) return;
+      last = now;
+      await new Promise((done) => setTimeout(done, 100));
+    }
+  }
+
+  // `canvas snapshot`: scrolls the card into the stream's view, as it is,
+  // without clearing what hides it or ringing it, then hands its on-screen
+  // rect to the app, which captures that part of the window and sends canvasd
+  // the PNG. A card this viewer can't show gets a reason back instead. Only the
+  // part inside the stream's viewport is captured, so a card taller than the
+  // window is cut at its bottom edge and the reply says `clipped`.
+  async function snapshotCard(id, request) {
+    const reply = (answer) =>
+      tauriCore.invoke("snapshot_reply", { request, ...answer }).catch(() => {});
+    const card = cards.get(id);
+    const session = card && sessions.get(card.sessionId);
+    const el = card && cardsEl.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
+    let error = null;
+    if (!card) error = "the viewer has no card with that id";
+    else if (card.pin) error = "the card is pinned: it shows on the pin shelf, not in the feed";
+    else if (session && isHidden(session))
+      error = `the card's session is hidden (archived or filtered out); canvas focus ${id} shows it`;
+    else if (!el || el.hidden || el.getClientRects().length === 0)
+      error = `the card is hidden by the search; canvas focus ${id} shows it`;
+    if (error) return reply({ error });
+
+    await cardSettled(el);
+    const view = streamEl.getBoundingClientRect();
+    const tall = el.getBoundingClientRect().height > view.height;
+    el.scrollIntoView({ block: tall ? "start" : "nearest", behavior: "instant" });
+    // Reading the rect lays the page out; the app's capture waits for the
+    // next paint itself. No requestAnimationFrame: a hidden window runs none.
+    const box = el.getBoundingClientRect();
+    const top = Math.max(box.top, view.top);
+    const bottom = Math.min(box.bottom, view.bottom);
+    const rect = { x: box.left, y: top, width: box.width, height: bottom - top };
+    const clipped = top > box.top || bottom < box.bottom;
+    document.documentElement.classList.add("snapshotting");
+    await reply({ rect, clipped });
+    document.documentElement.classList.remove("snapshotting");
   }
 
   // Out-of-date banner: shown while the app's bundled `canvas` differs from

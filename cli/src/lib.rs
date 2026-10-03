@@ -12,4 +12,5 @@ pub mod pin;
 pub mod post;
 pub mod profile;
 pub mod scan;
+pub mod snapshot;
 pub mod stop;

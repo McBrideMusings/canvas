@@ -14,6 +14,7 @@ fn main() {
             "integration_install",
             "relaunch",
             "take_pending_card",
+            "snapshot_reply",
         ]),
     ),
   )

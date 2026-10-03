@@ -1760,3 +1760,198 @@ async fn focus_on_unknown_card_is_404() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// Plays the viewer's half of a snapshot: reads the `card-snapshot` event off
+/// an open `/api/events` body and answers its request with `content_type` and
+/// `body`. Returns the event's data.
+async fn answer_snapshot(
+    app: &axum::Router,
+    events: &mut (impl futures::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+    content_type: &str,
+    body: Vec<u8>,
+) -> serde_json::Value {
+    use futures::StreamExt;
+
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: card-snapshot"), "{text}");
+    let data = text
+        .lines()
+        .find_map(|l| l.strip_prefix("data: "))
+        .expect("event has data");
+    let data: serde_json::Value = serde_json::from_str(data).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/snapshots/{}",
+            data["request"].as_str().unwrap()
+        ))
+        .header("content-type", content_type)
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    data
+}
+
+#[tokio::test]
+async fn snapshot_answers_the_png_a_viewer_sends_back() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut events = response.into_body().into_data_stream();
+
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
+    let data = answer_snapshot(&app, &mut events, "image/png", png.clone()).await;
+    assert_eq!(data["id"], card.id.as_str());
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.to_vec(), png);
+}
+
+#[tokio::test]
+async fn snapshot_relays_the_reason_a_viewer_could_not_capture() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut events = response.into_body().into_data_stream();
+
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let reason = json!({"error": "the card is hidden by the search"});
+    answer_snapshot(
+        &app,
+        &mut events,
+        "application/json",
+        reason.to_string().into_bytes(),
+    )
+    .await;
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"the card is hidden by the search");
+}
+
+#[tokio::test]
+async fn snapshot_with_no_viewer_is_409() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app
+        .clone()
+        .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn snapshot_of_unknown_card_is_404_and_a_stray_answer_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post("/api/cards/does-not-exist/snapshot", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/snapshots/no-such-request",
+            json!({"error": "x"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn snapshot_passes_on_that_the_card_was_clipped() {
+    use futures::StreamExt;
+
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut events = response.into_body().into_data_stream();
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap()).unwrap();
+    let answer = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/snapshots/{}",
+            data["request"].as_str().unwrap()
+        ))
+        .header("content-type", "image/png")
+        .header("x-canvas-clipped", "true")
+        .body(Body::from(b"\x89PNG".to_vec()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(answer).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-canvas-clipped"], "true");
+}
+
+#[tokio::test]
+async fn a_snapshot_request_the_cli_abandons_stops_waiting() {
+    use futures::StreamExt;
+
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut events = response.into_body().into_data_stream();
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap()).unwrap();
+    waiting.abort();
+    let _ = waiting.await;
+
+    let answer = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/snapshots/{}",
+            data["request"].as_str().unwrap()
+        ))
+        .header("content-type", "image/png")
+        .body(Body::from(b"\x89PNG".to_vec()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(answer).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}

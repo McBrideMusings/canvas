@@ -7,6 +7,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod bridge;
 mod daemon;
 mod integrations;
+mod snapshot;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
@@ -183,7 +184,8 @@ pub fn run() {
             integration_status,
             integration_install,
             relaunch,
-            take_pending_card
+            take_pending_card,
+            snapshot::snapshot_reply
         ])
         .setup(|app| {
             // Debug builds aren't bundled (no Resources dir to install from);

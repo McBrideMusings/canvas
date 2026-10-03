@@ -28,6 +28,22 @@ pub enum CanvasEvent {
     /// Asks every open viewer to bring a card into view (`canvas focus`).
     /// Sent to viewers only: never written to the persisted stream.
     CardFocus(String),
+    /// Asks a viewer to capture a card as rendered (`canvas snapshot`); the
+    /// viewer answers on `POST /api/snapshots/:request`. Sent to viewers
+    /// only: never written to the persisted stream.
+    CardSnapshot {
+        id: String,
+        request: String,
+    },
+}
+
+/// What a viewer sent back for one `canvas snapshot` request.
+#[derive(Debug)]
+pub enum SnapshotReply {
+    /// `clipped` when the card ran past the window, so the PNG stops at its edge.
+    Png { png: Vec<u8>, clipped: bool },
+    /// Why the viewer could not capture the card, in its own words.
+    Failed(String),
 }
 
 #[derive(Default)]
@@ -55,6 +71,9 @@ pub struct AppState {
     /// One refresh loop per refreshing card; see [`crate::refresh`].
     pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
     pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Snapshot requests waiting for a viewer's answer, by request id.
+    pub(crate) snapshots:
+        Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<SnapshotReply>>>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -79,6 +98,7 @@ impl AppState {
             profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
             refreshes: Arc::default(),
             generation: Arc::default(),
+            snapshots: Arc::default(),
             store: None,
             data_dir: None,
         }
@@ -96,6 +116,7 @@ impl AppState {
             profiles: Arc::new(RwLock::new(profiles)),
             refreshes: Arc::default(),
             generation: Arc::default(),
+            snapshots: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
@@ -165,7 +186,9 @@ impl AppState {
         if let Some(store) = &self.store {
             if !matches!(
                 event,
-                CanvasEvent::CardData { .. } | CanvasEvent::CardFocus(_)
+                CanvasEvent::CardData { .. }
+                    | CanvasEvent::CardFocus(_)
+                    | CanvasEvent::CardSnapshot { .. }
             ) {
                 store.append(&event);
             }
@@ -232,7 +255,7 @@ impl Inner {
                     self.data.insert(id, value);
                 }
             }
-            CanvasEvent::CardFocus(_) => {}
+            CanvasEvent::CardFocus(_) | CanvasEvent::CardSnapshot { .. } => {}
         }
     }
 

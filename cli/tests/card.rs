@@ -216,3 +216,104 @@ fn post_focus_with_no_viewer_still_posts_and_warns() {
     assert_eq!(value["viewers"], 0);
     assert!(String::from_utf8_lossy(&posted.stderr).contains("no Canvas viewer"));
 }
+
+/// Plays a viewer for one `canvas snapshot`: waits for the `card-snapshot`
+/// event on `viewer` and answers its request with `content_type` and `body`.
+fn answer_snapshot(
+    daemon: &Daemon,
+    mut viewer: std::os::unix::net::UnixStream,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> std::thread::JoinHandle<()> {
+    let socket = daemon.socket.clone();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let mut seen = String::new();
+        let request = loop {
+            let mut buf = [0u8; 1024];
+            let n = viewer.read(&mut buf).unwrap();
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if let Some(at) = seen.find("\"request\":\"") {
+                let rest = &seen[at + 11..];
+                if let Some(end) = rest.find('"') {
+                    break rest[..end].to_string();
+                }
+            }
+        };
+        let mut answer = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        let head = format!(
+            "POST /api/snapshots/{request} HTTP/1.1\r\nHost: canvas\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        answer.write_all(head.as_bytes()).unwrap();
+        answer.write_all(&body).unwrap();
+        let mut response = String::new();
+        answer.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    })
+}
+
+#[test]
+fn snapshot_writes_the_png_the_viewer_captured() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    png.extend_from_slice(&846u32.to_be_bytes());
+    png.extend_from_slice(&120u32.to_be_bytes());
+    let viewer = answer_snapshot(&daemon, connect_viewer(&daemon), "image/png", png.clone());
+    let out = daemon.socket.parent().unwrap().join("shot.png");
+
+    let output = run(
+        &daemon,
+        &["snapshot", &card_id, out.to_str().unwrap()],
+        None,
+    );
+    viewer.join().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"path": out.to_str().unwrap(), "width": 846, "height": 120, "clipped": false})
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), png);
+}
+
+#[test]
+fn snapshot_fails_with_the_viewers_reason() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+    let reason = br#"{"error":"the card is hidden by the search"}"#.to_vec();
+    let viewer = answer_snapshot(&daemon, connect_viewer(&daemon), "application/json", reason);
+    let out = daemon.socket.parent().unwrap().join("shot.png");
+
+    let output = run(
+        &daemon,
+        &["snapshot", &card_id, out.to_str().unwrap()],
+        None,
+    );
+    viewer.join().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "the card is hidden by the search\n"
+    );
+    assert!(!out.exists());
+}
+
+#[test]
+fn snapshot_with_no_viewer_fails_with_one_line() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+    let out = daemon.socket.parent().unwrap().join("shot.png");
+    let output = run(
+        &daemon,
+        &["snapshot", &card_id, out.to_str().unwrap()],
+        None,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.contains("no Canvas viewer"), "{stderr}");
+    assert!(!out.exists());
+}

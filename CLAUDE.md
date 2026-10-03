@@ -170,6 +170,22 @@ beside the terminal all day.
   exits 1 with one stderr line when N is 0. `canvas post --focus` (also with
   `--update`) focuses the card it just wrote and adds `viewers` to its JSON;
   zero viewers there is a stderr warning, not a failure, since the card exists.
+  `canvas snapshot <card_id> <out.png>` (`POST /api/cards/:id/snapshot`)
+  writes the PNG of the card as the open window renders it, in its theme, and
+  prints `{"path", "width", "height", "clipped"}` (pixels). canvasd publishes a
+  viewer-only `card-snapshot` event `{id, request}` and holds the request up to
+  20s; the viewer takes the requests one at a time, waits up to 3s for the card
+  to settle (iframe sized, arrival slide and ring over), scrolls it into
+  `#stream`'s view (no ring, nothing cleared) and calls the app's
+  `snapshot_reply` command with the card's rect clipped to that view and
+  whether it was clipped, or with why it can't show it (pinned, its session
+  hidden, filtered by the search). `app/src-tauri/src/snapshot.rs` captures the
+  rect with WKWebView's `takeSnapshot` and posts the PNG (`x-canvas-clipped:
+  true` for a card taller than the window), or the reason as `{"error"}`, to
+  `POST /api/snapshots/:request`, which answers the first reply and 404s any
+  later one. No viewer is a 409, a reason a 422, no answer a 504; the CLI
+  prints canvasd's one line and exits 1. A clipped capture exits 0 with a
+  stderr note.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
   instead, replacing that card's html/images/targets in place (same id,
   session_id and `at`) rather than creating a new one; 404s if the id doesn't exist.

@@ -45,6 +45,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/cards/:id/pin", delete(routes::unpin_card))
         .route("/api/cards/:id/focus", post(routes::focus_card))
+        .route("/api/cards/:id/snapshot", post(routes::snapshot_card))
+        .route(
+            "/api/snapshots/:request",
+            // A Retina capture of a tall card runs past axum's 2 MB default.
+            post(routes::deliver_snapshot).layer(axum::extract::DefaultBodyLimit::max(64 << 20)),
+        )
         .route("/api/pins", get(routes::get_pinned))
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))

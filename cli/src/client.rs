@@ -42,7 +42,7 @@ impl std::fmt::Display for Failure {
 impl std::error::Error for Failure {}
 
 fn call(method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Response, Failure> {
-    let response = call_any_status(method, path, body)?;
+    let response = call_any_status(method, path, body, timeout())?;
     if (200..300).contains(&response.status) {
         Ok(response)
     } else {
@@ -50,10 +50,14 @@ fn call(method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Re
     }
 }
 
+/// One request to canvasd, whatever status it answers. `timeout` bounds each
+/// socket read and write: `timeout()` for everything but the one call that
+/// waits on a viewer.
 fn call_any_status(
     method: &str,
     path: &str,
     body: Option<&serde_json::Value>,
+    timeout: Duration,
 ) -> Result<Response, Failure> {
     let socket = canvas_core::paths::socket_path()
         .ok_or_else(|| Failure::Transport("no HOME to place the socket".to_string()))?;
@@ -64,7 +68,7 @@ fn call_any_status(
         &[]
     };
     let started = std::time::Instant::now();
-    let result = unix_http::request(&socket, method, path, headers, &payload, Some(timeout()));
+    let result = unix_http::request(&socket, method, path, headers, &payload, Some(timeout));
     log_call(method, path, started.elapsed().as_millis(), &result);
     result.map_err(|e| Failure::Transport(e.to_string()))
 }
@@ -177,7 +181,8 @@ fn profile_call(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<Response, String> {
-    let response = call_any_status(method, path, body.as_ref()).map_err(|e| e.to_string())?;
+    let response =
+        call_any_status(method, path, body.as_ref(), timeout()).map_err(|e| e.to_string())?;
     if (200..300).contains(&response.status) {
         return Ok(response);
     }
@@ -313,6 +318,39 @@ pub fn focus_card(card_id: &str) -> Result<u64, String> {
             Err("canvasd returned HTTP 404 (no card with that id)".to_string())
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// canvasd waits up to 20s for a viewer to capture a card; this leaves it
+/// room to answer that it gave up.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// What a viewer captured of a card for `canvas snapshot`.
+pub struct Snapshot {
+    pub png: Vec<u8>,
+    /// The card is taller than the window, so the PNG stops at its edge.
+    pub clipped: bool,
+}
+
+/// `canvas snapshot`: the PNG an open viewer captured of the card. An error
+/// is canvasd's one-line reason: no viewer open, the viewer's own reason it
+/// could not capture the card, or that no viewer answered in time.
+pub fn snapshot_card(card_id: &str) -> Result<Snapshot, String> {
+    let response = call_any_status(
+        "POST",
+        &format!("/api/cards/{card_id}/snapshot"),
+        Some(&serde_json::json!({})),
+        SNAPSHOT_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
+    match response.status {
+        200 => Ok(Snapshot {
+            clipped: response.header("x-canvas-clipped") == Some("true"),
+            png: response.body,
+        }),
+        404 => Err("canvasd returned HTTP 404 (no card with that id)".to_string()),
+        status => Err(canvas_core::log::error_text(&response.body)
+            .unwrap_or_else(|| format!("canvasd returned HTTP {status}"))),
     }
 }
 
