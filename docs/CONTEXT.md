@@ -39,7 +39,7 @@ The colour a session's chip tile, card header tile and arrival ring share. Hande
 _Avoid_: hue, accent
 
 **Stream**:
-Every card that matches the selected chip and the search and belongs to no archived session, newest first. All is the default chip.
+Every card that matches the selected chip and the search and belongs to no archived session, most recently posted or updated first. All is the default chip.
 _Avoid_: timeline, feed
 
 ### Architecture
