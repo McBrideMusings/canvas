@@ -337,6 +337,36 @@ async fn update_card_replaces_content_in_place_and_keeps_its_id_and_session() {
 }
 
 #[tokio::test]
+async fn update_card_keeps_at_sets_updated_at_and_moves_it_to_the_top() {
+    let app = app();
+    let a = seed_card(&app, "s1", "/tmp/proj").await;
+    let b = seed_card(&app, "s1", "/tmp/proj").await;
+    assert_eq!(a.updated_at, None);
+
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", a.id),
+            json!({"html": "<p>v2</p>"}),
+        ))
+        .await
+        .unwrap();
+    let updated: Card = json_body(response).await;
+    assert_eq!(updated.at, a.at);
+    let updated_at = updated.updated_at.clone().expect("updatedAt set");
+    assert!(
+        updated_at > a.at,
+        "{updated_at} should be later than {}",
+        a.at
+    );
+
+    let state: StateResponse =
+        json_body(app.clone().oneshot(get("/api/state")).await.unwrap()).await;
+    let ids: Vec<&str> = state.cards.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, [a.id.as_str(), b.id.as_str()]);
+}
+
+#[tokio::test]
 async fn update_unknown_card_is_404() {
     let app = app();
     let response = app
@@ -1531,6 +1561,7 @@ fn pruning_by_age_keeps_a_pinned_card() {
         id: id.to_string(),
         session_id: "s".to_string(),
         at: "2000-01-01T00:00:00Z".to_string(),
+        updated_at: None,
         html: String::new(),
         images: vec![],
         targets: vec![],

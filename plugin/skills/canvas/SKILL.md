@@ -37,8 +37,9 @@ Markdown and text exist for a status checklist you keep current with
 creating a new one — the `card_id` a prior `canvas post` reported in its
 JSON output. Use it for a card that represents one ongoing unit of work (a
 long task's status, a running checklist) rather than posting a fresh card
-every time it changes — the viewer updates the card where it sits, in every
-open window, without disturbing its scroll position or any other card. There
+every time it changes — the card keeps its id and posted time, gains an
+`updatedAt`, and moves to the top of the Timeline in every open window, its
+header showing both times, without disturbing any other card. There
 is no separate threading concept: a card you keep updating with `--update`
 *is* the thread.
 

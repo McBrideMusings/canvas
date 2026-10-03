@@ -162,8 +162,13 @@ beside the terminal all day.
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
   can be read by an agent.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
-  instead, replacing that card's html/images/targets in place (same id and
-  session_id) rather than creating a new one; 404s if the id doesn't exist.
+  instead, replacing that card's html/images/targets in place (same id,
+  session_id and `at`) rather than creating a new one; 404s if the id doesn't exist.
+  It sets the card's `updatedAt` (absent until then), and the daemon logs
+  `card updated`. The Timeline orders cards by `updatedAt`, else `at`
+  (`Card::touched_at`, which age pruning reads too), so an updated card moves
+  to the top; its header reads "posted 40m ago · updated 3m ago", clock times
+  in the tooltip.
   A card can send one value back (canvas-17z): its script posts
   `{type:'canvas-reply', value}` to the viewer, which relays it to
   `POST /api/cards/:id/reply` keyed by which iframe sent it, capped at 4KB,

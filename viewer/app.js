@@ -502,6 +502,25 @@
     return `${days}d ago`;
   }
 
+  // When a card last changed: its updatedAt once `post --update` set it,
+  // else when it was posted. The Timeline orders by it.
+  function touchedAt(card) {
+    return card.updatedAt || card.at;
+  }
+
+  // "3m ago", or "posted 40m ago · updated 3m ago" once the card was updated;
+  // the clock times go in the tooltip.
+  function cardTimeLabel(card) {
+    const clock = (iso) => new Date(iso).toLocaleString();
+    if (!card.updatedAt || card.updatedAt === card.at) {
+      return { text: relativeTime(card.at), title: clock(card.at) };
+    }
+    return {
+      text: `posted ${relativeTime(card.at)} · updated ${relativeTime(card.updatedAt)}`,
+      title: `posted ${clock(card.at)}\nupdated ${clock(card.updatedAt)}`,
+    };
+  }
+
   function sessionName(sessionId) {
     const s = sessions.get(sessionId);
     return s ? s.name : sessionId;
@@ -575,7 +594,7 @@
   function byRecency(list) {
     const latest = new Map();
     for (const c of cards.values()) {
-      const at = new Date(c.at).getTime();
+      const at = new Date(touchedAt(c)).getTime();
       if (!(latest.get(c.sessionId) >= at)) latest.set(c.sessionId, at);
     }
     const lastActive = (s) => latest.get(s.id) ?? new Date(s.startedAt).getTime();
@@ -2209,7 +2228,7 @@
     dot.className = "w-dot";
     const age = document.createElement("span");
     age.className = "w-age";
-    age.textContent = shortAge(card.at);
+    age.textContent = shortAge(touchedAt(card));
     meta.append(dot, age);
     el.appendChild(meta);
 
@@ -2429,7 +2448,7 @@
     if (!shelf) return;
     for (const w of shelf.row.children) {
       const card = cards.get(w.dataset.cardId);
-      if (card) w.querySelector(".w-age").textContent = shortAge(card.at);
+      if (card) w.querySelector(".w-age").textContent = shortAge(touchedAt(card));
     }
   }, 1000);
 
@@ -2438,7 +2457,7 @@
     el.className = "card";
     el.dataset.cardId = card.id;
     el.dataset.sessionId = card.sessionId;
-    el.dataset.at = card.at;
+    el.dataset.touchedAt = touchedAt(card);
     const session = sessions.get(card.sessionId);
     if (session) el.style.setProperty("--session-colour", sessionColour(session));
 
@@ -2457,7 +2476,9 @@
     const sep = document.createTextNode(" · ");
     const timeSpan = document.createElement("span");
     timeSpan.className = "time";
-    timeSpan.textContent = relativeTime(card.at);
+    const timeLabel = cardTimeLabel(card);
+    timeSpan.textContent = timeLabel.text;
+    timeSpan.title = timeLabel.title;
     headerInfo.appendChild(nameSpan);
     headerInfo.appendChild(repoSpan);
     headerInfo.appendChild(sep);
@@ -2494,7 +2515,7 @@
 
   function sortedCards() {
     return Array.from(cards.values()).sort(
-      (a, b) => new Date(b.at) - new Date(a.at)
+      (a, b) => new Date(touchedAt(b)) - new Date(touchedAt(a))
     );
   }
 
@@ -2556,7 +2577,7 @@
     el.hidden = !cardMatchesFilter(card);
     const siblings = Array.from(cardsEl.children);
     const insertBefore = siblings.find(
-      (child) => new Date(child.dataset.at) < new Date(card.at)
+      (child) => new Date(child.dataset.touchedAt) < new Date(touchedAt(card))
     );
     if (insertBefore) {
       cardsEl.insertBefore(el, insertBefore);

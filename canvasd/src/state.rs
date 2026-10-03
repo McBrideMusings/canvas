@@ -239,7 +239,7 @@ impl Inner {
     pub fn prune_before(&mut self, cutoff: DateTime<Utc>) {
         let keep = |c: &Card| {
             c.pin.is_some()
-                || DateTime::parse_from_rfc3339(&c.at)
+                || DateTime::parse_from_rfc3339(c.touched_at())
                     .map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
         };
         let stale: Vec<String> = self

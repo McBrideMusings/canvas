@@ -90,6 +90,12 @@ impl Card {
     pub fn is_repo_pinned(&self) -> bool {
         self.pin.as_ref().is_some_and(|p| p.scope == PinScope::Repo)
     }
+
+    /// When the card last changed: `updated_at` once `post --update` has set
+    /// it, else `at`. The Timeline orders by it and age pruning reads it.
+    pub fn touched_at(&self) -> &str {
+        self.updated_at.as_deref().unwrap_or(&self.at)
+    }
 }
 
 /// One deliberate `canvas post`, shown as one card. Every post creates its
@@ -99,7 +105,11 @@ impl Card {
 pub struct Card {
     pub id: String,
     pub session_id: String,
+    /// When the card was first posted (RFC 3339).
     pub at: String,
+    /// When `canvas post --update` last replaced it (RFC 3339); absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     pub html: String,
     #[serde(default)]
     pub images: Vec<String>,

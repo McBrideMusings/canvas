@@ -89,6 +89,45 @@ async fn restart_rebuilds_the_same_state() {
 }
 
 #[tokio::test]
+async fn an_updated_card_stays_on_top_with_both_times_after_restart() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let mut ids = Vec::new();
+    for html in ["<p>a</p>", "<p>b</p>"] {
+        let bytes = send(
+            &app,
+            "POST",
+            "/api/posts",
+            Some(
+                json!({"session_id": "s1", "cwd": "/a/one", "agent": "claude-code", "html": html}),
+            ),
+        )
+        .await;
+        let card: Value = serde_json::from_slice(&bytes).unwrap();
+        ids.push(card["id"].as_str().unwrap().to_string());
+    }
+    let (a, b) = (&ids[0], &ids[1]);
+    send(
+        &app,
+        "PUT",
+        &format!("/api/cards/{a}"),
+        Some(json!({"html": "<p>a2</p>"})),
+    )
+    .await;
+    let before = state_of(&app).await;
+
+    let app = restart(state, &dir).await;
+    let after = state_of(&app).await;
+    assert_eq!(after, before);
+    let cards = after["cards"].as_array().unwrap();
+    assert_eq!(cards[0]["id"], a.as_str());
+    assert_eq!(cards[1]["id"], b.as_str());
+    assert!(cards[0]["updatedAt"].as_str().unwrap() > cards[0]["at"].as_str().unwrap());
+    assert!(cards[1].get("updatedAt").is_none());
+}
+
+#[tokio::test]
 async fn pushed_card_data_is_not_written_to_the_stream() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;

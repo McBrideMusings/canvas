@@ -181,6 +181,7 @@ pub async fn post_explicit(
             id,
             session_id: req.session_id.clone(),
             at: now(),
+            updated_at: None,
             images: req.images,
             targets: req.targets,
             pin: req.pin,
@@ -211,11 +212,11 @@ pub async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
-/// Replaces an existing card's content in place — same id and session, a
-/// fresh `at` (it's the card's last-touched time, same sense `prune_before`
-/// uses it in). 404s rather than creating one: an id an agent doesn't
-/// already hold is never a valid target, unlike `post_explicit`'s session
-/// id, which a restarted daemon may legitimately not know yet.
+/// Replaces an existing card's content in place — same id, session and `at`,
+/// with `updated_at` set to now, which moves it to the top of the Timeline.
+/// 404s rather than creating one: an id an agent doesn't already hold is
+/// never a valid target, unlike `post_explicit`'s session id, which a
+/// restarted daemon may legitimately not know yet.
 pub async fn update_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -229,13 +230,22 @@ pub async fn update_card(
         let card = Card {
             id: id.clone(),
             session_id: inner.cards[idx].session_id.clone(),
-            at: now(),
+            at: inner.cards[idx].at.clone(),
+            updated_at: Some(now()),
             html: resolve_image_placeholders(&req.html, &id),
             images: req.images,
             targets: req.targets,
             pin: inner.cards[idx].pin.clone(),
         };
         inner.upsert_card(card.clone());
+        canvas_core::log::info(
+            "card updated",
+            &[
+                ("id", &card.id),
+                ("at", &card.at),
+                ("updated_at", &card.touched_at()),
+            ],
+        );
         state.publish(CanvasEvent::CardUpserted(card.clone()));
         card
     };
