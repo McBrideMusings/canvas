@@ -486,7 +486,20 @@
   window.addEventListener("canvas-theme", () => {
     applyThemeButton();
     bootstrapRender();
+    reportTheme();
   });
+
+  // Tells canvasd which theme this window shows, so `canvas theme` with no
+  // argument can read it back. Sent with every state load, which follows each
+  // stream open (canvasd keeps it in memory, so a restart forgets it), and
+  // after every change.
+  function reportTheme() {
+    fetch("/api/theme", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ theme: window.canvasTheme.get() }),
+    }).catch(() => {});
+  }
 
   function relativeTime(iso) {
     const then = new Date(iso).getTime();
@@ -2953,6 +2966,7 @@
     }
     prunePrefs();
     bootstrapRender();
+    reportTheme();
   }
 
   // canvasd has no TCP port, so there is no EventSource here: Canvas.app holds
@@ -3005,6 +3019,13 @@
     // `canvas focus`: the same path as a canvas-post:// link, minus showing
     // the window, which an agent never raises over other apps.
     handlers["card-focus"] = ({ id }) => openCardLink(id);
+
+    // `canvas theme`: the same path as a click on the theme button, so the
+    // choice persists in localStorage. Setting the theme already shown
+    // changes nothing, rather than rebuilding every card.
+    handlers["theme-set"] = ({ theme }) => {
+      if (theme !== window.canvasTheme.get()) window.canvasTheme.set(theme);
+    };
 
     // One at a time: a second snapshot's scroll would move the first card
     // out from under its capture.

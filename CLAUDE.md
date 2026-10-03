@@ -186,6 +186,18 @@ beside the terminal all day.
   later one. No viewer is a 409, a reason a 422, no answer a 504; the CLI
   prints canvasd's one line and exits 1. A clipped capture exits 0 with a
   stderr note.
+  `canvas theme light|dark` (`POST /api/theme`, any other value refused)
+  publishes a viewer-only `theme-set` event; each viewer calls
+  `window.canvasTheme.set`, the same path as a click on the theme button, so
+  the choice persists in the viewer's localStorage like a click's (the
+  Settings window follows through the `storage` event). It prints
+  `{"viewers": N}` and exits 1 with one stderr line when N is 0. The viewer
+  reports the theme it shows with `PUT /api/theme` after every state load and
+  every change; canvasd holds it in memory only, and `GET /api/theme` (bare
+  `canvas theme`) prints `{"theme": ...}`, exiting 1 when no viewer is open
+  or none has reported. The unbundled dev app keeps its localStorage
+  under `~/Library/WebKit/app`, apart from the installed app's
+  `~/Library/WebKit/com.piercemakes.canvas`.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
   instead, replacing that card's html/images/targets in place (same id,
   session_id and `at`) rather than creating a new one; 404s if the id doesn't exist.

@@ -14,3 +14,4 @@ pub mod profile;
 pub mod scan;
 pub mod snapshot;
 pub mod stop;
+pub mod theme;

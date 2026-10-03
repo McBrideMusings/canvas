@@ -35,6 +35,27 @@ pub enum CanvasEvent {
         id: String,
         request: String,
     },
+    /// Asks every open viewer to switch to this theme (`canvas theme`), as a
+    /// click on the title-bar button would. Sent to viewers only: never
+    /// written to the persisted stream.
+    ThemeSet(Theme),
+}
+
+/// The viewer's light or dark palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
 }
 
 /// What a viewer sent back for one `canvas snapshot` request.
@@ -74,6 +95,9 @@ pub struct AppState {
     /// Snapshot requests waiting for a viewer's answer, by request id.
     pub(crate) snapshots:
         Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<SnapshotReply>>>>,
+    /// The theme a viewer last reported showing (`PUT /api/theme`), in
+    /// memory only; `None` until a viewer reports one.
+    pub(crate) viewer_theme: Arc<std::sync::Mutex<Option<Theme>>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -99,6 +123,7 @@ impl AppState {
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),
+            viewer_theme: Arc::default(),
             store: None,
             data_dir: None,
         }
@@ -117,6 +142,7 @@ impl AppState {
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),
+            viewer_theme: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
@@ -189,6 +215,7 @@ impl AppState {
                 CanvasEvent::CardData { .. }
                     | CanvasEvent::CardFocus(_)
                     | CanvasEvent::CardSnapshot { .. }
+                    | CanvasEvent::ThemeSet(_)
             ) {
                 store.append(&event);
             }
@@ -255,7 +282,9 @@ impl Inner {
                     self.data.insert(id, value);
                 }
             }
-            CanvasEvent::CardFocus(_) | CanvasEvent::CardSnapshot { .. } => {}
+            CanvasEvent::CardFocus(_)
+            | CanvasEvent::CardSnapshot { .. }
+            | CanvasEvent::ThemeSet(_) => {}
         }
     }
 

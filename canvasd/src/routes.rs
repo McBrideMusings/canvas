@@ -20,7 +20,7 @@ use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
 use crate::repo::github_repo;
-use crate::state::{pin_key, AppState, CanvasEvent, SnapshotReply};
+use crate::state::{pin_key, AppState, CanvasEvent, SnapshotReply, Theme};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -354,6 +354,38 @@ pub async fn focus_card(State(state): State<AppState>, Path(id): Path<String>) -
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
+#[derive(serde::Deserialize)]
+pub struct ThemeBody {
+    theme: Theme,
+}
+
+/// `canvas theme <light|dark>`: asks every open viewer to switch theme the
+/// way a click on its title-bar button does, so the choice persists. Answers
+/// how many viewers the event reached, so the CLI can fail when nobody saw it.
+pub async fn set_theme(State(state): State<AppState>, Json(body): Json<ThemeBody>) -> Response {
+    let viewers = state.publish(CanvasEvent::ThemeSet(body.theme));
+    canvas_core::log::info(
+        "theme set",
+        &[("theme", &body.theme.as_str()), ("viewers", &viewers)],
+    );
+    Json(serde_json::json!({ "viewers": viewers })).into_response()
+}
+
+/// The viewer reports the theme it shows, on load and after every change.
+pub async fn report_theme(State(state): State<AppState>, Json(body): Json<ThemeBody>) -> Response {
+    *state.viewer_theme.lock().unwrap_or_else(|e| e.into_inner()) = Some(body.theme);
+    canvas_core::log::info("viewer theme", &[("theme", &body.theme.as_str())]);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// `canvas theme`: the theme a viewer last reported, `null` before any has or
+/// while no viewer is connected, so a closed app never reads as showing one.
+pub async fn get_theme(State(state): State<AppState>) -> Response {
+    let reported = *state.viewer_theme.lock().unwrap_or_else(|e| e.into_inner());
+    let theme = reported.filter(|_| state.events.receiver_count() > 0);
+    Json(serde_json::json!({ "theme": theme })).into_response()
+}
+
 /// How long `snapshot_card` waits for a viewer to answer: the viewer waits
 /// up to 3s for the card to settle, the app up to 5s each for the capture
 /// and the upload.
@@ -620,6 +652,9 @@ pub async fn events(
                     .unwrap_or_default(),
             )))
         }
+        Ok(CanvasEvent::ThemeSet(theme)) => Some(Ok(SseEvent::default()
+            .event("theme-set")
+            .data(serde_json::json!({ "theme": theme }).to_string()))),
         Err(_) => None,
     });
 

@@ -166,6 +166,66 @@ fn focus_fails_for_an_unknown_id() {
 }
 
 #[test]
+fn theme_reports_the_viewers_it_reached() {
+    let daemon = spawn_daemon();
+    let _viewer = connect_viewer(&daemon);
+    let output = run(&daemon, &["theme", "dark"], None);
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value, serde_json::json!({"viewers": 1}));
+}
+
+#[test]
+fn theme_with_no_viewer_fails_with_one_line() {
+    let daemon = spawn_daemon();
+    let output = run(&daemon, &["theme", "light"], None);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.contains("no Canvas viewer"), "{stderr}");
+}
+
+#[test]
+fn theme_refuses_anything_but_light_or_dark() {
+    let daemon = spawn_daemon();
+    let output = run(&daemon, &["theme", "sepia"], None);
+    assert_eq!(output.status.code(), Some(2), "{:?}", output);
+}
+
+#[test]
+fn bare_theme_prints_what_the_viewer_reported() {
+    use std::io::{Read, Write};
+    let daemon = spawn_daemon();
+    let output = run(&daemon, &["theme"], None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reported"));
+
+    let viewer = connect_viewer(&daemon);
+    let body = r#"{"theme":"dark"}"#;
+    let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
+    write!(
+        stream,
+        "PUT /api/theme HTTP/1.1\r\nHost: canvas\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    assert!(reply.contains("204"), "{reply}");
+
+    let output = run(&daemon, &["theme"], None);
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value, serde_json::json!({"theme": "dark"}));
+
+    drop(viewer);
+    std::thread::sleep(Duration::from_millis(200));
+    let output = run(&daemon, &["theme"], None);
+    assert!(!output.status.success(), "{:?}", output);
+}
+
+#[test]
 fn post_focus_creates_the_card_and_focuses_it() {
     let daemon = spawn_daemon();
     let _viewer = connect_viewer(&daemon);

@@ -321,6 +321,34 @@ pub fn focus_card(card_id: &str) -> Result<u64, String> {
     }
 }
 
+/// Asks every open viewer to switch to `theme`; returns how many it reached.
+/// canvasd refuses anything but `light` or `dark`.
+pub fn set_theme(theme: &str) -> Result<u64, String> {
+    #[derive(serde::Deserialize)]
+    struct Set {
+        viewers: u64,
+    }
+    let response = call(
+        "POST",
+        "/api/theme",
+        Some(&serde_json::json!({ "theme": theme })),
+    )
+    .map_err(|e| e.to_string())?;
+    let viewers = into_json::<Set>(response)?.viewers;
+    canvas_core::log::info("theme set", &[("theme", &theme), ("viewers", &viewers)]);
+    Ok(viewers)
+}
+
+/// The theme a viewer last reported showing, `None` before any has.
+pub fn viewer_theme() -> Result<Option<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Reported {
+        theme: Option<String>,
+    }
+    let response = call("GET", "/api/theme", None).map_err(|e| e.to_string())?;
+    Ok(into_json::<Reported>(response)?.theme)
+}
+
 /// canvasd waits up to 20s for a viewer to capture a card; this leaves it
 /// room to answer that it gave up.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(25);

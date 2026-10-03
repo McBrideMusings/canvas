@@ -1761,6 +1761,76 @@ async fn focus_on_unknown_card_is_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn theme_set_reaches_viewers_as_a_theme_set_event() {
+    use futures::StreamExt;
+
+    let app = app();
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    let response = app
+        .clone()
+        .oneshot(post("/api/theme", json!({"theme": "dark"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!({"viewers": 1}));
+
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: theme-set"), "{text}");
+    assert!(text.contains(r#"{"theme":"dark"}"#), "{text}");
+}
+
+#[tokio::test]
+async fn theme_set_with_no_viewer_reports_zero() {
+    let response = app()
+        .oneshot(post("/api/theme", json!({"theme": "light"})))
+        .await
+        .unwrap();
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!({"viewers": 0}));
+}
+
+#[tokio::test]
+async fn theme_set_refuses_a_theme_that_is_not_light_or_dark() {
+    let response = app()
+        .oneshot(post("/api/theme", json!({"theme": "sepia"})))
+        .await
+        .unwrap();
+    assert!(response.status().is_client_error(), "{}", response.status());
+}
+
+#[tokio::test]
+async fn theme_reads_back_what_the_viewer_last_reported() {
+    let app = app();
+    let viewer = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let value: serde_json::Value =
+        json_body(app.clone().oneshot(get("/api/theme")).await.unwrap()).await;
+    assert_eq!(value, json!({"theme": null}));
+
+    let response = app
+        .clone()
+        .oneshot(put("/api/theme", json!({"theme": "dark"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let value: serde_json::Value =
+        json_body(app.clone().oneshot(get("/api/theme")).await.unwrap()).await;
+    assert_eq!(value, json!({"theme": "dark"}));
+
+    drop(viewer);
+    let value: serde_json::Value =
+        json_body(app.clone().oneshot(get("/api/theme")).await.unwrap()).await;
+    assert_eq!(value, json!({"theme": null}));
+}
+
 /// Plays the viewer's half of a snapshot: reads the `card-snapshot` event off
 /// an open `/api/events` body and answers its request with `content_type` and
 /// `body`. Returns the event's data.

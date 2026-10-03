@@ -51,6 +51,12 @@ pub fn build_router(state: AppState) -> Router {
             // A Retina capture of a tall card runs past axum's 2 MB default.
             post(routes::deliver_snapshot).layer(axum::extract::DefaultBodyLimit::max(64 << 20)),
         )
+        .route(
+            "/api/theme",
+            post(routes::set_theme)
+                .put(routes::report_theme)
+                .get(routes::get_theme),
+        )
         .route("/api/pins", get(routes::get_pinned))
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
