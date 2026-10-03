@@ -116,12 +116,12 @@ body {
 .titlebar {
   position: relative;
   z-index: 25;
-  flex: 0 0 52px;
-  height: 52px;
+  flex: 0 0 56px;
+  height: 56px;
   display: flex;
   align-items: flex-start;
   gap: 16px;
-  padding: 0 16px;
+  padding: 0 14px 0 16px;
   background: var(--bg);
   -webkit-user-select: none;
   user-select: none;
@@ -129,10 +129,11 @@ body {
 
 /* Only Canvas.app's WKWebView draws real traffic lights over this bar (see
    the window.__TAURI__ check in app.js) — a plain browser tab has nothing
-   to leave room for, so it gets no inset. 78px clears the three lights plus
-   their usual margin at the window's default size. */
+   to leave room for, so it gets no inset. The three lights end 74px from the
+   window's left edge (trafficLightPosition in tauri.conf.json); 88px leaves
+   the same 14px after them. */
 .titlebar.has-traffic-lights {
-  padding-left: 78px;
+  padding-left: 88px;
 }
 
 .titlebar-spacer {
@@ -253,13 +254,16 @@ body {
 }
 
 /* align-items: flex-start on .titlebar plus this top offset, rather than
-   vertically centering in the full 52px bar, lines every button's centre
-   up with the traffic lights' fixed position near the top of the window —
-   measured empirically at ~15.5px from the window's top edge. */
+   vertically centering in the full 56px bar, lines every button's centre
+   up with the traffic lights' centre: tauri.conf.json's trafficLightPosition
+   puts the 14px lights 14px from the window's top edge (tao makes the
+   native title bar y px taller than a light, and a light sits 9px above that
+   bar's bottom, so a y of 23 gives a 14px inset; measured from a capture), so their centre is 21px
+   down, and a 28px button needs a 7px offset to match. */
 .titlebar-btn {
   position: relative;
   flex: 0 0 28px;
-  margin-top: 1.5px;
+  margin-top: 7px;
 }
 
 /* The chip row shares the toolbar with the search field (see .search) — it
