@@ -241,9 +241,11 @@ fn install_with(bin: &Path, state: &IntegrationState, agent: &str) -> Result<(),
     let mut errors = state.errors.lock().unwrap();
     match &result {
         Ok(()) => {
+            canvas_core::log::info("integration installed", &[("agent", &agent)]);
             errors.remove(agent);
         }
         Err(e) => {
+            canvas_core::log::error("integration install failed", &[("agent", &agent), ("error", e)]);
             errors.insert(agent.to_string(), e.clone());
         }
     }
@@ -257,7 +259,13 @@ pub fn install_outdated(app: &tauri::AppHandle) {
 }
 
 fn install_outdated_in(state: &IntegrationState) {
-    let Ok(rows) = list() else { return };
+    let rows = match list() {
+        Ok(rows) => rows,
+        Err(e) => {
+            canvas_core::log::error("integration sync: list failed", &[("error", &e)]);
+            return;
+        }
+    };
     for row in rows {
         let stale = matches!(row.status.as_deref(), Some("out of date" | "not installed"));
         if row.found && stale {

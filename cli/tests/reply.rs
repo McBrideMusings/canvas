@@ -63,6 +63,7 @@ fn post_card(daemon: &Daemon) -> String {
     let output = Command::new(canvas_bin())
         .args(["post", "-", "--format", "html"])
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .env("CLAUDE_CODE_SESSION_ID", "reply-test")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -114,6 +115,7 @@ fn wait_returns_the_reply_once_it_lands() {
     let output = Command::new(canvas_bin())
         .args(["wait", &card_id, "--timeout", "5"])
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .output()
         .expect("failed to run canvas wait");
     assert!(output.status.success(), "{:?}", output);
@@ -129,6 +131,7 @@ fn wait_times_out_when_nothing_replies() {
     let output = Command::new(canvas_bin())
         .args(["wait", &card_id, "--timeout", "1"])
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .output()
         .expect("failed to run canvas wait");
     let elapsed = start.elapsed();
@@ -146,6 +149,7 @@ fn replies_is_non_blocking_and_checks_again_later() {
     let output = Command::new(canvas_bin())
         .args(["replies", &card_id])
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .output()
         .expect("failed to run canvas replies");
     assert!(!output.status.success());
@@ -156,6 +160,7 @@ fn replies_is_non_blocking_and_checks_again_later() {
     let output = Command::new(canvas_bin())
         .args(["replies", &card_id])
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .output()
         .expect("failed to run canvas replies");
     assert!(output.status.success());
@@ -170,6 +175,7 @@ fn data_pushes_a_json_value_to_a_card_and_refuses_bad_input() {
         let mut child = Command::new(canvas_bin())
             .args(["data", id])
             .env("CANVAS_SOCKET", &daemon.socket)
+            .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -210,6 +216,7 @@ fn a_second_daemon_refuses_a_socket_that_answers() {
     let output = Command::new(canvas_bin())
         .arg("daemon")
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .output()
         .expect("failed to run a second canvas daemon");
 

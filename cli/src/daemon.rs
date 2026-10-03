@@ -2,6 +2,7 @@ use canvasd::build_router;
 use canvasd::state::AppState;
 
 pub fn run() {
+    canvas_core::log::init_background(canvas_core::log::Process::Daemon);
     let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
     rt.block_on(serve());
 }
@@ -17,6 +18,11 @@ async fn serve() {
     // answers, or a second daemon would steal the first one's clients.
     if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
         eprintln!("canvasd: already running on {}", socket.display());
+        canvas_core::log::error(
+            "refusing to start: already running",
+            &[("socket", &socket.display())],
+        );
+        canvas_core::log::flush();
         std::process::exit(1);
     }
     let _ = std::fs::remove_file(&socket);
@@ -25,6 +31,7 @@ async fn serve() {
         Some(dir) => AppState::open(&dir).await,
         None => {
             eprintln!("canvasd: no data directory; the stream will not persist");
+            canvas_core::log::warn("no data directory; the stream will not persist", &[]);
             AppState::new()
         }
     };
@@ -40,5 +47,13 @@ async fn serve() {
             .expect("failed to restrict the canvasd socket to its owner");
     }
     println!("canvasd listening on {}", socket.display());
+    canvas_core::log::info(
+        "daemon started",
+        &[
+            ("socket", &socket.display()),
+            ("pid", &std::process::id()),
+            ("version", &env!("CARGO_PKG_VERSION")),
+        ],
+    );
     canvasd::serve_unix(listener, app).await;
 }

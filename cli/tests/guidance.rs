@@ -66,6 +66,7 @@ fn run_hook_session_start(socket: &std::path::Path, timeout_ms: u64) -> std::pro
     let mut child = Command::new(canvas_bin())
         .args(["hook", "session-start"])
         .env("CANVAS_SOCKET", socket)
+        .env("CANVAS_DATA_DIR", socket.parent().unwrap())
         .env("CANVAS_CLIENT_TIMEOUT_MS", timeout_ms.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -85,6 +86,8 @@ fn run_hook_session_start(socket: &std::path::Path, timeout_ms: u64) -> std::pro
 fn guidance_subcommand_prints_the_block_byte_for_byte() {
     let output = Command::new(canvas_bin())
         .arg("guidance")
+        .env("CANVAS_DATA_DIR", test_dir("no-daemon"))
+        .env_remove("CANVAS_SOCKET")
         .output()
         .expect("failed to run canvas guidance");
     assert!(output.status.success());

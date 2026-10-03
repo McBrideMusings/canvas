@@ -238,5 +238,6 @@ pub struct StateResponse {
     pub cards: Vec<Card>,
 }
 
+pub mod log;
 pub mod paths;
 pub mod unix_http;

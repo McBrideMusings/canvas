@@ -170,6 +170,10 @@ pub fn ensure_daemon(app: &tauri::AppHandle) -> DaemonStatus {
         return query_status(app, None);
     }
 
+    canvas_core::log::info(
+        "installing bundled daemon",
+        &[("from", &bundled.display()), ("to", &installed.display())],
+    );
     if let Some(parent) = installed.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             return failed(&installed, format!("couldn't create {}: {e}", parent.display()));

@@ -167,6 +167,8 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    canvas_core::log::init(canvas_core::log::Process::App);
+    canvas_core::log::info("app started", &[("version", &env!("CARGO_PKG_VERSION"))]);
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .register_asynchronous_uri_scheme_protocol("canvas", |_ctx, request, responder| {
@@ -187,7 +189,15 @@ pub fn run() {
             // Debug builds aren't bundled (no Resources dir to install from);
             // `admin dev canvas` runs the daemon separately in that workflow.
             let install_error = if !cfg!(debug_assertions) {
-                daemon::ensure_daemon(app.handle()).error
+                let status = daemon::ensure_daemon(app.handle());
+                match &status.error {
+                    Some(error) => canvas_core::log::error("daemon install failed", &[("error", error)]),
+                    None => canvas_core::log::info(
+                        "daemon ready",
+                        &[("loaded", &status.loaded), ("running", &status.running)],
+                    ),
+                }
+                status.error
             } else {
                 None
             };

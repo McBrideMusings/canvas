@@ -149,7 +149,7 @@ impl AppState {
             .map(|s| s.id.clone())
             .collect();
         for id in &dead {
-            eprintln!("canvasd: agent process of session {id} is gone; ending it");
+            canvas_core::log::info("agent process gone; ending session", &[("session", id)]);
             self.end_session(&mut inner, id);
         }
         dead.len()

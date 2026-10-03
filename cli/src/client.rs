@@ -63,8 +63,35 @@ fn call_any_status(
     } else {
         &[]
     };
-    unix_http::request(&socket, method, path, headers, &payload, Some(timeout()))
-        .map_err(|e| Failure::Transport(e.to_string()))
+    let started = std::time::Instant::now();
+    let result = unix_http::request(&socket, method, path, headers, &payload, Some(timeout()));
+    log_call(method, path, started.elapsed().as_millis(), &result);
+    result.map_err(|e| Failure::Transport(e.to_string()))
+}
+
+/// One line per request: its status and duration, the daemon's error text for
+/// a 4xx or 5xx, or why canvasd was unreachable.
+fn log_call(method: &str, path: &str, ms: u128, result: &std::io::Result<Response>) {
+    use canvas_core::log;
+    let request = format!("{method} {path}");
+    match result {
+        Ok(response) if response.status < 400 => {
+            log::info(&request, &[("status", &response.status), ("ms", &ms)])
+        }
+        Ok(response) => {
+            let text = log::error_text(&response.body);
+            let mut fields: Vec<(&str, &dyn std::fmt::Display)> =
+                vec![("status", &response.status), ("ms", &ms)];
+            if let Some(text) = &text {
+                fields.push(("error", text));
+            }
+            log::warn(&request, &fields)
+        }
+        Err(e) => log::warn(
+            "canvasd unreachable",
+            &[("request", &request), ("ms", &ms), ("error", e)],
+        ),
+    }
 }
 
 /// Serialize `body` and POST it to `path`. A body that fails to serialize

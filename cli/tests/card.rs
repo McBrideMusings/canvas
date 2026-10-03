@@ -56,6 +56,7 @@ fn run(daemon: &Daemon, args: &[&str], stdin: Option<&[u8]>) -> std::process::Ou
     let mut child = Command::new(canvas_bin())
         .args(args)
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .env("CLAUDE_CODE_SESSION_ID", "card-test")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

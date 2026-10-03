@@ -194,6 +194,17 @@ beside the terminal all day.
   /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or
   pruned by age, but counts toward the 500. The window's always-on-top toggle is
   "keep on top" (`get_keep_on_top`/`set_keep_on_top`), not a pin.
+- Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
+  key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
+  `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and
+  keeping three old copies. A process writes nothing until it calls `log::init`, so
+  canvasd's in-process tests never touch the real data dir. canvasd logs every
+  request (an axum middleware in `canvasd/src/lib.rs`: method, path, status, ms, and
+  the body of a 4xx/5xx as `error`) plus start, reload, store, sweep and refresh
+  failures; the CLI logs every canvasd call in `client::call_any_status` (status, or
+  `canvasd unreachable` with the reason) and each hook's outcome; the app logs bridge
+  failures, event-stream changes, daemon install and integration sync. Every write
+  failure is swallowed. New features log through it.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)
   detects each agent (its CLI on PATH), reports `current`, `out of date`,
   `not installed` or `needs review`, and installs; per agent it is
@@ -226,7 +237,8 @@ beside the terminal all day.
 ## Rules
 
 - A hook never slows a Claude session: every request to the daemon has a 1s
-  timeout and the hook exits 0 on any failure.
+  timeout and the hook exits 0 on any failure. A log line that can't be written
+  changes nothing a command prints or how it exits.
 - HTML posts render in `<iframe sandbox="allow-scripts">` (no `allow-same-origin`)
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
   `connect-src` — a card can still hand one value back via `canvas-reply`

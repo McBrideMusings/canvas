@@ -1,8 +1,11 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) != Some("daemon") {
+        canvas_core::log::init(canvas_core::log::Process::Cli);
+    }
 
     match args.get(1).map(String::as_str) {
         Some("daemon") => {
@@ -20,6 +23,19 @@ fn main() {
                 })
                 .unwrap_or_else(|| canvas::guidance::TEXT.to_string());
             print!("{text}");
+        }
+        Some("logs") => {
+            if args.get(2).map(String::as_str) != Some("--path") {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+            let Some(dir) = canvas_core::log::logs_dir() else {
+                eprintln!("no HOME: cannot place the log folder");
+                std::process::exit(1);
+            };
+            // Best effort: an unwritable data dir still gets the path printed.
+            let _ = std::fs::create_dir_all(&dir);
+            println!("{}", dir.display());
         }
         Some("integrations") => {
             if let Err(e) = canvas::integrations::run(&args[2..]) {
@@ -43,8 +59,34 @@ fn main() {
                 None => Some(canvas::agent::default_adapter()),
                 Some(_) => None,
             };
-            if let Some(Ok(Some(guidance))) = adapter.map(|a| canvas::hook::run(event, a)) {
-                print!("{guidance}");
+            let agent = match args.get(3).map(String::as_str) {
+                Some("--agent") => args.get(4).map_or("", String::as_str),
+                None => "claude-code",
+                Some(other) => other,
+            };
+            match adapter.map(|a| canvas::hook::run(event, a)) {
+                Some(Ok(output)) => {
+                    let outcome = if output.is_some() {
+                        "printed"
+                    } else {
+                        "silent"
+                    };
+                    canvas_core::log::info(
+                        "hook",
+                        &[("event", event), ("agent", &agent), ("outcome", &outcome)],
+                    );
+                    if let Some(text) = output {
+                        print!("{text}");
+                    }
+                }
+                Some(Err(e)) => canvas_core::log::warn(
+                    "hook failed",
+                    &[("event", event), ("agent", &agent), ("error", &e)],
+                ),
+                None => canvas_core::log::warn(
+                    "hook skipped: unknown agent",
+                    &[("event", event), ("agent", &agent)],
+                ),
             }
             std::process::exit(0);
         }

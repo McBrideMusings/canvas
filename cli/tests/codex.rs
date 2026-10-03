@@ -59,6 +59,7 @@ fn run(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std::process::Output {
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env("CODEX_THREAD_ID", "abc")
         .env("CANVAS_SOCKET", &daemon.socket)
+        .env("CANVAS_DATA_DIR", daemon.socket.parent().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

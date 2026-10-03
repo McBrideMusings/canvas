@@ -47,6 +47,7 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         return reply(404, "text/plain", Vec::new());
     }
     let Some(socket) = canvas_core::paths::socket_path() else {
+        canvas_core::log::error("bridge: no HOME to place the socket", &[]);
         return reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec());
     };
     let content_type = request
@@ -72,7 +73,13 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
                 .unwrap_or("application/octet-stream"),
             response.body,
         ),
-        Err(_) => reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec()),
+        Err(e) => {
+            canvas_core::log::warn(
+                "bridge request failed",
+                &[("method", &method), ("path", &path), ("error", &e)],
+            );
+            reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec())
+        }
     }
 }
 
@@ -81,14 +88,33 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
 /// `canvas-event` `{event, data}` for every server-sent event, reconnecting
 /// once a second after any drop.
 pub fn forward_events(app: AppHandle) {
+    // Only a change in why the stream can't open is logged, so a daemon that
+    // stays down writes one line rather than one a second.
+    let mut last_failure: Option<String> = None;
     loop {
-        let stream = canvas_core::paths::socket_path()
-            .and_then(|socket| canvas_core::unix_http::open_stream(&socket, "/api/events", STREAM_TIMEOUT).ok())
-            .filter(|s| s.status == 200);
-        if let Some(stream) = stream {
-            let _ = app.emit("canvas-stream", "open");
-            read_events(&app, stream.body);
-            let _ = app.emit("canvas-stream", "closed");
+        let stream = match canvas_core::paths::socket_path() {
+            None => Err("no HOME to place the socket".to_string()),
+            Some(socket) => match canvas_core::unix_http::open_stream(&socket, "/api/events", STREAM_TIMEOUT) {
+                Ok(s) if s.status == 200 => Ok(s),
+                Ok(s) => Err(format!("canvasd answered HTTP {}", s.status)),
+                Err(e) => Err(e.to_string()),
+            },
+        };
+        match stream {
+            Ok(stream) => {
+                last_failure = None;
+                canvas_core::log::info("event stream open", &[]);
+                let _ = app.emit("canvas-stream", "open");
+                read_events(&app, stream.body);
+                let _ = app.emit("canvas-stream", "closed");
+                canvas_core::log::warn("event stream closed", &[]);
+            }
+            Err(e) => {
+                if last_failure.as_deref() != Some(e.as_str()) {
+                    canvas_core::log::warn("event stream unavailable", &[("error", &e)]);
+                }
+                last_failure = Some(e);
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }

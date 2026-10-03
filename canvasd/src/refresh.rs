@@ -145,6 +145,12 @@ impl AppState {
         let mut card: Card = card.clone();
         let pin = card.pin.as_mut().expect("checked above");
         let next_error = result.as_ref().err().cloned();
+        if let Some(error) = &next_error {
+            canvas_core::log::warn(
+                "pin refresh failed",
+                &[("card", &job.card_id), ("error", error)],
+            );
+        }
         if let Ok(value) = result {
             inner.data.insert(job.card_id.clone(), value.clone());
             self.publish(CanvasEvent::CardData {

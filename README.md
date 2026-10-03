@@ -50,9 +50,12 @@ open /Applications/Canvas.app
 ```
 
 Step 3 copies the `canvas` binary to `~/.local/bin/canvas` and registers the
-`com.piercemakes.canvasd` launch agent, which logs to
-`~/Library/Logs/canvasd.log`. The Daemon tab in Canvas's Settings shows whether
-it is installed and running.
+`com.piercemakes.canvasd` launch agent. The daemon, every `canvas` command and
+Canvas.app write timestamped lines to `daemon.log`, `cli.log` and `app.log` in
+the folder `canvas logs --path` prints (`logs/` in the data directory, each file
+rotated at 5 MB, three old copies kept); launchd sends the daemon's raw
+stdout and stderr to `~/Library/Logs/canvasd.log`. The Daemon tab in Canvas's
+Settings shows whether it is installed and running.
 
 Step 4 registers this checkout as a local plugin marketplace and installs
 `canvas@canvas` from it. Restart any open Claude Code sessions to load it.

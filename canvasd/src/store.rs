@@ -31,11 +31,25 @@ impl Store {
     pub fn open(dir: &Path) -> (Store, Inner) {
         let path = dir.join(STREAM_FILE);
         if let Err(e) = fs::create_dir_all(dir) {
-            eprintln!("canvasd: cannot create {}: {e}", dir.display());
+            canvas_core::log::error(
+                "cannot create data dir",
+                &[("path", &dir.display()), ("error", &e)],
+            );
         }
         let inner = load(&path, Utc::now());
+        canvas_core::log::info(
+            "stream reloaded",
+            &[
+                ("path", &path.display()),
+                ("sessions", &inner.sessions.len()),
+                ("cards", &inner.cards.len()),
+            ],
+        );
         if let Err(e) = write_snapshot(&path, &inner) {
-            eprintln!("canvasd: cannot compact {}: {e}", path.display());
+            canvas_core::log::error(
+                "cannot compact stream",
+                &[("path", &path.display()), ("error", &e)],
+            );
         }
 
         let (tx, rx) = mpsc::channel::<Msg>();
@@ -44,14 +58,19 @@ impl Store {
                 .create(true)
                 .append(true)
                 .open(&path)
-                .map_err(|e| eprintln!("canvasd: cannot open {}: {e}", path.display()))
+                .map_err(|e| {
+                    canvas_core::log::error(
+                        "cannot open stream",
+                        &[("path", &path.display()), ("error", &e)],
+                    )
+                })
                 .ok();
             for msg in rx {
                 match msg {
                     Msg::Line(line) => {
                         if let Some(f) = file.as_mut() {
                             if let Err(e) = f.write_all(line.as_bytes()) {
-                                eprintln!("canvasd: stream write failed: {e}");
+                                canvas_core::log::error("stream write failed", &[("error", &e)]);
                             }
                         }
                     }
@@ -70,7 +89,7 @@ impl Store {
                 line.push('\n');
                 let _ = self.tx.send(Msg::Line(line));
             }
-            Err(e) => eprintln!("canvasd: stream serialize failed: {e}"),
+            Err(e) => canvas_core::log::error("stream serialize failed", &[("error", &e)]),
         }
     }
 
@@ -98,9 +117,9 @@ fn load(path: &Path, now: DateTime<Utc>) -> Inner {
         }
     }
     if skipped > 0 {
-        eprintln!(
-            "canvasd: skipped {skipped} unparsable line(s) in {}",
-            path.display()
+        canvas_core::log::warn(
+            "skipped unparsable stream lines",
+            &[("count", &skipped), ("path", &path.display())],
         );
     }
     inner.prune_before(now - Duration::hours(RETENTION_HOURS));
