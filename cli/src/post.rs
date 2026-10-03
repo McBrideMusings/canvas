@@ -23,7 +23,8 @@ use crate::scan;
 /// for stdin), an explicit `--format md|text|html`, an optional
 /// `--update <card_id>` to replace an existing card instead of creating one,
 /// and `--pin <slot>` with its `--pin-scope session|repo`, `--widget <file>`
-/// and `--refresh <cmd> [--every <secs>]` to hold the card in a pin slot.
+/// and `--refresh <cmd> [--every <secs>]` to hold the card in a pin slot,
+/// and `--focus` to bring the card into view in every open viewer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PostArgs<'a> {
     pub arg: Option<&'a str>,
@@ -34,6 +35,7 @@ pub struct PostArgs<'a> {
     pub widget: Option<&'a str>,
     pub refresh: Option<&'a str>,
     pub every: Option<&'a str>,
+    pub focus: bool,
 }
 
 /// A malformed `canvas post` argument list. Carries no detail: the caller
@@ -43,14 +45,21 @@ pub struct UsageError;
 
 /// Parses the arguments to `canvas post` (everything after `post` itself).
 /// Each flag may appear before or after the single positional path/`-`.
-/// Returns `Err` on a usage error: a flag with no following value, a flag
-/// given twice, a second positional argument, `--pin-scope`/`--widget`/
-/// `--refresh`/`--every` without `--pin`, or `--every` without `--refresh`. Does not validate the flag values themselves — `run` does.
+/// `--focus` takes no value. Returns `Err` on a usage error: a flag with no
+/// following value, a flag given twice, a second positional argument,
+/// `--pin-scope`/`--widget`/`--refresh`/`--every` without `--pin`, or
+/// `--every` without `--refresh`. Does not validate the flag values
+/// themselves — `run` does.
 pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
     let mut parsed = PostArgs::default();
     let mut i = 0;
     while i < rest.len() {
         let flag = match rest[i].as_str() {
+            "--focus" if !parsed.focus => {
+                parsed.focus = true;
+                i += 1;
+                continue;
+            }
             "--format" => &mut parsed.format_flag,
             "--update" => &mut parsed.update_id,
             "--pin" => &mut parsed.pin,
@@ -120,14 +129,25 @@ pub fn run(args: PostArgs) -> Result<(), String> {
             })?
         }
     };
-    println!(
-        "{}",
-        serde_json::json!({
-            "card_id": card.id,
-            "images": card.images,
-            "targets": card.targets,
-        })
-    );
+    let mut output = serde_json::json!({
+        "card_id": card.id,
+        "images": card.images,
+        "targets": card.targets,
+    });
+    if args.focus {
+        // The card exists either way, so a focus that reached nobody is a
+        // warning, not a failure an agent would answer by posting again.
+        match client::focus_card(&card.id) {
+            Ok(viewers) => {
+                if viewers == 0 {
+                    eprintln!("{}", crate::focus::NO_VIEWER);
+                }
+                output["viewers"] = viewers.into();
+            }
+            Err(e) => eprintln!("posted, but could not focus the card: {e}"),
+        }
+    }
+    println!("{output}");
     Ok(())
 }
 
@@ -368,6 +388,21 @@ mod tests {
     #[test]
     fn update_missing_its_value_is_an_error() {
         assert!(parse_args(&args(&["file.md", "--update"])).is_err());
+    }
+
+    #[test]
+    fn focus_takes_no_value_and_combines_with_update() {
+        let rest = args(&["--focus", "--update", "c1", "a.md"]);
+        assert_eq!(
+            parse_args(&rest).unwrap(),
+            PostArgs {
+                arg: Some("a.md"),
+                update_id: Some("c1"),
+                focus: true,
+                ..Default::default()
+            }
+        );
+        assert!(parse_args(&args(&["--focus", "--focus", "a.md"])).is_err());
     }
 
     #[test]

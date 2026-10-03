@@ -3001,6 +3001,10 @@
 
     handlers["card-data"] = ({ id, value }) => deliverCardData(id, value);
 
+    // `canvas focus`: the same path as a canvas-post:// link, minus showing
+    // the window, which an agent never raises over other apps.
+    handlers["card-focus"] = ({ id }) => openCardLink(id);
+
     handlers["card-removed"] = ({ id }) => removeCard(id);
 
     handlers["session-removed"] = ({ id }) => removeSession(id);

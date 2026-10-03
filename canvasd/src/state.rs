@@ -25,6 +25,9 @@ pub enum CanvasEvent {
         id: String,
         value: serde_json::Value,
     },
+    /// Asks every open viewer to bring a card into view (`canvas focus`).
+    /// Sent to viewers only: never written to the persisted stream.
+    CardFocus(String),
 }
 
 #[derive(Default)]
@@ -155,14 +158,19 @@ impl AppState {
         dead.len()
     }
 
-    pub fn publish(&self, event: CanvasEvent) {
+    /// Persists `event` (unless it is viewer-only) and sends it to every
+    /// connected viewer. Returns how many viewers it reached: each open
+    /// `/api/events` stream holds one receiver. None connected is not an error.
+    pub fn publish(&self, event: CanvasEvent) -> usize {
         if let Some(store) = &self.store {
-            if !matches!(event, CanvasEvent::CardData { .. }) {
+            if !matches!(
+                event,
+                CanvasEvent::CardData { .. } | CanvasEvent::CardFocus(_)
+            ) {
                 store.append(&event);
             }
         }
-        // No receivers (e.g. no SSE clients connected) is not an error.
-        let _ = self.events.send(event);
+        self.events.send(event).unwrap_or(0)
     }
 }
 
@@ -224,6 +232,7 @@ impl Inner {
                     self.data.insert(id, value);
                 }
             }
+            CanvasEvent::CardFocus(_) => {}
         }
     }
 

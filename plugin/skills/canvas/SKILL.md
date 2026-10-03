@@ -57,6 +57,13 @@ canvas post --update c1 - <<'EOF' # later, same card
 EOF
 ```
 
+`canvas focus <card_id>` brings a card into view in every open Canvas window:
+it clears the search and filters hiding it, scrolls to it and rings it, but
+never raises the window. It prints `{"viewers": N}` and exits 1 when no window
+is open. `canvas post --focus` (also with `--update`) does the same for the
+card it just wrote and adds `"viewers"` to its JSON; with no window open it
+warns on stderr and still exits 0, since the card was written.
+
 Input is Markdown, plain text, or HTML — pick with `--format md|text|html`,
 or let it infer from the file's extension (`.md`/`.markdown`, `.txt`,
 `.html`/`.htm`); stdin or an unrecognised extension defaults to Markdown.

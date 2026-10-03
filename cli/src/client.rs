@@ -291,6 +291,31 @@ pub fn push_data(card_id: &str, value: &serde_json::Value) -> Result<(), String>
     }
 }
 
+/// `canvas focus`: asks every open viewer to bring the card into view and
+/// returns how many viewers the request reached.
+pub fn focus_card(card_id: &str) -> Result<u64, String> {
+    #[derive(serde::Deserialize)]
+    struct Focused {
+        viewers: u64,
+    }
+    let result = call(
+        "POST",
+        &format!("/api/cards/{card_id}/focus"),
+        Some(&serde_json::json!({})),
+    );
+    match result {
+        Ok(response) => {
+            let viewers = into_json::<Focused>(response)?.viewers;
+            canvas_core::log::info("focus", &[("card", &card_id), ("viewers", &viewers)]);
+            Ok(viewers)
+        }
+        Err(Failure::Status(404)) => {
+            Err("canvasd returned HTTP 404 (no card with that id)".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// The card holding `slot` in the repo `cwd` belongs to; `None` when no card
 /// does.
 pub fn find_pinned(cwd: &str, slot: &str) -> Result<Option<Card>, String> {

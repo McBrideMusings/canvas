@@ -1704,3 +1704,59 @@ async fn deleting_a_session_keeps_its_repo_pins() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
 }
+
+#[tokio::test]
+async fn focus_reaches_viewers_as_a_card_focus_event_naming_the_card() {
+    use futures::StreamExt;
+
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut body = response.into_body().into_data_stream();
+
+    let response = app
+        .clone()
+        .oneshot(post(&format!("/api/cards/{}/focus", card.id), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!({"viewers": 1}));
+
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: card-focus"), "{text}");
+    assert!(
+        text.contains(&format!("{{\"id\":\"{}\"}}", card.id)),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn focus_with_no_viewer_reports_zero() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app
+        .clone()
+        .oneshot(post(&format!("/api/cards/{}/focus", card.id), json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: serde_json::Value = json_body(response).await;
+    assert_eq!(value, json!({"viewers": 0}));
+}
+
+#[tokio::test]
+async fn focus_on_unknown_card_is_404() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post("/api/cards/does-not-exist/focus", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

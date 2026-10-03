@@ -2,6 +2,7 @@ pub mod agent;
 pub mod client;
 pub mod daemon;
 pub mod data;
+pub mod focus;
 pub mod format;
 pub mod guidance;
 pub mod hook;

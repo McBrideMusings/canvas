@@ -150,7 +150,8 @@ beside the terminal all day.
   already know it (e.g. after a daemon restart) — and unlike a hook it fails
   loudly — one line on stderr, non-zero exit — on any error, including when
   `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
-  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`. A local
+  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`, plus
+  `"viewers": N` with `--focus`. A local
   `<video src>` or `<source src>` joins `images` and is served by the same
   `/api/cards/:id/images/:n` route (which honours `Range`, since a video needs
   it); the viewer's lightbox skips those entries and the card CSP carries
@@ -161,6 +162,14 @@ beside the terminal all day.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
   can be read by an agent.
+  `canvas focus <card_id>` (`POST /api/cards/:id/focus`, 404 for an unknown
+  id) publishes a `card-focus` SSE event, never persisted; each viewer runs
+  the same `openCardLink` a `canvas-post://` link does — clear search and
+  filters, scroll, ring — without showing or raising the window. It prints
+  `{"viewers": N}`, the open `/api/events` streams the event reached, and
+  exits 1 with one stderr line when N is 0. `canvas post --focus` (also with
+  `--update`) focuses the card it just wrote and adds `viewers` to its JSON;
+  zero viewers there is a stderr warning, not a failure, since the card exists.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`
   instead, replacing that card's html/images/targets in place (same id,
   session_id and `at`) rather than creating a new one; 404s if the id doesn't exist.
