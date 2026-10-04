@@ -244,7 +244,14 @@ beside the terminal all day.
   evicted or pruned by age. `canvas artifact new [--title t]` prints the record
   with its folder `path`; `put <id> <file|dir>` sends canvasd the absolute path
   and canvasd copies the file, or the folder's contents, in (a symlinked folder is
-  skipped, a symlinked destination replaced) and stamps `updatedAt`; `list`,
+  skipped, a symlinked destination replaced) and stamps `updatedAt`. Saving a
+  file into the folder does the same with no command: `canvasd/src/watcher.rs`
+  watches each artifact's path recursively (notify, FSEvents), ends a burst
+  after 200ms without a write (2s at most), and stamps `updatedAt` and
+  publishes `artifact-upserted` once, unless the folder's fingerprint (paths,
+  sizes, mtimes, inodes, in memory) still matches its last stamp; a `put` holds
+  its artifact's bursts (`Watcher::hold`) until it has stamped, so its own
+  writes never reload twice; `list`,
   `show <id>` and `delete <id>` (record and folder) round it out, each failing
   loudly with canvasd's error text. `show` adds `entry` (`index.html`, else the
   folder's only top-level HTML file) and `size`, read on every request from the

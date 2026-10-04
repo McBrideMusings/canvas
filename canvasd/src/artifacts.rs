@@ -4,7 +4,7 @@
 //! `profiles.json`, outside the 24h stream, and are never evicted or pruned:
 //! an artifact stays until someone deletes it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use canvas_core::{Artifact, ArtifactKind, ArtifactSize, ArtifactView};
@@ -29,6 +29,11 @@ struct ArtifactsFile {
 #[derive(Default)]
 pub struct Artifacts {
     pub records: BTreeMap<String, Artifact>,
+    /// The [`fingerprint`] of each artifact's files when `updatedAt` was last
+    /// stamped, in memory only. The watcher stamps again only when the folder
+    /// no longer matches, so the writes of a `put` (which stamps itself)
+    /// don't reload the pane a second time.
+    pub fingerprints: HashMap<String, u64>,
     data_dir: Option<PathBuf>,
 }
 
@@ -56,6 +61,7 @@ impl Artifacts {
         };
         Artifacts {
             records,
+            fingerprints: HashMap::new(),
             data_dir: Some(dir.to_path_buf()),
         }
     }
@@ -336,6 +342,36 @@ fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::remove_file(dest)?;
     }
     std::fs::copy(src, dest).map(|_| ())
+}
+
+/// A hash of every entry under `folder`: its relative path, size, modified
+/// time and inode, walked without following symlinked folders. Any write,
+/// rename, add or removal changes it; reading a file does not.
+pub fn fingerprint(folder: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::MetadataExt;
+    let mut entries = Vec::new();
+    let mut stack = vec![folder.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.filter_map(Result::ok) {
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path.clone());
+            }
+            let rel = path.strip_prefix(folder).unwrap_or(&path).to_path_buf();
+            entries.push((rel, meta.len(), meta.mtime(), meta.mtime_nsec(), meta.ino()));
+        }
+    }
+    entries.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

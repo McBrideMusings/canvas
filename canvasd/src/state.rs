@@ -99,6 +99,8 @@ pub struct AppState {
     pub profiles: Arc<RwLock<ProfilesConfig>>,
     /// Every artifact record; see [`crate::artifacts`].
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
+    /// The artifact folders being watched; see [`crate::watcher`].
+    pub watcher: Arc<crate::watcher::Watcher>,
     /// One refresh loop per refreshing card; see [`crate::refresh`].
     pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
     pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
@@ -131,6 +133,7 @@ impl AppState {
             events: tx,
             profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
             artifacts: Arc::default(),
+            watcher: Arc::default(),
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),
@@ -152,6 +155,7 @@ impl AppState {
             events: tx,
             profiles: Arc::new(RwLock::new(profiles)),
             artifacts: Arc::new(RwLock::new(artifacts)),
+            watcher: Arc::default(),
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),

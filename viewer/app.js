@@ -3084,7 +3084,8 @@
     artifactFrame.title = artifactTitle(artifact);
     artifactFrame.style.width = size ? `min(${size.width}px, 100%)` : "";
     artifactFrame.style.height = size ? `min(${size.height}px, 100%)` : "";
-    // Keyed on updatedAt too, so a `put` reloads the page whether it landed
+    // Keyed on updatedAt too, so a `put` or a file saved into the folder
+    // (canvasd's watcher stamps updatedAt) reloads the page whether it landed
     // while the pane was showing, hidden on the Timeline, or disconnected.
     if (artifactFrameSrc !== loaded) {
       const sameUrl = artifactFrameSrc && artifactFrameSrc.startsWith(`${src}@`);

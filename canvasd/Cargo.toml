@@ -20,6 +20,7 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 tower = { version = "0.5", features = ["util"] }
+notify = "7"
 
 [dev-dependencies]
 http-body-util = "0.1"

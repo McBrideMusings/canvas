@@ -8,6 +8,7 @@ pub mod state;
 pub mod stop_triggers;
 pub mod store;
 pub mod viewer;
+pub mod watcher;
 
 use axum::routing::{any, delete, get, post, put};
 use axum::Router;

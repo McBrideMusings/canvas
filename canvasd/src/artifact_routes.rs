@@ -31,7 +31,7 @@ fn failed(what: &str, id: &str, e: &dyn std::fmt::Display) -> Response {
 /// Writes the records and tells every viewer about the artifact. A failed
 /// save is an error: an artifact that would vanish on restart must not look
 /// created.
-async fn save_and_publish(
+pub(crate) async fn save_and_publish(
     state: &AppState,
     artifacts: &Artifacts,
     id: &str,
@@ -70,6 +70,10 @@ pub async fn new_artifact(
     artifacts.records.insert(id.clone(), record);
     match save_and_publish(&state, &artifacts, &id).await {
         Ok(view) => {
+            artifacts
+                .fingerprints
+                .insert(id.clone(), artifacts::fingerprint(&folder));
+            state.watcher.watch(&id, &folder);
             canvas_core::log::info("artifact created", &[("id", &id), ("path", &view.path)]);
             Json(view).into_response()
         }
@@ -134,11 +138,16 @@ pub async fn put_artifact(
         }
     }
     // The copy runs without the lock, so a large tree never stalls the
-    // viewers' state loads and page requests.
-    let copied =
-        tokio::task::spawn_blocking(move || artifacts::copy_into(&resolved, &folder)).await;
-    let files = match copied {
-        Ok(Ok(n)) => n,
+    // viewers' state loads and page requests. The fingerprint taken after it
+    // tells the watcher these writes are already stamped; the hold keeps
+    // their burst open until then, however long the copy takes.
+    let _hold = state.watcher.hold(&id);
+    let copied = tokio::task::spawn_blocking(move || {
+        artifacts::copy_into(&resolved, &folder).map(|n| (n, artifacts::fingerprint(&folder)))
+    })
+    .await;
+    let (files, print) = match copied {
+        Ok(Ok(done)) => done,
         Ok(Err(e)) => return failed("copying into the artifact failed", &id, &e),
         Err(e) => return failed("copying into the artifact failed", &id, &e),
     };
@@ -148,6 +157,7 @@ pub async fn put_artifact(
         return not_found();
     };
     record.updated_at = chrono::Utc::now().to_rfc3339();
+    artifacts.fingerprints.insert(id.clone(), print);
     match save_and_publish(&state, &artifacts, &id).await {
         Ok(view) => {
             canvas_core::log::info(
@@ -174,6 +184,8 @@ pub async fn delete_artifact(State(state): State<AppState>, Path(id): Path<Strin
         artifacts.records.insert(id.clone(), record);
         return failed("saving artifacts.json failed", &id, &e);
     }
+    state.watcher.unwatch(&id);
+    artifacts.fingerprints.remove(&id);
     if let Some(folder) = artifacts.folder(&id) {
         if let Err(e) = tokio::fs::remove_dir_all(&folder).await {
             if e.kind() != std::io::ErrorKind::NotFound {
