@@ -2971,6 +2971,9 @@
   const artifacts = new Map(); // id -> artifact view, as canvasd sends it
   let openArtifactId = null;
   let page = "timeline";
+  // Until the first /api/state arrives, an empty map means "not loaded yet",
+  // not "no artifacts", so the empty state waits for it.
+  let artifactsLoaded = false;
 
   function readStored(key) {
     try {
@@ -3093,7 +3096,7 @@
 
   function renderArtifacts() {
     const empty = artifacts.size === 0;
-    artifactsEmptyEl.hidden = !empty;
+    artifactsEmptyEl.hidden = !empty || !artifactsLoaded;
     artifactListEl.hidden = empty;
     artifactPaneEl.hidden = empty;
     if (openArtifactId && !artifacts.has(openArtifactId)) openArtifactId = null;
@@ -3213,6 +3216,7 @@
     for (const c of data.cards) cards.set(c.id, c);
     artifacts.clear();
     for (const a of data.artifacts || []) artifacts.set(a.id, a);
+    artifactsLoaded = true;
     if (page === "artifacts") renderArtifacts();
     // A card that aged out of the server's window (or was deleted) while
     // this browser was disconnected never passes through removeCard, so
