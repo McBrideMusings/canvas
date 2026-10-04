@@ -39,6 +39,14 @@ pub enum CanvasEvent {
     /// click on the title-bar button would. Sent to viewers only: never
     /// written to the persisted stream.
     ThemeSet(Theme),
+    /// An artifact was created or its files changed. Sent to viewers only:
+    /// artifacts persist in `artifacts.json`, not the stream.
+    ArtifactUpserted(canvas_core::ArtifactView),
+    /// An artifact was deleted. Sent to viewers only.
+    ArtifactRemoved(String),
+    /// Asks every open viewer to switch to the Artifacts page and open this
+    /// artifact (`canvas focus art-…`). Sent to viewers only.
+    ArtifactFocus(String),
 }
 
 /// The viewer's light or dark palette.
@@ -89,6 +97,8 @@ pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
     pub profiles: Arc<RwLock<ProfilesConfig>>,
+    /// Every artifact record; see [`crate::artifacts`].
+    pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// One refresh loop per refreshing card; see [`crate::refresh`].
     pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
     pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
@@ -120,6 +130,7 @@ impl AppState {
             })),
             events: tx,
             profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
+            artifacts: Arc::default(),
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),
@@ -134,11 +145,13 @@ impl AppState {
     pub async fn open(dir: &std::path::Path) -> Self {
         let (store, inner) = Store::open(dir);
         let profiles = crate::profiles::load(dir).await;
+        let artifacts = crate::artifacts::Artifacts::load(dir).await;
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
             profiles: Arc::new(RwLock::new(profiles)),
+            artifacts: Arc::new(RwLock::new(artifacts)),
             refreshes: Arc::default(),
             generation: Arc::default(),
             snapshots: Arc::default(),
@@ -216,6 +229,9 @@ impl AppState {
                     | CanvasEvent::CardFocus(_)
                     | CanvasEvent::CardSnapshot { .. }
                     | CanvasEvent::ThemeSet(_)
+                    | CanvasEvent::ArtifactUpserted(_)
+                    | CanvasEvent::ArtifactRemoved(_)
+                    | CanvasEvent::ArtifactFocus(_)
             ) {
                 store.append(&event);
             }
@@ -284,7 +300,10 @@ impl Inner {
             }
             CanvasEvent::CardFocus(_)
             | CanvasEvent::CardSnapshot { .. }
-            | CanvasEvent::ThemeSet(_) => {}
+            | CanvasEvent::ThemeSet(_)
+            | CanvasEvent::ArtifactUpserted(_)
+            | CanvasEvent::ArtifactRemoved(_)
+            | CanvasEvent::ArtifactFocus(_) => {}
         }
     }
 

@@ -236,6 +236,34 @@ beside the terminal all day.
   /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or
   pruned by age, but counts toward the 500. The window's always-on-top toggle is
   "keep on top" (`get_keep_on_top`/`set_keep_on_top`), not a pin.
+- Artifacts (ADR-0002, `canvasd/src/artifacts.rs`, `artifact_routes.rs`): a web
+  page an agent keeps until someone deletes it. Each is a folder canvasd owns at
+  `artifacts/<id>/` in `CANVAS_DATA_DIR`, its id `art-` plus 10 hex digits; the
+  records (id, title, kind `owned`, created/updated times) persist in
+  `artifacts.json` beside `profiles.json`, loaded by `AppState::open`, never
+  evicted or pruned by age. `canvas artifact new [--title t]` prints the record
+  with its folder `path`; `put <id> <file|dir>` sends canvasd the absolute path
+  and canvasd copies the file, or the folder's contents, in (a symlinked folder is
+  skipped, a symlinked destination replaced) and stamps `updatedAt`; `list`,
+  `show <id>` and `delete <id>` (record and folder) round it out, each failing
+  loudly with canvasd's error text. `show` adds `entry` (`index.html`, else the
+  folder's only top-level HTML file) and `size`, read on every request from the
+  entry's `<meta name="canvas-size" content="WxH">`. canvasd serves the files at
+  `/artifacts/<id>/<path>` (`/artifacts/<id>/` is the entry) after refusing a
+  `.`/`..` segment and any path whose resolved target leaves the folder, with a
+  CSP header (scripts, styles and fonts from the folder, inline or the three
+  CDNs; `connect-src 'none'`, `form-action 'none'`, `sandbox allow-scripts`) and
+  `Access-Control-Allow-Origin: *` for module scripts in the pane's opaque origin;
+  `bridge.rs` passes those two headers through. `artifact-upserted` and
+  `artifact-removed` SSE events are viewer-only; `/api/state` carries
+  `artifacts`. `canvas focus <art-id>` (`POST /api/artifacts/:id/focus`,
+  `artifact-focus`) switches every viewer to the Artifacts page on that artifact.
+  The viewer's title bar has a `Timeline | Artifacts` switch (`showPage`, the
+  choice in localStorage); the toolbar shows only on the Timeline. The Artifacts
+  page lists every artifact, most recently changed first, beside the open one's
+  pane: an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
+  at its `canvas-size` clamped to the pane or else filling it, reloaded after a
+  `put`. Its menu copies the id or folder path and deletes it.
 - Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
   key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
   `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and
@@ -287,6 +315,11 @@ beside the terminal all day.
   (canvas-17z), but only by posting it up to the viewer, never by fetching
   anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
+- An artifact's page is never themed, width-capped or sized to its content by
+  the viewer, and runs in `<iframe sandbox="allow-scripts">` without
+  `allow-same-origin`. canvasd serves its files only from inside its folder
+  (no `..`, no symlink out) and always with the artifact CSP; never serve them
+  without it.
 - canvasd has no TCP listener, so nothing reaches it except a process that can
   open its 0600 socket, and its routes carry no Host or Origin checks. Never add
   a TCP or other network listener to it; a client that needs it goes through the

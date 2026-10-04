@@ -41,6 +41,7 @@
   const overlayCloseEl = document.getElementById("image-overlay-close");
   const overlayZoomEl = document.getElementById("image-overlay-zoom");
   const titlebarEl = document.getElementById("titlebar");
+  const artifactStageEl = document.getElementById("artifact-stage");
   const toastsEl = document.getElementById("toasts");
 
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1216,7 +1217,12 @@
     });
     deleteItem.classList.add("danger");
     menu.appendChild(deleteItem);
+    mountMenu(menu, header, button);
+  }
 
+  // Opens a built menu under `button` inside `header`: arrow keys move
+  // between items, focus leaving it closes it, and its first item takes focus.
+  function mountMenu(menu, header, button) {
     menu.addEventListener("keydown", (e) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       e.preventDefault();
@@ -1265,7 +1271,9 @@
     const active = document.activeElement;
     if (
       active instanceof HTMLIFrameElement &&
-      (cardsEl.contains(active) || (sheet && sheet.dialog.contains(active)))
+      (cardsEl.contains(active) ||
+        artifactStageEl.contains(active) ||
+        (sheet && sheet.dialog.contains(active)))
     ) {
       closeMenu();
     }
@@ -2944,6 +2952,251 @@
     else if (e.key === "ArrowRight" && lightboxIndexes(lightbox.card).length > 1) stepLightbox(1);
   });
 
+  // ---- Pages: Timeline | Artifacts ----------------------------------------
+  // The page shown is a per-viewer convenience kept in localStorage; the
+  // window works the same without it.
+  const PAGE_KEY = "canvas.page";
+  const pageSwitchEl = document.getElementById("page-switch");
+  const artifactsPageEl = document.getElementById("artifacts-page");
+  const artifactListEl = document.getElementById("artifact-list");
+  const artifactPaneEl = document.getElementById("artifact-pane");
+  const artifactTitleEl = document.getElementById("artifact-title");
+  const artifactSizeEl = document.getElementById("artifact-size");
+  const artifactMoreEl = document.getElementById("artifact-more");
+  const artifactNoEntryEl = document.getElementById("artifact-no-entry");
+  const artifactNoEntryCmdEl = document.getElementById("artifact-no-entry-cmd");
+  const artifactsEmptyEl = document.getElementById("artifacts-empty");
+  artifactMoreEl.appendChild(buildIcon("more"));
+
+  const artifacts = new Map(); // id -> artifact view, as canvasd sends it
+  let openArtifactId = null;
+  let page = "timeline";
+
+  function readStored(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeStored(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Only persistence is lost.
+    }
+  }
+
+  function showPage(next) {
+    if (next !== "timeline" && next !== "artifacts") return;
+    page = next;
+    document.body.dataset.page = next;
+    artifactsPageEl.hidden = next !== "artifacts";
+    for (const btn of pageSwitchEl.querySelectorAll(".page-switch-btn")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset.page === next));
+    }
+    writeStored(PAGE_KEY, next);
+    if (next === "artifacts") renderArtifacts();
+  }
+
+  pageSwitchEl.addEventListener("click", (e) => {
+    const btn = e.target.closest(".page-switch-btn");
+    if (btn) showPage(btn.dataset.page);
+  });
+
+  // Most recently changed first, the order canvasd lists them in.
+  function sortedArtifacts() {
+    return Array.from(artifacts.values()).sort((a, b) =>
+      a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0
+    );
+  }
+
+  function artifactTitle(artifact) {
+    return artifact.title || "Untitled artifact";
+  }
+
+  function buildArtifactRow(artifact) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "artifact-row";
+    row.dataset.artifactId = artifact.id;
+    const title = document.createElement("span");
+    title.className = "artifact-row-title";
+    title.textContent = artifactTitle(artifact);
+    const time = document.createElement("span");
+    time.className = "artifact-row-time";
+    time.textContent = `updated ${relativeTime(artifact.updatedAt)}`;
+    time.title = new Date(artifact.updatedAt).toLocaleString();
+    row.append(title, time);
+    if (artifact.id === openArtifactId) row.setAttribute("aria-current", "true");
+    row.addEventListener("click", () => openArtifact(artifact.id));
+    return row;
+  }
+
+  function renderArtifactList() {
+    const list = sortedArtifacts();
+    artifactListEl.replaceChildren(...list.map(buildArtifactRow));
+  }
+
+  // The pane's page: a sandboxed iframe on the artifact's own URL, so its
+  // relative links, scripts and the History API work. allow-scripts without
+  // allow-same-origin puts it in an opaque origin; canvasd's CSP header
+  // closes connect-src. Nothing here themes it, caps its width or sizes it
+  // to its content: it gets its declared canvas-size, clamped to the pane,
+  // else the whole pane.
+  let artifactFrame = null;
+  let artifactFrameSrc = null;
+
+  function paintArtifactPane() {
+    const artifact = openArtifactId && artifacts.get(openArtifactId);
+    if (!artifact) {
+      artifactFrame?.remove();
+      artifactFrame = null;
+      artifactFrameSrc = null;
+      return;
+    }
+    artifactTitleEl.textContent = artifactTitle(artifact);
+    artifactTitleEl.title = artifact.id;
+    const size = artifact.size;
+    artifactSizeEl.hidden = !size;
+    artifactSizeEl.textContent = size ? `${size.width} × ${size.height}` : "";
+    artifactStageEl.classList.toggle("fill", !size);
+    artifactNoEntryEl.hidden = Boolean(artifact.entry);
+    artifactNoEntryCmdEl.textContent = `canvas artifact put ${artifact.id} <file|dir>`;
+    if (!artifact.entry) {
+      artifactFrame?.remove();
+      artifactFrame = null;
+      artifactFrameSrc = null;
+      return;
+    }
+    const src = `/artifacts/${encodeURIComponent(artifact.id)}/`;
+    const loaded = `${src}@${artifact.updatedAt}`;
+    if (!artifactFrame) {
+      artifactFrame = document.createElement("iframe");
+      artifactFrame.className = "artifact-frame";
+      artifactFrame.setAttribute("sandbox", "allow-scripts");
+      artifactStageEl.appendChild(artifactFrame);
+    }
+    artifactFrame.title = artifactTitle(artifact);
+    artifactFrame.style.width = size ? `min(${size.width}px, 100%)` : "";
+    artifactFrame.style.height = size ? `min(${size.height}px, 100%)` : "";
+    // Keyed on updatedAt too, so a `put` reloads the page whether it landed
+    // while the pane was showing, hidden on the Timeline, or disconnected.
+    if (artifactFrameSrc !== loaded) {
+      const sameUrl = artifactFrameSrc && artifactFrameSrc.startsWith(`${src}@`);
+      artifactFrameSrc = loaded;
+      if (sameUrl) artifactFrame.src = "about:blank";
+      artifactFrame.src = src;
+    }
+  }
+
+  function renderArtifacts() {
+    const empty = artifacts.size === 0;
+    artifactsEmptyEl.hidden = !empty;
+    artifactListEl.hidden = empty;
+    artifactPaneEl.hidden = empty;
+    if (openArtifactId && !artifacts.has(openArtifactId)) openArtifactId = null;
+    if (!openArtifactId && !empty) {
+      const stored = readStored("canvas.artifact");
+      openArtifactId = artifacts.has(stored) ? stored : sortedArtifacts()[0].id;
+    }
+    renderArtifactList();
+    paintArtifactPane();
+  }
+
+  function openArtifact(id) {
+    if (!artifacts.has(id)) return;
+    closeMenu();
+    openArtifactId = id;
+    writeStored("canvas.artifact", id);
+    renderArtifacts();
+  }
+
+  function upsertArtifact(artifact) {
+    artifacts.set(artifact.id, artifact);
+    if (page === "artifacts") renderArtifacts();
+  }
+
+  function removeArtifact(id) {
+    artifacts.delete(id);
+    if (openArtifactId === id) {
+      if (openMenu && openMenu.button === artifactMoreEl) closeMenu();
+      openArtifactId = null;
+    }
+    if (page === "artifacts") renderArtifacts();
+  }
+
+  function copyText(text, done, failed) {
+    closeMenu();
+    navigator.clipboard.writeText(text).then(
+      () => toast(done),
+      () => toast(failed)
+    );
+  }
+
+  function toggleArtifactMenu() {
+    const artifact = openArtifactId && artifacts.get(openArtifactId);
+    const wasOpenHere = openMenu && openMenu.button === artifactMoreEl;
+    closeMenu();
+    if (wasOpenHere || !artifact) return;
+
+    const menu = document.createElement("div");
+    menu.className = "card-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Artifact actions");
+    menu.appendChild(
+      buildMenuItem("copy", "Copy artifact id", () =>
+        copyText(artifact.id, "Copied artifact id", "Couldn't copy artifact id")
+      )
+    );
+    menu.appendChild(
+      buildMenuItem("copy", "Copy folder path", () =>
+        copyText(artifact.path, "Copied folder path", "Couldn't copy folder path")
+      )
+    );
+    const divider = document.createElement("div");
+    divider.className = "menu-divider";
+    divider.setAttribute("role", "separator");
+    menu.appendChild(divider);
+    const deleteItem = buildMenuItem("trash", "Delete artifact", () => {
+      armConfirm(deleteItem, {
+        idleLabel: "Delete artifact",
+        idleIcon: "trash",
+        confirmLabel: "Delete it and its files?",
+        confirmIcon: "trash",
+        withText: true,
+        onConfirm: () => {
+          closeMenu();
+          fetch(`/api/artifacts/${encodeURIComponent(artifact.id)}`, { method: "DELETE" })
+            .then((res) => {
+              if (!res.ok) throw new Error(String(res.status));
+            })
+            .catch(() => toast("Couldn't delete the artifact"));
+        },
+      });
+    });
+    deleteItem.classList.add("danger");
+    menu.appendChild(deleteItem);
+    mountMenu(menu, artifactMoreEl.parentElement, artifactMoreEl);
+  }
+
+  artifactMoreEl.addEventListener("click", toggleArtifactMenu);
+
+  function focusArtifact(id) {
+    if (!artifacts.has(id)) {
+      toast("That artifact is gone — it was deleted");
+      return;
+    }
+    showPage("artifacts");
+    openArtifact(id);
+    artifactListEl
+      .querySelector(`.artifact-row[data-artifact-id="${CSS.escape(id)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }
+
+  showPage(readStored(PAGE_KEY) || "timeline");
+
   async function loadState() {
     const res = await fetch("/api/state");
     const data = await res.json();
@@ -2958,6 +3211,9 @@
     cards.clear();
     postTextLower.clear();
     for (const c of data.cards) cards.set(c.id, c);
+    artifacts.clear();
+    for (const a of data.artifacts || []) artifacts.set(a.id, a);
+    if (page === "artifacts") renderArtifacts();
     // A card that aged out of the server's window (or was deleted) while
     // this browser was disconnected never passes through removeCard, so
     // drop it here instead of leaving its id in unseen.cardIds forever.
@@ -3038,6 +3294,13 @@
 
     handlers["session-removed"] = ({ id }) => removeSession(id);
 
+    handlers["artifact-upserted"] = (artifact) => upsertArtifact(artifact);
+
+    handlers["artifact-removed"] = ({ id }) => removeArtifact(id);
+
+    // `canvas focus art-…`: switch to the Artifacts page and open it.
+    handlers["artifact-focus"] = ({ id }) => focusArtifact(id);
+
     return Promise.all(registered);
   }
 
@@ -3060,6 +3323,7 @@
       toast("That post is gone — Canvas keeps the newest 500 for 24 hours");
       return;
     }
+    showPage("timeline");
     setQuery("");
     resetVisibility();
     const session = sessions.get(card.sessionId);
@@ -3110,6 +3374,8 @@
     const el = card && cardsEl.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
     let error = null;
     if (!card) error = "the viewer has no card with that id";
+    else if (page !== "timeline")
+      error = `the Artifacts page is showing, not the Timeline; canvas focus ${id} shows the card`;
     else if (card.pin) error = "the card is pinned: it shows on the pin shelf, not in the feed";
     else if (session && isHidden(session))
       error = `the card's session is hidden (archived or filtered out); canvas focus ${id} shows it`;

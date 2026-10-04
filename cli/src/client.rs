@@ -423,8 +423,42 @@ fn handle_card_response(result: Result<Response, Failure>) -> Result<Card, Strin
     }
 }
 
+/// `canvas focus art-…`: how many viewers the artifact-focus event reached.
+pub fn focus_artifact(id: &str) -> Result<u64, String> {
+    let value = artifact_call(
+        "POST",
+        &format!("/api/artifacts/{}/focus", percent_encode(id)),
+        Some(&serde_json::json!({})),
+    )?;
+    let viewers = value["viewers"]
+        .as_u64()
+        .ok_or_else(|| "canvasd returned malformed JSON: no viewers count".to_string())?;
+    canvas_core::log::info("focus", &[("artifact", &id), ("viewers", &viewers)]);
+    Ok(viewers)
+}
+
+/// One `/api/artifacts` call, answering canvasd's JSON. A non-2xx status
+/// becomes one line carrying canvasd's own error text, so `canvas artifact`
+/// says why (an unknown id, a source path that isn't there).
+pub fn artifact_call(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let response = call_any_status(method, path, body, timeout()).map_err(|e| e.to_string())?;
+    if (200..300).contains(&response.status) {
+        return into_json(response);
+    }
+    let text = String::from_utf8_lossy(&response.body).trim().to_string();
+    Err(if text.is_empty() {
+        format!("canvasd returned HTTP {}", response.status)
+    } else {
+        format!("canvasd returned HTTP {} ({text})", response.status)
+    })
+}
+
 /// Percent-encodes everything but unreserved characters, for a query value.
-fn percent_encode(value: &str) -> String {
+pub fn percent_encode(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         match byte {

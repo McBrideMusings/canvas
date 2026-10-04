@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod artifact;
 pub mod client;
 pub mod daemon;
 pub mod data;

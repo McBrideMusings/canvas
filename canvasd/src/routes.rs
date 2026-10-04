@@ -617,7 +617,12 @@ pub async fn get_state(State(state): State<AppState>) -> impl IntoResponse {
     let inner = state.inner.read().await;
     let sessions: Vec<Session> = inner.sessions.values().cloned().collect();
     let cards: Vec<Card> = inner.cards.iter().cloned().collect();
-    Json(StateResponse { sessions, cards })
+    let artifacts = state.artifacts.read().await.views();
+    Json(StateResponse {
+        sessions,
+        cards,
+        artifacts,
+    })
 }
 
 pub async fn events(
@@ -655,6 +660,15 @@ pub async fn events(
         Ok(CanvasEvent::ThemeSet(theme)) => Some(Ok(SseEvent::default()
             .event("theme-set")
             .data(serde_json::json!({ "theme": theme }).to_string()))),
+        Ok(CanvasEvent::ArtifactUpserted(artifact)) => Some(Ok(SseEvent::default()
+            .event("artifact-upserted")
+            .data(serde_json::to_string(&artifact).unwrap_or_default()))),
+        Ok(CanvasEvent::ArtifactRemoved(id)) => Some(Ok(SseEvent::default()
+            .event("artifact-removed")
+            .data(serde_json::json!({ "id": id }).to_string()))),
+        Ok(CanvasEvent::ArtifactFocus(id)) => Some(Ok(SseEvent::default()
+            .event("artifact-focus")
+            .data(serde_json::json!({ "id": id }).to_string()))),
         Err(_) => None,
     });
 

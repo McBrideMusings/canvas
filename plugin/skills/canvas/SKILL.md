@@ -201,6 +201,35 @@ already be in the content you post. The one exception is `canvas-reply`,
 below — the card's script never fetches anything itself; it hands a value up
 to the viewer, which makes the real HTTP call on its behalf.
 
+### Interactive pages are artifacts
+
+A prototype, an app, a game, anything someone clicks through is an artifact,
+never a post. A card sizes itself to its content and takes Canvas's theme, so
+a page that sizes itself from the viewport collapses in one. An artifact is a
+folder of files Canvas keeps until someone deletes it, shown on the Artifacts
+page in a pane with a real viewport, with its own colours and fonts untouched.
+
+```
+canvas artifact new --title "Phone prototype"
+# -> {"id":"art-3f9c2a1b7e","path":"/…/artifacts/art-3f9c2a1b7e",...}
+canvas artifact put art-3f9c2a1b7e ./prototype/      # a folder's contents, or one file
+canvas focus art-3f9c2a1b7e                          # switch the viewer to it
+canvas artifact list | show <id> | delete <id>
+```
+
+- The pane opens `index.html`, else the folder's only top-level HTML file.
+  Relative links, several pages, module scripts and the History API work.
+- Declare the viewport the page is designed for with
+  `<meta name="canvas-size" content="390x844">`; the pane opens at that size,
+  clamped to the window. Without it the page fills the pane.
+- Every open viewer reloads the pane after a `put`.
+- The page runs in `<iframe sandbox="allow-scripts">` with no
+  `allow-same-origin`: scripts, styles and fonts load from its own folder,
+  inline, or the three CDNs below; `connect-src` is closed and forms can't
+  submit, so it can't fetch anything or reach Canvas.
+- An artifact belongs to no session: any agent with its id can `put` to it,
+  and it outlives the session that made it. Delete one whose job is done.
+
 ### Asking a question in a card and waiting for the answer
 
 A card's own script can send one value back to the session that posted it —

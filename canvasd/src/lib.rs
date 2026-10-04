@@ -1,3 +1,5 @@
+pub mod artifact_routes;
+pub mod artifacts;
 pub mod profiles;
 pub mod refresh;
 pub mod repo;
@@ -68,6 +70,24 @@ pub fn build_router(state: AppState) -> Router {
             "/api/cards/:id/data",
             put(routes::put_card_data).get(routes::get_card_data),
         )
+        .route(
+            "/api/artifacts",
+            get(artifact_routes::list_artifacts).post(artifact_routes::new_artifact),
+        )
+        .route(
+            "/api/artifacts/:id",
+            get(artifact_routes::get_artifact).delete(artifact_routes::delete_artifact),
+        )
+        .route(
+            "/api/artifacts/:id/put",
+            post(artifact_routes::put_artifact),
+        )
+        .route(
+            "/api/artifacts/:id/focus",
+            post(artifact_routes::focus_artifact),
+        )
+        .route("/artifacts/:id/", get(artifact_routes::artifact_entry))
+        .route("/artifacts/:id/*path", get(artifact_routes::artifact_file))
         .route("/api/open", post(routes::open_path))
         .route("/*path", any(viewer::asset))
         .layer(axum::middleware::from_fn(log_request))

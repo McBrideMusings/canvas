@@ -21,13 +21,36 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 // canvasd sends a keep-alive every 15s, so three missed ones mean the stream is dead.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(45);
 
+// Headers canvasd sets that must reach the webview: an artifact file's CSP
+// (its `connect-src 'none'` and `sandbox`) and the CORS header its module
+// scripts need in the pane's opaque origin.
+const PASSED_HEADERS: &[&str] = &["content-security-policy", "access-control-allow-origin"];
+
 fn reply(status: u16, content_type: &str, body: Vec<u8>) -> Response<Vec<u8>> {
-    Response::builder()
+    reply_with(status, content_type, &[], body)
+}
+
+fn reply_with(
+    status: u16,
+    content_type: &str,
+    headers: &[(String, String)],
+    body: Vec<u8>,
+) -> Response<Vec<u8>> {
+    let mut builder = Response::builder()
         .status(status)
         .header("Content-Type", content_type)
-        .header("Cache-Control", "no-store")
-        .body(body)
-        .expect("static response parts are valid")
+        .header("Cache-Control", "no-store");
+    for (name, value) in headers {
+        if PASSED_HEADERS.contains(&name.as_str()) {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+    }
+    builder.body(body).unwrap_or_else(|e| {
+        canvas_core::log::error("bridge: canvasd sent an unusable header", &[("error", &e)]);
+        let mut response = Response::new(Vec::new());
+        *response.status_mut() = tauri::http::StatusCode::BAD_GATEWAY;
+        response
+    })
 }
 
 /// Forwards one `canvas://localhost/...` request to canvasd and returns its
@@ -65,12 +88,13 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         request.body(),
         Some(REQUEST_TIMEOUT),
     ) {
-        Ok(response) => reply(
+        Ok(response) => reply_with(
             response.status,
             response
                 .content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream"),
+            &response.headers,
             response.body,
         ),
         Err(e) => {

@@ -1,6 +1,6 @@
 # Canvas
 
-One live stream of posts from every Claude Code session on this Mac.
+One live Timeline of posts from every Claude Code session on this Mac, and the artifacts they keep.
 
 ## Language
 
@@ -23,7 +23,7 @@ The panel that slides in from the right edge and lists every session under Activ
 _Avoid_: sidebar, session list
 
 **Card**:
-One post from one session, shown in the stream. Images in it render where the post puts them and open full size in a lightbox on click; local file paths and URLs written as links open on click.
+One post from one session, shown on the Timeline. Images in it render where the post puts them and open full size in a lightbox on click; local file paths and URLs written as links open on click.
 _Avoid_: turn card, post (for the rendered card)
 
 **Post**:
@@ -38,9 +38,17 @@ _Avoid_: tab, pill, sidebar row
 The colour a session's chip tile, card header tile and arrival ring share. Handed out in order of first appearance, per repo by default or per session in Settings.
 _Avoid_: hue, accent
 
-**Stream**:
-Every card that matches the selected chip and the search and belongs to no archived session, most recently posted or updated first. All is the default chip.
-_Avoid_: timeline, feed
+**Timeline**:
+The window's first page: every card that matches the selected chip and the search and belongs to no archived session, most recently posted or updated first. All is the default chip. The search field and chips show only on it.
+_Avoid_: stream, feed
+
+**Artifact**:
+A web page an agent keeps in Canvas until someone deletes it: a folder of files canvasd owns under `artifacts/<id>/`, with an id starting `art-`. It belongs to no session, runs in its own viewport, and Canvas never themes it. Every interactive page is an artifact; a post never is.
+_Avoid_: app post, pinned card
+
+**Artifacts page**:
+The window's second page: every artifact, most recently changed first, in a list beside the open artifact's pane. The pane gives the page its declared `canvas-size`, clamped to the window, else the whole pane.
+_Avoid_: gallery, library
 
 ### Architecture
 

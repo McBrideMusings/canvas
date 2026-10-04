@@ -13,6 +13,10 @@
   <div id="disconnected-banner" class="banner" hidden>Reconnecting to canvasd…</div>
   <div class="titlebar" id="titlebar" data-tauri-drag-region>
     <div class="titlebar-spacer"></div>
+    <div class="page-switch" id="page-switch" role="group" aria-label="Page">
+      <button type="button" class="page-switch-btn" data-page="timeline" aria-pressed="true">Timeline</button>
+      <button type="button" class="page-switch-btn" data-page="artifacts" aria-pressed="false">Artifacts</button>
+    </div>
     <button
       type="button"
       id="keep-on-top-toggle"
@@ -87,6 +91,36 @@
         <div id="cards"></div>
       </main>
       <button type="button" id="to-top" class="to-top" aria-label="Back to top" hidden></button>
+    </div>
+    <div class="artifacts-page" id="artifacts-page" hidden>
+      <nav class="artifact-list" id="artifact-list" aria-label="Artifacts"></nav>
+      <section class="artifact-pane" id="artifact-pane" aria-labelledby="artifact-title">
+        <header class="artifact-pane-header">
+          <h2 class="artifact-title" id="artifact-title"></h2>
+          <span class="artifact-size" id="artifact-size" hidden></span>
+          <span class="artifact-pane-spacer"></span>
+          <button
+            type="button"
+            id="artifact-more"
+            class="icon-btn"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-label="Artifact actions"
+          ></button>
+        </header>
+        <div class="artifact-stage" id="artifact-stage">
+          <div class="artifact-no-entry" id="artifact-no-entry" hidden>
+            <p class="artifact-no-entry-title">Nothing to show yet</p>
+            <p>The folder has no index.html and not exactly one other HTML page. Copy one in:</p>
+            <code id="artifact-no-entry-cmd"></code>
+          </div>
+        </div>
+      </section>
+      <div class="artifacts-empty" id="artifacts-empty" hidden>
+        <h2 class="artifacts-empty-title">No artifacts yet</h2>
+        <p>An artifact is a web page an agent keeps here until someone deletes it.</p>
+        <code>canvas artifact new --title "…"</code>
+      </div>
     </div>
     <aside id="drawer" class="drawer" aria-label="Sessions" inert>
       <div class="drawer-header">

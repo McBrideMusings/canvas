@@ -246,6 +246,72 @@ pub struct StateResponse {
     pub sessions: Vec<Session>,
     /// Newest first.
     pub cards: Vec<Card>,
+    /// Most recently changed first.
+    #[serde(default)]
+    pub artifacts: Vec<ArtifactView>,
+}
+
+/// Where an artifact's files live. Only `owned` exists yet: a folder canvasd
+/// keeps under `artifacts/<id>/` in its data directory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtifactKind {
+    #[default]
+    Owned,
+}
+
+/// One artifact as canvasd persists it in `artifacts.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Artifact {
+    /// `art-` followed by hex digits, so an id says it names an artifact.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub kind: ArtifactKind,
+    /// RFC 3339.
+    pub created_at: String,
+    /// When the record or its files last changed through canvasd (RFC 3339).
+    pub updated_at: String,
+}
+
+/// The viewport a page asks for with `<meta name="canvas-size" content="WxH">`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// An artifact plus what canvasd reads from its folder on each request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactView {
+    #[serde(flatten)]
+    pub artifact: Artifact,
+    /// The artifact's folder, absolute.
+    pub path: String,
+    /// The page the pane opens: `index.html`, else the folder's only
+    /// top-level HTML file. Absent while the folder has neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// The entry page's declared `canvas-size`, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<ArtifactSize>,
+}
+
+/// Body for `POST /api/artifacts`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NewArtifactRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Body for `POST /api/artifacts/:id/put`: an absolute path to a file, copied
+/// into the folder under its own name, or a folder, whose contents are copied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutArtifactRequest {
+    pub source: String,
 }
 
 pub mod log;

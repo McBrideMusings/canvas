@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas card <card_id> | canvas focus <card_id> | canvas snapshot <card_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas artifact <new [--title t] | put <id> <file|dir> | list | show <id> | delete <id>> | canvas card <card_id> | canvas focus <card_id|artifact_id> | canvas snapshot <card_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -117,6 +117,17 @@ fn main() {
                 }
             };
             if let Err(e) = canvas::profile::run(parsed) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some("artifact") => {
+            // Run on purpose, so failures are loud like `canvas post`.
+            let Ok(command) = canvas::artifact::parse_args(&args[2..]) else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            };
+            if let Err(e) = canvas::artifact::run(command) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

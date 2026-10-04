@@ -1338,3 +1338,244 @@ html.snapshotting .new-pill,
 html.snapshotting .toasts {
   visibility: hidden;
 }
+
+/* Timeline | Artifacts: centred in the title bar on the traffic lights'
+   centre line (top 7 + 28 / 2 = 21), whatever the buttons beside it. */
+.page-switch {
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--hover);
+}
+
+.page-switch-btn {
+  height: 24px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.page-switch-btn[aria-pressed="true"] {
+  background: var(--seg-on);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.page-switch-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The search field and chips filter the Timeline only. */
+body[data-page="artifacts"] .toolbar,
+body[data-page="artifacts"] .main-col {
+  display: none;
+}
+
+/* The Artifacts page: a list column and the open artifact's pane. */
+.artifacts-page {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  border-top: 1px solid var(--line-toolbar);
+}
+
+.artifacts-page[hidden] {
+  display: none;
+}
+
+.artifact-list {
+  flex: 0 0 240px;
+  overflow-y: auto;
+  padding: 8px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.artifact-row {
+  display: block;
+  width: 100%;
+  padding: 9px 12px 10px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.artifact-row:hover {
+  background: var(--hover);
+}
+
+.artifact-row[aria-current="true"] {
+  background: var(--accent-soft);
+}
+
+.artifact-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.artifact-row-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-row-time {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.artifact-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-pane-header {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.artifact-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-size {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.artifact-pane-spacer {
+  flex: 1;
+}
+
+#artifact-more[aria-expanded="true"] {
+  background: var(--hover);
+}
+
+.artifact-pane-header .card-menu {
+  top: calc(100% - 6px);
+  right: 12px;
+}
+
+/* The page is never themed: the frame is white like a browser's, whatever
+   Canvas's theme, and the page paints over it with its own colours. */
+.artifact-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--art-1);
+}
+
+.artifact-stage.fill {
+  padding: 0;
+}
+
+.artifact-frame {
+  display: block;
+  border: none;
+  background: #fff;
+  width: 100%;
+  height: 100%;
+}
+
+.artifact-stage:not(.fill) .artifact-frame {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--line), 0 8px 24px rgba(20, 18, 12, 0.12);
+}
+
+.artifact-no-entry,
+.artifacts-empty {
+  text-align: center;
+  color: var(--fg3);
+  font-size: 14px;
+}
+
+.artifact-no-entry p,
+.artifacts-empty p {
+  margin: 0 0 14px;
+}
+
+.artifact-no-entry-title {
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.artifacts-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.artifacts-empty[hidden],
+.artifact-no-entry[hidden],
+.artifact-list[hidden],
+.artifact-pane[hidden] {
+  display: none;
+}
+
+.artifacts-empty-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.artifact-no-entry code,
+.artifacts-empty code {
+  display: inline-block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--art-2);
+  color: var(--fg);
+  font: 13px ui-monospace, Menlo, Consolas, monospace;
+  -webkit-user-select: text;
+  user-select: text;
+}
