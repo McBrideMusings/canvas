@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use canvas_core::{
-    Artifact, ArtifactScriptError, ArtifactSize, ArtifactSource, ArtifactView, ScriptErrorReport,
+    Artifact, ArtifactExtras, ArtifactRefresh, ArtifactScriptError, ArtifactSize, ArtifactSource,
+    ArtifactView, RefreshError, ScriptErrorReport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,9 @@ pub const ID_PREFIX: &str = "art-";
 
 /// How much of the entry page is read looking for `canvas-size`.
 const SIZE_SCAN_BYTES: usize = 64 * 1024;
+
+/// The most HTML a widget may carry; it rides on every artifact event.
+const MAX_WIDGET_BYTES: usize = 64 * 1024;
 
 /// How many script errors canvasd keeps per artifact; older ones drop off.
 const SCRIPT_ERRORS_KEPT: usize = 50;
@@ -47,6 +51,12 @@ pub struct Artifacts {
     /// The newest [`SCRIPT_ERRORS_KEPT`] errors each artifact's page threw
     /// in a viewer's pane, oldest first, in memory only.
     script_errors: HashMap<String, VecDeque<ArtifactScriptError>>,
+    /// Each artifact's latest failed refresh run, until the next success; in
+    /// memory only.
+    pub refresh_errors: HashMap<String, RefreshError>,
+    /// The latest value pushed into each artifact (its refresh or `canvas
+    /// data`), last write wins, in memory only.
+    pub data: HashMap<String, serde_json::Value>,
     data_dir: Option<PathBuf>,
 }
 
@@ -76,6 +86,8 @@ impl Artifacts {
             records,
             fingerprints: HashMap::new(),
             script_errors: HashMap::new(),
+            refresh_errors: HashMap::new(),
+            data: HashMap::new(),
             data_dir: Some(dir.to_path_buf()),
         }
     }
@@ -127,6 +139,8 @@ impl Artifacts {
     pub fn forget(&mut self, id: &str) {
         self.fingerprints.remove(id);
         self.script_errors.remove(id);
+        self.refresh_errors.remove(id);
+        self.data.remove(id);
     }
 
     /// The folder an owned artifact `id` keeps its files in. Only ids
@@ -185,6 +199,8 @@ impl Artifacts {
             source,
             created_at: now.clone(),
             updated_at: now,
+            widget_html: None,
+            refresh: None,
         }
     }
 
@@ -202,6 +218,8 @@ impl Artifacts {
             entry,
             size,
             script_errors: Vec::new(),
+            refresh_error: self.refresh_errors.get(&artifact.id).cloned(),
+            data: self.data.get(&artifact.id).cloned(),
         }
     }
 
@@ -211,6 +229,58 @@ impl Artifacts {
         list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         list.into_iter().map(|a| self.view(a)).collect()
     }
+}
+
+/// Sets on `record` the widget and refresh `extras` carry, each one given
+/// replacing the record's own. A refresh needs a command, an interval of at
+/// least [`canvas_core::MIN_REFRESH_SECS`] and the absolute directory it runs
+/// in; `pid` is the agent process asking, whose exit stops it. The error is
+/// canvasd's answer, and leaves `record` as it was.
+pub fn apply_extras(
+    record: &mut Artifact,
+    extras: ArtifactExtras,
+    pid: Option<u32>,
+) -> Result<(), String> {
+    let refresh = match extras.refresh {
+        Some(refresh) => {
+            if refresh.command.trim().is_empty() {
+                return Err("a refresh needs a command".to_string());
+            }
+            if refresh.every_secs < canvas_core::MIN_REFRESH_SECS {
+                return Err(format!(
+                    "a refresh must run at least every {} seconds",
+                    canvas_core::MIN_REFRESH_SECS
+                ));
+            }
+            let cwd = extras
+                .cwd
+                .filter(|c| Path::new(c).is_absolute())
+                .ok_or("a refresh needs the absolute directory it runs in")?;
+            Some(ArtifactRefresh {
+                command: refresh.command,
+                every_secs: refresh.every_secs,
+                cwd,
+                pid,
+            })
+        }
+        None => None,
+    };
+    if let Some(widget) = extras.widget_html {
+        if widget.trim().is_empty() {
+            return Err("a widget needs some HTML".to_string());
+        }
+        if widget.len() > MAX_WIDGET_BYTES {
+            return Err(format!(
+                "a widget is at most {} KB of HTML",
+                MAX_WIDGET_BYTES / 1024
+            ));
+        }
+        record.widget_html = Some(widget);
+    }
+    if refresh.is_some() {
+        record.refresh = refresh;
+    }
+    Ok(())
 }
 
 fn clip(mut text: String) -> String {

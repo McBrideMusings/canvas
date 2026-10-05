@@ -179,7 +179,7 @@ async fn views_for(
     while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
         if let CanvasEvent::ArtifactUpserted(view) = event {
             if view.artifact.id == id {
-                seen.push(view);
+                seen.push(*view);
             }
         }
     }

@@ -39,45 +39,13 @@ pub struct Session {
     pub pid: Option<u32>,
 }
 
-/// How long a pinned card lives: until its own session ends (`Session`), or
-/// as long as anything in its repo keeps it (`Repo`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PinScope {
-    #[default]
-    Session,
-    Repo,
-}
-
-/// A card held in a slot: it shows as a widget on the pin shelf instead of in
-/// the feed. The slot is unique within the poster's repo (its cwd when it has
-/// none), so a post to a held slot replaces that card in place.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Pin {
-    pub slot: String,
-    #[serde(default)]
-    pub scope: PinScope,
-    /// The small HTML the shelf renders for this card; absent means the shelf
-    /// shows a plain tile.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget_html: Option<String>,
-    /// A command the daemon runs to keep the card's data current; absent means
-    /// nothing runs and the agent pushes with `canvas data --slot`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh: Option<Refresh>,
-    /// The first stderr line (or the reason) of the latest failed refresh run;
-    /// set by the daemon, cleared by the next success, ignored in a request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_error: Option<String>,
-}
-
 /// The shortest `every_secs` a refresh may ask for.
 pub const MIN_REFRESH_SECS: u64 = 5;
 
-/// A shell command the daemon runs in the session's cwd every `every_secs`
-/// while the pin exists and its session is live. It prints one JSON value to
-/// stdout, which reaches the card the way `canvas data` does.
+/// A shell command canvasd runs every `every_secs` to keep an artifact's
+/// widget and page current, as `artifact new|put --refresh` asks for it. It
+/// prints one JSON value to stdout, which reaches the artifact the way
+/// `canvas data` does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Refresh {
@@ -85,12 +53,33 @@ pub struct Refresh {
     pub every_secs: u64,
 }
 
-impl Card {
-    /// The card holds a slot that outlives its session.
-    pub fn is_repo_pinned(&self) -> bool {
-        self.pin.as_ref().is_some_and(|p| p.scope == PinScope::Repo)
-    }
+/// A [`Refresh`] as an artifact record keeps it: also the directory the
+/// command runs in (the asking shell's) and the agent process that asked.
+/// canvasd runs it while that process is alive; with no pid (a person at a
+/// shell) it runs until replaced or the artifact is deleted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactRefresh {
+    pub command: String,
+    pub every_secs: u64,
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
 
+/// The latest failed refresh run of an artifact, until the next success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshError {
+    /// The first stderr line, else the reason (timed out, not JSON, …).
+    pub message: String,
+    /// When the run failed (RFC 3339).
+    pub at: String,
+    /// When canvasd runs it next (RFC 3339).
+    pub retry_at: String,
+}
+
+impl Card {
     /// When the card last changed: `updated_at` once `post --update` has set
     /// it, else `at`. The Timeline orders by it and age pruning reads it.
     pub fn touched_at(&self) -> &str {
@@ -115,8 +104,6 @@ pub struct Card {
     pub images: Vec<String>,
     #[serde(default)]
     pub targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pin: Option<Pin>,
 }
 
 /// Request bodies use snake_case, matching Claude Code hook JSON.
@@ -132,9 +119,6 @@ pub struct PostRequest {
     pub images: Vec<String>,
     #[serde(default)]
     pub targets: Vec<String>,
-    /// Holds the card in a slot; see [`Pin`].
-    #[serde(default)]
-    pub pin: Option<Pin>,
     /// Recorded on the session only when this post creates it.
     #[serde(default)]
     pub pid: Option<u32>,
@@ -276,6 +260,12 @@ pub struct Artifact {
     pub created_at: String,
     /// When the record or its files last changed through canvasd (RFC 3339).
     pub updated_at: String,
+    /// The small HTML the artifact's list row shows; absent means the row
+    /// shows only its title and time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<ArtifactRefresh>,
 }
 
 /// The viewport a page asks for with `<meta name="canvas-size" content="WxH">`.
@@ -309,6 +299,13 @@ pub struct ArtifactView {
     /// /api/artifacts/:id` (`canvas artifact show`) fills it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_errors: Vec<ArtifactScriptError>,
+    /// The latest failed refresh run, until the next success; in memory only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<RefreshError>,
+    /// The latest value a refresh or `canvas data` pushed, in memory only;
+    /// the viewer hands it to the widget and the page as `canvas-data`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// Which kind of page failure an [`ArtifactScriptError`] is.
@@ -353,6 +350,21 @@ pub struct NewArtifactRequest {
     /// An absolute folder or HTML file to link instead of making a folder.
     #[serde(default)]
     pub link: Option<String>,
+    #[serde(flatten)]
+    pub extras: ArtifactExtras,
+}
+
+/// The widget and refresh `artifact new|put` may set. Each one given
+/// replaces the artifact's own; each one absent leaves it as it was.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArtifactExtras {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<Refresh>,
+    /// The directory the refresh runs in: the asking shell's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// Body for `POST /api/artifacts/:id/relink`: the linked artifact's new
@@ -367,6 +379,8 @@ pub struct RelinkArtifactRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutArtifactRequest {
     pub source: String,
+    #[serde(flatten)]
+    pub extras: ArtifactExtras,
 }
 
 pub mod log;

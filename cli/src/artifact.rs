@@ -4,26 +4,47 @@
 //! page as real web pages. Every verb prints canvasd's JSON on one line and,
 //! like `canvas post`, fails loudly: one stderr line, non-zero exit.
 //! `--focus` on `new` or `put` then switches every open viewer to the
-//! artifact and adds `viewers` to the JSON.
+//! artifact and adds `viewers` to the JSON. `--widget <file>` on either sets
+//! the small HTML its row on the Artifacts page shows, and `--refresh '<cmd>'
+//! [--every <secs>]` a command canvasd runs in this shell's directory, while
+//! this shell's agent lives, whose JSON output reaches the widget and page as
+//! `canvas data` does.
 //!
 //! `pane <id> --size WxH|--reset|--full|--exit` changes the open viewers' pane
 //! for that artifact as the person would by hand, printing `{"viewers": N}`
 //! and failing when N is 0; bare `pane` prints the pane a viewer last reported
 //! showing, failing when no open viewer has reported one.
 
-use crate::client::{self, percent_encode};
+use canvas_core::{Refresh, MIN_REFRESH_SECS};
 
+use crate::client::{self, percent_encode};
+use crate::format::{self, Format};
+
+/// How often `--refresh` runs when `--every` is not given.
+const DEFAULT_REFRESH_SECS: u64 = 30;
+
+#[derive(Debug)]
 pub struct UsageError;
+
+/// The `--widget`, `--refresh` and `--every` values `new` or `put` was given.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Extras {
+    pub widget: Option<String>,
+    pub refresh: Option<String>,
+    pub every: Option<String>,
+}
 
 pub enum Command {
     New {
         title: Option<String>,
         link: Option<String>,
+        extras: Extras,
         focus: bool,
     },
     Put {
         id: String,
         source: String,
+        extras: Extras,
         focus: bool,
     },
     Relink {
@@ -64,6 +85,18 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         }
         _ => return Err(UsageError),
     };
+    let extras = if matches!(words.first(), Some(&"new" | &"put")) {
+        Extras {
+            widget: take_flag(&mut words, "--widget")?,
+            refresh: take_flag(&mut words, "--refresh")?,
+            every: take_flag(&mut words, "--every")?,
+        }
+    } else {
+        Extras::default()
+    };
+    if extras.every.is_some() && extras.refresh.is_none() {
+        return Err(UsageError);
+    }
     match words.as_slice() {
         ["new", flags @ ..] => {
             let (mut title, mut link) = (None, None);
@@ -74,11 +107,17 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
                     _ => return Err(UsageError),
                 }
             }
-            Ok(Command::New { title, link, focus })
+            Ok(Command::New {
+                title,
+                link,
+                extras,
+                focus,
+            })
         }
         ["put", id, source] => Ok(Command::Put {
             id: id.to_string(),
             source: source.to_string(),
+            extras,
             focus,
         }),
         ["relink", id, link] => Ok(Command::Relink {
@@ -96,6 +135,67 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         }),
         _ => Err(UsageError),
     }
+}
+
+/// Removes `flag` and the value after it from anywhere after the verb.
+/// Given twice, or with no value, is a usage error.
+fn take_flag(words: &mut Vec<&str>, flag: &str) -> Result<Option<String>, UsageError> {
+    let Some(at) = words.iter().skip(1).position(|w| *w == flag).map(|i| i + 1) else {
+        return Ok(None);
+    };
+    if at + 1 >= words.len() {
+        return Err(UsageError);
+    }
+    let value = words.remove(at + 1).to_string();
+    words.remove(at);
+    if words.iter().skip(1).any(|w| *w == flag) {
+        return Err(UsageError);
+    }
+    Ok(Some(value))
+}
+
+/// The request fields `extras` adds: the widget file converted like a card
+/// body (by its extension, else Markdown), and the refresh with its interval
+/// and this shell's directory, which the command runs in.
+fn extras_json(extras: Extras) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut out = serde_json::Map::new();
+    if let Some(path) = extras.widget {
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?;
+        if text.trim().is_empty() {
+            return Err("no HTML in the --widget file (empty input)".to_string());
+        }
+        let format = Format::from_extension(&path).unwrap_or(Format::Markdown);
+        out.insert("widget_html".into(), format::convert(&text, format).into());
+    }
+    if let Some(command) = extras.refresh {
+        if command.trim().is_empty() {
+            return Err("--refresh needs a command".to_string());
+        }
+        let every_secs = match extras.every {
+            None => DEFAULT_REFRESH_SECS,
+            Some(v) => v
+                .parse::<u64>()
+                .map_err(|_| format!("--every needs a whole number of seconds, got {v:?}"))?,
+        };
+        if every_secs < MIN_REFRESH_SECS {
+            return Err(format!(
+                "--every must be at least {MIN_REFRESH_SECS} seconds"
+            ));
+        }
+        let refresh = Refresh {
+            command,
+            every_secs,
+        };
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("could not resolve the current directory: {e}"))?;
+        out.insert(
+            "refresh".into(),
+            serde_json::to_value(refresh).map_err(|e| e.to_string())?,
+        );
+        out.insert("cwd".into(), cwd.to_string_lossy().into_owned().into());
+    }
+    Ok(out)
 }
 
 fn parse_pane_action(flag: &[&str]) -> Result<serde_json::Value, UsageError> {
@@ -118,13 +218,17 @@ fn parse_pane_action(flag: &[&str]) -> Result<serde_json::Value, UsageError> {
 
 pub fn run(command: Command) -> Result<(), String> {
     let value = match command {
-        Command::New { title, link, focus } => {
+        Command::New {
+            title,
+            link,
+            extras,
+            focus,
+        } => {
             let link = link.as_deref().map(absolute).transpose()?;
-            let value = client::artifact_call(
-                "POST",
-                "/api/artifacts",
-                Some(&serde_json::json!({ "title": title, "link": link })),
-            )?;
+            let mut body = extras_json(extras)?;
+            body.insert("title".into(), title.into());
+            body.insert("link".into(), link.into());
+            let value = client::artifact_call("POST", "/api/artifacts", Some(&body.into()))?;
             with_focus(value, focus)
         }
         Command::Relink { id, link } => client::artifact_call(
@@ -132,12 +236,19 @@ pub fn run(command: Command) -> Result<(), String> {
             &format!("/api/artifacts/{}/relink", percent_encode(&id)),
             Some(&serde_json::json!({ "link": absolute(&link)? })),
         )?,
-        Command::Put { id, source, focus } => {
+        Command::Put {
+            id,
+            source,
+            extras,
+            focus,
+        } => {
             let source = absolute(&source)?;
+            let mut body = extras_json(extras)?;
+            body.insert("source".into(), source.into());
             let value = client::artifact_call(
                 "POST",
                 &format!("/api/artifacts/{}/put", percent_encode(&id)),
-                Some(&serde_json::json!({ "source": source })),
+                Some(&body.into()),
             )?;
             with_focus(value, focus)
         }
@@ -254,8 +365,9 @@ mod tests {
             panic!("new --focus did not parse");
         };
         assert_eq!((title.as_deref(), focus), (Some("Plan"), true));
-        let Ok(Command::Put { id, source, focus }) =
-            parse_args(&args(&["put", "art-1", "site", "--focus"]))
+        let Ok(Command::Put {
+            id, source, focus, ..
+        }) = parse_args(&args(&["put", "art-1", "site", "--focus"]))
         else {
             panic!("put --focus did not parse");
         };
@@ -269,6 +381,59 @@ mod tests {
         ));
         assert!(parse_args(&args(&["new", "--focus", "--focus"])).is_err());
         assert!(parse_args(&args(&["show", "art-1", "--focus"])).is_err());
+    }
+
+    #[test]
+    fn widget_and_refresh_go_anywhere_after_new_or_put() {
+        let Ok(Command::Put {
+            id,
+            source,
+            extras,
+            focus,
+        }) = parse_args(&args(&[
+            "put",
+            "--refresh",
+            "df -h",
+            "art-1",
+            "--every",
+            "10",
+            "site",
+            "--widget",
+            "w.html",
+            "--focus",
+        ]))
+        else {
+            panic!("put with extras did not parse");
+        };
+        assert_eq!(
+            (id.as_str(), source.as_str(), focus),
+            ("art-1", "site", true)
+        );
+        assert_eq!(
+            extras,
+            Extras {
+                widget: Some("w.html".to_string()),
+                refresh: Some("df -h".to_string()),
+                every: Some("10".to_string()),
+            }
+        );
+        assert!(parse_args(&args(&["new", "--every", "10"])).is_err());
+        assert!(parse_args(&args(&["new", "--widget", "a", "--widget", "b"])).is_err());
+        assert!(parse_args(&args(&["new", "--refresh"])).is_err());
+        assert!(parse_args(&args(&["show", "art-1", "--widget", "w.html"])).is_err());
+    }
+
+    #[test]
+    fn an_interval_under_the_minimum_is_an_error() {
+        let extras = Extras {
+            refresh: Some("date".to_string()),
+            every: Some("2".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            extras_json(extras).unwrap_err(),
+            "--every must be at least 5 seconds"
+        );
     }
 
     #[test]

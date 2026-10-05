@@ -4,7 +4,7 @@
 //! Prints `{"path": "...", "width": N, "height": N, "clipped": bool}`, the
 //! size in pixels; `clipped` (with a stderr note) when the card is taller than
 //! the window and the PNG stops at its bottom edge. No viewer open, or a card
-//! or artifact the viewer isn't showing (filtered out, archived, pinned, the
+//! or artifact the viewer isn't showing (filtered out, archived, the
 //! other page, another artifact open), is an error naming why.
 
 use std::path::Path;

@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] [--pin <slot> [--pin-scope session|repo] [--widget <file>] [--refresh <cmd> [--every <secs>]]] | canvas unpin <slot|card_id> | canvas artifact <new [--title t] [--link <dir|file.html>] [--focus] | put <id> <file|dir> [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|--slot <slot>> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -97,7 +97,10 @@ fn main() {
             let rest = &args[2..];
             let parsed = match canvas::post::parse_args(rest) {
                 Ok(parsed) => parsed,
-                Err(canvas::post::UsageError) => {
+                Err(canvas::post::UsageError(flag)) => {
+                    if let Some(flag) = flag {
+                        eprintln!("{flag}");
+                    }
                     eprintln!("{USAGE}");
                     std::process::exit(2);
                 }
@@ -128,17 +131,6 @@ fn main() {
                 std::process::exit(2);
             };
             if let Err(e) = canvas::artifact::run(command) {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        Some("unpin") => {
-            // Run on purpose, so failures are loud like `canvas post`.
-            let Some(target) = args.get(2) else {
-                eprintln!("{USAGE}");
-                std::process::exit(2);
-            };
-            if let Err(e) = canvas::pin::unpin(target) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -206,15 +198,16 @@ fn main() {
         }
         Some("data") => {
             // Run on purpose, so failures are loud like `canvas post`.
-            let (target, file) = match (args.get(2).map(String::as_str), args.get(3)) {
-                (Some("--slot"), Some(slot)) => (canvas::data::Target::Slot(slot), args.get(4)),
-                (Some("--slot"), None) | (None, _) => {
-                    eprintln!("{USAGE}");
-                    std::process::exit(2);
-                }
-                (Some(card_id), file) => (canvas::data::Target::Card(card_id), file),
+            let (Some(id), file, None) = (args.get(2), args.get(3), args.get(4)) else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
             };
-            if let Err(e) = canvas::data::run(target, file.map(String::as_str)) {
+            if id.starts_with("--") {
+                eprintln!("unknown flag {id}");
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+            if let Err(e) = canvas::data::run(id, file.map(String::as_str)) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

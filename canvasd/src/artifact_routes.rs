@@ -14,6 +14,7 @@ use canvas_core::{
 
 use crate::artifacts::{self, Artifacts};
 use crate::provenance::{Action, Actor};
+use crate::routes::MAX_DATA_BYTES;
 use crate::state::{AppState, CanvasEvent, PaneAction, PaneReport};
 
 const NO_DATA_DIR: &str = "canvasd has no data directory to keep artifacts in";
@@ -29,6 +30,14 @@ fn not_found() -> Response {
 
 fn bad_request(message: String) -> Response {
     (StatusCode::BAD_REQUEST, message).into_response()
+}
+
+/// The refresh a log line names: its interval, directory and command.
+fn refresh_text(view: &canvas_core::ArtifactView) -> String {
+    match &view.artifact.refresh {
+        Some(r) => format!("every {}s in {}: {}", r.every_secs, r.cwd, r.command),
+        None => "none".to_string(),
+    }
 }
 
 fn failed(what: &str, id: &str, e: &dyn std::fmt::Display) -> Response {
@@ -50,7 +59,7 @@ pub(crate) async fn save_and_publish(
         .map_err(|e| failed("saving artifacts.json failed", id, &e))?;
     let record = artifacts.records.get(id).ok_or_else(not_found)?;
     let view = artifacts.view(record);
-    state.publish(CanvasEvent::ArtifactUpserted(view.clone()));
+    state.publish(CanvasEvent::ArtifactUpserted(Box::new(view.clone())));
     Ok(view)
 }
 
@@ -67,7 +76,11 @@ pub async fn new_artifact(
     actor: Actor,
     body: Option<Json<NewArtifactRequest>>,
 ) -> Response {
-    let NewArtifactRequest { title, link } = body.map(|Json(b)| b).unwrap_or_default();
+    let NewArtifactRequest {
+        title,
+        link,
+        extras,
+    } = body.map(|Json(b)| b).unwrap_or_default();
     let source = match link {
         Some(link) => match artifacts::check_link(&link) {
             Ok(_) => ArtifactSource::Linked { link },
@@ -80,7 +93,10 @@ pub async fn new_artifact(
     if !artifacts.has_data_dir() {
         return no_data_dir();
     }
-    let record = artifacts.new_record(title, source);
+    let mut record = artifacts.new_record(title, source);
+    if let Err(message) = artifacts::apply_extras(&mut record, extras, actor.pid) {
+        return bad_request(message);
+    }
     let Some(root) = artifacts.source_path(&record) else {
         return no_data_dir();
     };
@@ -104,6 +120,8 @@ pub async fn new_artifact(
                     ("id", &id),
                     ("kind", &if owned { "owned" } else { "linked" }),
                     ("path", &view.path),
+                    ("widget", &view.artifact.widget_html.is_some()),
+                    ("refresh", &refresh_text(&view)),
                 ],
             );
             Json(view).into_response()
@@ -191,7 +209,9 @@ pub async fn put_artifact(
     if !source.is_absolute() {
         return (StatusCode::BAD_REQUEST, "source must be an absolute path").into_response();
     }
-    let folder = {
+    // The widget and refresh are checked before anything is copied, and set
+    // once the copy is done.
+    let (folder, extras) = {
         let artifacts = state.artifacts.read().await;
         let Some(record) = artifacts.records.get(&id) else {
             return not_found();
@@ -201,8 +221,20 @@ pub async fn put_artifact(
                 "{id} is linked to {link}; save its files there instead"
             ));
         }
+        let mut checked = record.clone();
+        let widget_given = req.extras.widget_html.is_some();
+        let refresh_given = req.extras.refresh.is_some();
+        if let Err(message) = artifacts::apply_extras(&mut checked, req.extras, actor.pid) {
+            return bad_request(message);
+        }
         match artifacts.folder(&id) {
-            Some(folder) => folder,
+            Some(folder) => (
+                folder,
+                (
+                    checked.widget_html.filter(|_| widget_given),
+                    checked.refresh.filter(|_| refresh_given),
+                ),
+            ),
             None => return no_data_dir(),
         }
     };
@@ -247,6 +279,18 @@ pub async fn put_artifact(
         return not_found();
     };
     record.updated_at = chrono::Utc::now().to_rfc3339();
+    // Only what this put gave replaces the record's own, so a put that ran
+    // alongside this one keeps what it set.
+    let (widget_html, refresh) = extras;
+    if widget_html.is_some() {
+        record.widget_html = widget_html;
+    }
+    let refresh_given = refresh.is_some();
+    if refresh_given {
+        record.refresh = refresh;
+        // The error belonged to the command this one replaces.
+        artifacts.refresh_errors.remove(&id);
+    }
     artifacts.fingerprints.insert(id.clone(), print);
     match save_and_publish(&state, &artifacts, &id).await {
         Ok(view) => {
@@ -257,6 +301,8 @@ pub async fn put_artifact(
                     ("id", &id),
                     ("source", &source.display()),
                     ("files", &files),
+                    ("widget", &view.artifact.widget_html.is_some()),
+                    ("refresh", &refresh_text(&view)),
                 ],
             );
             Json(view).into_response()
@@ -313,6 +359,36 @@ pub async fn artifact_log(State(state): State<AppState>, Path(id): Path<String>)
         Some(Ok(lines)) if lines.is_empty() && !artifacts.records.contains_key(&id) => not_found(),
         Some(Ok(lines)) => Json(lines).into_response(),
     }
+}
+
+/// `canvas data art-…`: pushes one JSON value into the artifact's widget and
+/// page, the way its refresh command's output arrives. The latest value is
+/// kept in memory, so a viewer that loads later, or a frame that reloads,
+/// gets it. Answers how many viewers the value reached; 404 for an unknown
+/// id; 413 past [`MAX_DATA_BYTES`].
+pub async fn put_artifact_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(value): Json<serde_json::Value>,
+) -> Response {
+    let size = serde_json::to_vec(&value).map(|b| b.len()).unwrap_or(0);
+    if size > MAX_DATA_BYTES {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let mut artifacts = state.artifacts.write().await;
+    if !artifacts.records.contains_key(&id) {
+        return not_found();
+    }
+    artifacts.data.insert(id.clone(), value.clone());
+    let viewers = state.publish(CanvasEvent::ArtifactData {
+        id: id.clone(),
+        value,
+    });
+    canvas_core::log::info(
+        "artifact data",
+        &[("id", &id), ("bytes", &size), ("viewers", &viewers)],
+    );
+    Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
 /// The viewer relays one uncaught error or unhandled rejection from the

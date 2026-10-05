@@ -373,7 +373,7 @@
   }
 
   function paintCardColours() {
-    for (const el of [...cardsEl.children, ...document.querySelectorAll(".widget")]) {
+    for (const el of cardsEl.children) {
       const s = sessions.get(el.dataset.sessionId);
       if (s) el.style.setProperty("--session-colour", sessionColour(s));
     }
@@ -500,6 +500,8 @@
   window.addEventListener("canvas-theme", () => {
     applyThemeButton();
     bootstrapRender();
+    // Each widget frame's key carries the theme, so this rebuilds them.
+    if (page === "artifacts") renderArtifactList();
     reportTheme();
   });
 
@@ -562,7 +564,7 @@
   function sessionCardCount(sessionId) {
     let n = 0;
     for (const c of cards.values()) {
-      if (c.sessionId === sessionId && !c.pin) n++;
+      if (c.sessionId === sessionId) n++;
     }
     return n;
   }
@@ -1284,9 +1286,7 @@
     const active = document.activeElement;
     if (
       active instanceof HTMLIFrameElement &&
-      (cardsEl.contains(active) ||
-        artifactStageEl.contains(active) ||
-        (sheet && sheet.dialog.contains(active)))
+      (cardsEl.contains(active) || artifactStageEl.contains(active))
     ) {
       closeMenu();
     }
@@ -1314,7 +1314,6 @@
     postTextLower.delete(id);
     cardDataPushes.delete(id);
     unseen.cardIds.delete(id);
-    removeWidget(id);
     const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(id)}"]`);
     if (el) {
       // A card removed from above the reader shrinks the stream above them
@@ -1339,7 +1338,6 @@
       cards.delete(cardId);
       postTextLower.delete(cardId);
       unseen.cardIds.delete(cardId);
-      removeWidget(cardId);
       const el = cardsEl.querySelector(`[data-card-id="${CSS.escape(cardId)}"]`);
       if (el) {
         const wasAbove = cardIsAboveViewport(el);
@@ -1470,8 +1468,7 @@
     searchCountEl.hidden = !filtering;
     searchCountEl.textContent = `${visible} of ${fromVisibleSessions}`;
     searchEl.classList.toggle("filtering", filtering);
-    // A shelf of pins is not an empty window.
-    updateEmptyState(visible || (shelf && !filtering ? 1 : 0));
+    updateEmptyState(visible);
     renderPill();
   }
 
@@ -1992,9 +1989,7 @@
   // carries a card id (an untrusted iframe naming its own card id would let
   // one card's script open another card's targets).
   function cardFrames() {
-    const frames = Array.from(cardsEl.querySelectorAll("iframe"));
-    if (sheet) frames.push(...sheet.dialog.querySelectorAll("iframe"));
-    return frames;
+    return Array.from(cardsEl.querySelectorAll("iframe"));
   }
 
   function cardForFrameSource(source) {
@@ -2068,8 +2063,7 @@
 
   function deliverCardData(cardId, value) {
     cardDataPushes.set(cardId, (cardDataPushes.get(cardId) || 0) + 1);
-    // The card in the feed, its widget and its open sheet all carry the id.
-    for (const frame of document.querySelectorAll(
+    for (const frame of cardsEl.querySelectorAll(
       `[data-card-id="${CSS.escape(cardId)}"] iframe`
     )) {
       postCardData(frame, value);
@@ -2108,6 +2102,14 @@
     }
 
     if (data.type === "canvas-resize") {
+      // A widget takes its content's height, up to 120px. A row on the
+      // hidden Artifacts page reports 0; it keeps its last real height.
+      for (const { frame } of artifactRows.values()) {
+        if (frame && frame.contentWindow === event.source) {
+          if (data.height > 0) frame.style.height = `${Math.min(120, data.height)}px`;
+          return;
+        }
+      }
       for (const frame of cardFrames()) {
         if (frame.contentWindow === event.source) {
           const cardEl = frame.closest(".card");
@@ -2206,308 +2208,6 @@
     }
   });
 
-  // Pinned posts. A card holding a pin leaves the feed for the shelf under the
-  // toolbar: one small widget per pin (the pin's own widgetHtml, else the
-  // card's first heading) in slot order. A widget opens its full card as a
-  // sheet over the dimmed feed. The shelf element exists only while something
-  // is pinned. A widget is replaced one at a time and never moved, because
-  // moving an iframe in the document reloads it.
-  const WIDGET_W = 200;
-  const WIDGET_GAP = 10;
-  let shelf = null; // { root, label, more, row } while any card is pinned
-  let shelfExpanded = false;
-  let sheet = null; // { cardId, scrim, dialog } while a sheet is open
-
-  function pinOrder(a, b) {
-    if (a.pin.slot !== b.pin.slot) return a.pin.slot < b.pin.slot ? -1 : 1;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  }
-
-  function pinnedCards() {
-    return Array.from(cards.values()).filter((c) => c.pin).sort(pinOrder);
-  }
-
-  function widgetFor(cardId) {
-    return shelf
-      ? shelf.row.querySelector(`.widget[data-card-id="${CSS.escape(cardId)}"]`)
-      : null;
-  }
-
-  function shortAge(iso) {
-    const then = new Date(iso).getTime();
-    if (Number.isNaN(then)) return "";
-    const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-    if (s < 60) return `${s}s`;
-    if (s < 3600) return `${Math.floor(s / 60)}m`;
-    if (s < 86400) return `${Math.floor(s / 3600)}h`;
-    return `${Math.floor(s / 86400)}d`;
-  }
-
-  // The tile a pin with no widgetHtml shows: the post's first heading, else
-  // the first line of its text, else its slot.
-  function cardTitle(card) {
-    const doc = new DOMParser().parseFromString(card.html, "text/html");
-    const heading = doc.querySelector("h1, h2, h3, h4, h5, h6");
-    const text = heading ? heading.textContent.trim() : "";
-    if (text) return text;
-    const line = postText(card).split("\n").map((l) => l.trim()).find(Boolean);
-    return line ? line.slice(0, 120) : card.pin.slot;
-  }
-
-  function buildWidget(card) {
-    const el = document.createElement("div");
-    el.className = "widget";
-    el.dataset.cardId = card.id;
-    el.dataset.sessionId = card.sessionId;
-    const session = sessions.get(card.sessionId);
-    if (session) el.style.setProperty("--session-colour", sessionColour(session));
-    const title = cardTitle(card);
-
-    if (card.pin.widgetHtml) {
-      const frame = document.createElement("iframe");
-      frame.setAttribute("sandbox", "allow-scripts");
-      frame.tabIndex = -1;
-      frame.setAttribute("aria-hidden", "true");
-      frame.srcdoc = buildIframeDoc(card.pin.widgetHtml);
-      frame.addEventListener("load", () => replayCardData(card.id, frame));
-      el.appendChild(frame);
-    } else {
-      const tile = document.createElement("div");
-      tile.className = "w-title";
-      tile.textContent = title;
-      el.appendChild(tile);
-    }
-
-    const meta = document.createElement("span");
-    meta.className = "w-meta";
-    const dot = document.createElement("span");
-    dot.className = "w-dot";
-    const age = document.createElement("span");
-    age.className = "w-age";
-    age.textContent = shortAge(touchedAt(card));
-    meta.append(dot, age);
-    el.appendChild(meta);
-
-    const error = card.pin.refreshError;
-    if (error) {
-      const mark = document.createElement("span");
-      mark.className = "w-error";
-      mark.textContent = "!";
-      el.appendChild(mark);
-    }
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("aria-label", error ? `Open ${title} (refresh failed)` : `Open ${title}`);
-    button.setAttribute("aria-expanded", "false");
-    if (error) button.title = error;
-    button.addEventListener("click", () => openSheet(card.id));
-    el.appendChild(button);
-    return el;
-  }
-
-  function ensureShelf() {
-    if (shelf) return;
-    const root = document.createElement("section");
-    root.className = "shelf";
-    root.setAttribute("aria-label", "Pinned posts");
-    const head = document.createElement("div");
-    head.className = "shelf-head";
-    const label = document.createElement("div");
-    label.className = "shelf-label";
-    const labelText = document.createElement("span");
-    label.append(buildIcon("pin"), labelText);
-    const more = document.createElement("button");
-    more.type = "button";
-    more.className = "shelf-more";
-    more.addEventListener("click", () => {
-      shelfExpanded = !shelfExpanded;
-      measureShelf();
-    });
-    head.append(label, more);
-    const row = document.createElement("div");
-    row.className = "shelf-row";
-    root.append(head, row);
-    bodySplitEl.before(root);
-    shelf = { root, label: labelText, more, row };
-    new ResizeObserver(measureShelf).observe(row);
-  }
-
-  // How many widgets fit the row is arithmetic on their fixed width. Those
-  // past it stay out of the tab order until "+N" wraps the row to show them.
-  function measureShelf() {
-    if (!shelf) return;
-    const widgets = Array.from(shelf.row.children);
-    const capacity = Math.max(
-      1,
-      Math.floor((shelf.row.clientWidth - 6 + WIDGET_GAP) / (WIDGET_W + WIDGET_GAP))
-    );
-    const hidden = Math.max(0, widgets.length - capacity);
-    if (hidden === 0) shelfExpanded = false;
-    // Focus or a drag can scroll the clipped row; it always starts at the left.
-    shelf.row.scrollLeft = 0;
-    const collapsed = hidden > 0 && !shelfExpanded;
-    shelf.row.classList.toggle("overflowing", collapsed);
-    shelf.row.classList.toggle("expanded", hidden > 0 && shelfExpanded);
-    widgets.forEach((w, i) => {
-      w.inert = collapsed && i >= capacity;
-    });
-    shelf.more.hidden = hidden === 0;
-    shelf.more.textContent = shelfExpanded ? "Show less" : `+${hidden}`;
-    shelf.more.setAttribute("aria-expanded", String(shelfExpanded));
-  }
-
-  // The label, the overflow and the shelf's own existence follow the pins.
-  function updateShelf() {
-    const n = pinnedCards().length;
-    if (n === 0) {
-      if (shelf) shelf.root.remove();
-      shelf = null;
-      shelfExpanded = false;
-      return;
-    }
-    ensureShelf();
-    shelf.label.textContent = `Pinned · ${n}`;
-    measureShelf();
-  }
-
-  function markWidgetOpen() {
-    if (!shelf) return;
-    for (const w of shelf.row.children) {
-      const open = Boolean(sheet) && w.dataset.cardId === sheet.cardId;
-      w.classList.toggle("open", open);
-      w.querySelector("button").setAttribute("aria-expanded", String(open));
-    }
-  }
-
-  function upsertWidget(card) {
-    ensureShelf();
-    const old = widgetFor(card.id);
-    if (old) old.remove();
-    const el = buildWidget(card);
-    const next = Array.from(shelf.row.children).find((w) => pinOrder(card, cards.get(w.dataset.cardId)) < 0);
-    shelf.row.insertBefore(el, next || null);
-    updateShelf();
-    if (sheet && sheet.cardId === card.id) {
-      paintSheet();
-      markWidgetOpen();
-    }
-  }
-
-  function removeWidget(cardId) {
-    if (sheet && sheet.cardId === cardId) closeSheet({ restoreFocus: false });
-    const el = widgetFor(cardId);
-    if (!el) return;
-    el.remove();
-    updateShelf();
-  }
-
-  // Rebuilds every widget: the initial load, a reconnect, a theme change.
-  function rebuildShelf() {
-    if (shelf) shelf.row.replaceChildren();
-    const pins = pinnedCards();
-    if (pins.length) {
-      ensureShelf();
-      shelf.row.append(...pins.map(buildWidget));
-    }
-    updateShelf();
-    if (sheet) {
-      const card = cards.get(sheet.cardId);
-      if (card && card.pin) {
-        paintSheet();
-        markWidgetOpen();
-      } else {
-        closeSheet({ restoreFocus: false });
-      }
-    }
-  }
-
-  function paintSheet() {
-    const card = cards.get(sheet.cardId);
-    const el = renderCard(card);
-    const header = el.querySelector(".card-header");
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "icon-btn sheet-close";
-    close.setAttribute("aria-label", "Close");
-    close.appendChild(buildIcon("x"));
-    close.addEventListener("click", () => closeSheet());
-    header.appendChild(close);
-    const error = card.pin.refreshError;
-    if (error) {
-      const line = document.createElement("div");
-      line.className = "sheet-error";
-      line.setAttribute("role", "alert");
-      line.textContent = error;
-      el.insertBefore(line, el.querySelector(".card-body"));
-    }
-    sheet.dialog.setAttribute("aria-label", cardTitle(card));
-    // A refresh rebuilds the card under a reader: keep their place and focus.
-    const scrollTop = sheet.dialog.scrollTop;
-    const hadFocus = sheet.dialog.contains(document.activeElement);
-    sheet.dialog.replaceChildren(el);
-    sheet.dialog.scrollTop = scrollTop;
-    if (hadFocus) close.focus();
-    closeMenuIfDetached();
-  }
-
-  function openSheet(cardId) {
-    const card = cards.get(cardId);
-    if (!card || !card.pin) return;
-    if (sheet && sheet.cardId === cardId) return;
-    if (sheet) closeSheet({ restoreFocus: false });
-    const scrim = document.createElement("div");
-    scrim.className = "sheet-scrim";
-    scrim.addEventListener("click", (e) => {
-      if (e.target === scrim) closeSheet();
-    });
-    const dialog = document.createElement("div");
-    dialog.className = "sheet";
-    dialog.setAttribute("role", "dialog");
-    dialog.setAttribute("aria-modal", "true");
-    scrim.appendChild(dialog);
-    sheet = { cardId, scrim, dialog };
-    mainColEl.appendChild(scrim);
-    streamEl.inert = true;
-    paintSheet();
-    markWidgetOpen();
-    dialog.querySelector(".sheet-close").focus();
-  }
-
-  function closeSheet({ restoreFocus = true } = {}) {
-    if (!sheet) return;
-    const { cardId, scrim } = sheet;
-    sheet = null;
-    scrim.remove();
-    streamEl.inert = false;
-    closeMenuIfDetached();
-    markWidgetOpen();
-    if (restoreFocus) {
-      const widget = widgetFor(cardId);
-      if (widget) widget.querySelector("button").focus();
-    }
-  }
-
-  // Ahead of the menu's and the lightbox's own Escape handling: a menu or the
-  // lightbox opened over the sheet closes first, and the sheet on the next press.
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key !== "Escape" || !sheet || openMenu || lightbox) return;
-      e.stopPropagation();
-      closeSheet();
-    },
-    true
-  );
-
-  setInterval(() => {
-    if (!shelf) return;
-    for (const w of shelf.row.children) {
-      const card = cards.get(w.dataset.cardId);
-      if (card) w.querySelector(".w-age").textContent = shortAge(touchedAt(card));
-    }
-  }, 1000);
-
   function renderCard(card) {
     const el = document.createElement("div");
     el.className = "card";
@@ -2582,9 +2282,8 @@
     const sorted = sortedCards();
     cardsEl.innerHTML = "";
     for (const card of sorted) {
-      if (!card.pin) cardsEl.appendChild(renderCard(card));
+      cardsEl.appendChild(renderCard(card));
     }
-    rebuildShelf();
     refreshVisibility();
   }
 
@@ -2592,28 +2291,12 @@
   // card's DOM node (and any live iframe inside it) untouched, so a card
   // updated elsewhere never reloads this card's sandboxed HTML posts.
   function upsertCard(card) {
-    const wasPinned = Boolean(cards.get(card.id)?.pin);
     cards.set(card.id, card);
     postTextLower.delete(card.id);
 
     const existing = cardsEl.querySelector(
       `[data-card-id="${CSS.escape(card.id)}"]`
     );
-    if (card.pin) {
-      // A pinned card lives on the shelf, not in the feed.
-      if (existing) {
-        const wasAbove = cardIsAboveViewport(existing);
-        const height = existing.offsetHeight + (parseFloat(getComputedStyle(existing).marginBottom) || 0);
-        existing.remove();
-        if (wasAbove) holdPlace(-height);
-        closeMenuIfDetached();
-      }
-      unseen.cardIds.delete(card.id);
-      upsertWidget(card);
-      refreshVisibility();
-      return;
-    }
-    removeWidget(card.id);
     // Replacing a card above the reader can change its height (a longer
     // post, a resized image) as surely as a resize or an arrival can — hold
     // the same way, against the height existing had a moment ago.
@@ -2648,7 +2331,7 @@
     // Only a new post from a session the reader can see arrives; replacing
     // a card, or a post from a hidden session, is silent.
     const session = sessions.get(card.sessionId);
-    const arrives = !existing && !wasPinned && !(session && isHidden(session));
+    const arrives = !existing && !(session && isHidden(session));
     if (arrives && !el.hidden) arrive(el, card);
 
     // A new card changes its session's count — refresh the chip row and
@@ -2786,7 +2469,7 @@
     const repo = sessionRepo(sessionId);
     const card = `.card[data-session-id="${CSS.escape(sessionId)}"]`;
     const colour = sessionColour(sessions.get(sessionId));
-    for (const el of document.querySelectorAll(`${card}, .widget[data-session-id="${CSS.escape(sessionId)}"]`)) {
+    for (const el of cardsEl.querySelectorAll(card)) {
       el.style.setProperty("--session-colour", colour);
     }
     for (const el of cardsEl.querySelectorAll(`${card} .session-name`)) {
@@ -3008,6 +2691,7 @@
   const artifactFullEl = document.getElementById("artifact-full");
   const titlebarArtifactEl = document.getElementById("titlebar-artifact");
   const exitFullEl = document.getElementById("artifact-exit-full");
+  const artifactRefreshErrorEl = document.getElementById("artifact-refresh-error");
   artifactMoreEl.appendChild(buildIcon("more"));
   artifactFullEl.appendChild(buildIcon("expand"));
 
@@ -3064,35 +2748,142 @@
     return artifact.title || "Untitled artifact";
   }
 
-  function buildArtifactRow(artifact) {
-    const row = document.createElement("button");
-    row.type = "button";
+  // One row per artifact, kept across renders and patched in place, so a
+  // re-render never reloads a row's widget. Its widget frame is rebuilt only
+  // when the widget's HTML or the theme changes, and reloads when the row
+  // moves (moving an iframe reloads it), which only a change of order does.
+  const artifactRows = new Map(); // id -> { row, hit, title, time, widget, error, frame, frameKey }
+
+  function buildArtifactRow(id) {
+    const row = document.createElement("div");
     row.className = "artifact-row";
-    row.dataset.artifactId = artifact.id;
+    row.dataset.artifactId = id;
     const title = document.createElement("span");
     title.className = "artifact-row-title";
+    const time = document.createElement("span");
+    time.className = "artifact-row-time";
+    const widget = document.createElement("div");
+    widget.className = "artifact-widget";
+    widget.hidden = true;
+    const error = document.createElement("span");
+    error.className = "artifact-row-error";
+    error.textContent = "refresh failed";
+    error.hidden = true;
+    // One transparent button over the row makes title, time and widget one
+    // click target; the widget's frame takes no input of its own.
+    const hit = document.createElement("button");
+    hit.type = "button";
+    hit.className = "artifact-row-hit";
+    hit.addEventListener("click", () => openArtifact(id));
+    row.append(title, time, widget, error, hit);
+    return { row, hit, title, time, widget, error, frame: null, frameKey: null };
+  }
+
+  function paintArtifactRow(entry, artifact) {
+    const name = artifactTitle(artifact);
+    entry.title.replaceChildren();
     if (artifact.sourceMissing) {
       const warn = buildIcon("warning");
       warn.classList.add("artifact-row-warn");
-      title.appendChild(warn);
-      row.title = "Source missing";
+      entry.title.appendChild(warn);
     }
-    title.appendChild(document.createTextNode(artifactTitle(artifact)));
-    const time = document.createElement("span");
-    time.className = "artifact-row-time";
+    entry.title.appendChild(document.createTextNode(name));
+    entry.row.title = artifact.sourceMissing ? "Source missing" : "";
     const kind = artifact.kind === "linked" ? "linked ·" : "updated";
-    time.textContent = `${kind} ${relativeTime(artifact.updatedAt)}`;
-    time.title = new Date(artifact.updatedAt).toLocaleString();
-    row.append(title, time);
-    if (artifact.id === openArtifactId) row.setAttribute("aria-current", "true");
-    row.addEventListener("click", () => openArtifact(artifact.id));
-    return row;
+    entry.time.textContent = `${kind} ${relativeTime(artifact.updatedAt)}`;
+    entry.time.title = new Date(artifact.updatedAt).toLocaleString();
+    const failed = Boolean(artifact.refreshError);
+    entry.row.classList.toggle("refresh-failed", failed);
+    entry.error.hidden = !failed;
+    entry.hit.setAttribute("aria-label", failed ? `${name}, refresh failed` : name);
+    const current = artifact.id === openArtifactId;
+    entry.row.classList.toggle("current", current);
+    if (current) entry.hit.setAttribute("aria-current", "true");
+    else entry.hit.removeAttribute("aria-current");
+
+    const html = artifact.widgetHtml;
+    const key = html ? `${window.canvasTheme.get()}\n${html}` : null;
+    if (key === entry.frameKey) return;
+    entry.frameKey = key;
+    entry.frame = null;
+    entry.widget.replaceChildren();
+    entry.widget.hidden = !html;
+    if (!html) return;
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.tabIndex = -1;
+    frame.setAttribute("aria-hidden", "true");
+    frame.srcdoc = buildIframeDoc(html);
+    frame.addEventListener("load", () => postArtifactData(frame, artifacts.get(artifact.id)?.data));
+    const dot = document.createElement("span");
+    dot.className = "artifact-widget-dot";
+    entry.widget.append(frame, dot);
+    entry.frame = frame;
   }
 
   function renderArtifactList() {
-    const list = sortedArtifacts();
-    artifactListEl.replaceChildren(...list.map(buildArtifactRow));
+    for (const [id, entry] of artifactRows) {
+      if (artifacts.has(id)) continue;
+      entry.row.remove();
+      artifactRows.delete(id);
+    }
+    sortedArtifacts().forEach((artifact, i) => {
+      let entry = artifactRows.get(artifact.id);
+      if (!entry) {
+        entry = buildArtifactRow(artifact.id);
+        artifactRows.set(artifact.id, entry);
+      }
+      paintArtifactRow(entry, artifact);
+      const at = artifactListEl.children[i];
+      if (at !== entry.row) artifactListEl.insertBefore(entry.row, at || null);
+    });
   }
+
+  // A refresh's output and `canvas data art-…` reach the artifact's widget
+  // and its open page as `{type: 'canvas-data', value}`, without rebuilding
+  // either. The latest value rides on the artifact, so a frame that loads
+  // later gets it too.
+  function postArtifactData(frame, value) {
+    if (value !== undefined && frame && frame.contentWindow) {
+      frame.contentWindow.postMessage({ type: "canvas-data", value }, "*");
+    }
+  }
+
+  function deliverArtifactData(id, value) {
+    const artifact = artifacts.get(id);
+    if (!artifact) return;
+    artifact.data = value;
+    postArtifactData(artifactRows.get(id)?.frame, value);
+    if (artifactFrameId === id) postArtifactData(artifactFrame, value);
+  }
+
+  // "2m": how long ago or how far off, for the refresh error line.
+  function briefSpan(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.round(s / 60)}m`;
+    if (s < 86400) return `${Math.round(s / 3600)}h`;
+    return `${Math.round(s / 86400)}d`;
+  }
+
+  function refreshErrorText(error) {
+    const now = Date.now();
+    const age = briefSpan(now - new Date(error.at).getTime());
+    const wait = new Date(error.retryAt).getTime() - now;
+    const retry = wait > 0 ? `retrying in ${briefSpan(wait)}` : "retrying now";
+    return `Refresh failed ${age} ago: ${error.message} · ${retry}`;
+  }
+
+  function paintRefreshError() {
+    const error = openArtifactId && artifacts.get(openArtifactId)?.refreshError;
+    artifactRefreshErrorEl.hidden = !error;
+    artifactRefreshErrorEl.textContent = error ? refreshErrorText(error) : "";
+  }
+
+  // The line's ages count on while it shows.
+  setInterval(() => {
+    if (page === "artifacts" && !artifactRefreshErrorEl.hidden) paintRefreshError();
+  }, 1000);
 
   // The pane's page: a sandboxed iframe on the artifact's own URL, so its
   // relative links, scripts and the History API work. allow-scripts without
@@ -3120,6 +2911,7 @@
   }
 
   function paintArtifactPane() {
+    paintRefreshError();
     const artifact = openArtifactId && artifacts.get(openArtifactId);
     if (!artifact) {
       dropArtifactFrame();
@@ -3164,7 +2956,11 @@
       artifactFrame.setAttribute("sandbox", "allow-scripts");
       // `canvas snapshot` waits for the page to load before capturing it.
       const frame = artifactFrame;
-      frame.addEventListener("load", () => (frame.dataset.loaded = "true"));
+      const id = artifact.id;
+      frame.addEventListener("load", () => {
+        frame.dataset.loaded = "true";
+        postArtifactData(frame, artifacts.get(id)?.data);
+      });
       artifactBox.append(artifactFrame, buildPaneGrip());
       artifactStageEl.appendChild(artifactBox);
       paneObserver.observe(artifactBox);
@@ -3431,10 +3227,10 @@
   artifactFullEl.addEventListener("click", () => setArtifactFull(true));
   exitFullEl.addEventListener("click", () => setArtifactFull(false));
 
-  // The menu, lightbox, sheet and drawer each take Escape first.
+  // The menu, lightbox and drawer each take Escape first.
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !artifactFull) return;
-    if (openMenu || lightbox || sheet || drawerIsOpen()) return;
+    if (openMenu || lightbox || drawerIsOpen()) return;
     e.preventDefault();
     setArtifactFull(false);
   });
@@ -3615,6 +3411,7 @@
     handlers["artifact-upserted"] = (artifact) => upsertArtifact(artifact);
 
     handlers["artifact-removed"] = ({ id }) => removeArtifact(id);
+    handlers["artifact-data"] = ({ id, value }) => deliverArtifactData(id, value);
 
     // `canvas focus art-…`: switch to the Artifacts page and open it.
     handlers["artifact-focus"] = ({ id }) => focusArtifact(id);
@@ -3648,10 +3445,6 @@
     resetVisibility();
     const session = sessions.get(card.sessionId);
     if (session && isHidden(session)) showSession(session.id);
-    if (card.pin) {
-      openSheet(id);
-      return;
-    }
     const el = cardsEl.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
     if (!el) return;
     el.scrollIntoView({ block: "center" });
@@ -3696,7 +3489,6 @@
     if (!card) error = "the viewer has no card with that id";
     else if (page !== "timeline")
       error = `the Artifacts page is showing, not the Timeline; canvas focus ${id} shows the card`;
-    else if (card.pin) error = "the card is pinned: it shows on the pin shelf, not in the feed";
     else if (session && isHidden(session))
       error = `the card's session is hidden (archived or filtered out); canvas focus ${id} shows it`;
     else if (!el || el.hidden || el.getClientRects().length === 0)

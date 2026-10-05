@@ -1,11 +1,12 @@
-//! Pin refresh: runs a pin's `--refresh` command on its interval and delivers
-//! the JSON it prints the way `canvas data` does.
+//! Artifact refresh: runs an artifact's `--refresh` command on its interval,
+//! in the directory it was set from, while the agent process that set it is
+//! alive, and delivers the JSON it prints the way `canvas data` does.
 
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use canvas_core::{Card, Refresh};
+use canvas_core::RefreshError;
 
 use crate::routes::MAX_DATA_BYTES;
 use crate::state::{AppState, CanvasEvent};
@@ -19,15 +20,17 @@ pub const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Failures double the wait between runs, up to this many seconds.
 const MAX_BACKOFF_SECS: u64 = 600;
 
-/// How often the daemon looks for pins whose refresh is due.
+/// How often the daemon looks for artifacts whose refresh is due.
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// What the scheduler remembers about one card's refresh loop. Dropped when
-/// the card stops refreshing (unpinned, session ended, removed).
+/// What the scheduler remembers about one artifact's refresh loop. Dropped
+/// when the artifact stops refreshing (deleted, or the process that set the
+/// refresh is gone).
 pub struct Slot {
     generation: u64,
     command: String,
     every_secs: u64,
+    cwd: String,
     next_due: Instant,
     failures: u32,
     running: bool,
@@ -35,7 +38,7 @@ pub struct Slot {
 
 /// One run handed out by [`AppState::refresh_tick`].
 struct Job {
-    card_id: String,
+    id: String,
     generation: u64,
     command: String,
     cwd: String,
@@ -51,56 +54,73 @@ pub fn delay_secs(every_secs: u64, failures: u32) -> u64 {
 }
 
 impl AppState {
-    /// Starts every refresh that is due. A run is spawned and left to finish
-    /// on its own; one pin never has two running at once.
-    pub async fn refresh_tick(&self) {
+    /// Starts every refresh that is due, for each artifact whose refresh was
+    /// set by a process `is_alive` accepts (or by none). A run is spawned and
+    /// left to finish on its own; one artifact never has two running at once.
+    pub async fn refresh_tick_with(&self, is_alive: impl Fn(u32) -> bool) {
         let now = Instant::now();
         let mut jobs = Vec::new();
+        let mut gone = Vec::new();
         {
-            let inner = self.inner.read().await;
+            let artifacts = self.artifacts.read().await;
             let mut slots = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
             let mut live = HashSet::new();
-            for card in &inner.cards {
-                let Some(refresh) = card.pin.as_ref().and_then(|p| p.refresh.as_ref()) else {
+            for record in artifacts.records.values() {
+                let Some(refresh) = record.refresh.as_ref() else {
                     continue;
                 };
-                let Some(session) = inner
-                    .sessions
-                    .get(&card.session_id)
-                    .filter(|s| s.ended_at.is_none())
-                else {
+                if refresh.pid.is_some_and(|pid| !is_alive(pid)) {
+                    // Nothing will retry it, so its error no longer applies.
+                    if artifacts.refresh_errors.contains_key(&record.id) {
+                        gone.push(record.id.clone());
+                    }
                     continue;
-                };
-                live.insert(card.id.clone());
-                let stale = slots.get(&card.id).is_none_or(|s| {
-                    s.command != refresh.command || s.every_secs != refresh.every_secs
+                }
+                live.insert(record.id.clone());
+                let stale = slots.get(&record.id).is_none_or(|s| {
+                    s.command != refresh.command
+                        || s.every_secs != refresh.every_secs
+                        || s.cwd != refresh.cwd
                 });
                 if stale {
                     let generation = self.next_generation();
                     slots.insert(
-                        card.id.clone(),
+                        record.id.clone(),
                         Slot {
                             generation,
                             command: refresh.command.clone(),
                             every_secs: refresh.every_secs,
+                            cwd: refresh.cwd.clone(),
                             next_due: now,
                             failures: 0,
                             running: false,
                         },
                     );
                 }
-                let slot = slots.get_mut(&card.id).expect("slot inserted above");
+                let slot = slots.get_mut(&record.id).expect("slot inserted above");
                 if !slot.running && now >= slot.next_due {
                     slot.running = true;
                     jobs.push(Job {
-                        card_id: card.id.clone(),
+                        id: record.id.clone(),
                         generation: slot.generation,
                         command: refresh.command.clone(),
-                        cwd: session.cwd.clone(),
+                        cwd: refresh.cwd.clone(),
                     });
                 }
             }
             slots.retain(|id, _| live.contains(id));
+        }
+        if !gone.is_empty() {
+            let mut artifacts = self.artifacts.write().await;
+            for id in gone {
+                if artifacts.refresh_errors.remove(&id).is_none() {
+                    continue;
+                }
+                if let Some(record) = artifacts.records.get(&id) {
+                    let view = artifacts.view(record);
+                    self.publish(CanvasEvent::ArtifactUpserted(Box::new(view)));
+                }
+            }
         }
         for job in jobs {
             let state = self.clone();
@@ -111,14 +131,21 @@ impl AppState {
         }
     }
 
-    /// Delivers a run's result, unless the pin was replaced, unpinned or its
-    /// session ended while the command ran.
+    /// [`Self::refresh_tick_with`] against the real process table.
+    pub async fn refresh_tick(&self) {
+        self.refresh_tick_with(crate::state::process_alive).await;
+    }
+
+    /// Delivers a run's result, unless the refresh was replaced, or the
+    /// artifact deleted, while the command ran. A success pushes its value
+    /// and clears the error; a failure keeps the last value and records the
+    /// error with when the next run is due.
     async fn finish_refresh(&self, job: &Job, result: Result<serde_json::Value, String>) {
-        let mut inner = self.inner.write().await;
-        {
+        let mut artifacts = self.artifacts.write().await;
+        let wait = {
             let mut slots = self.refreshes.lock().unwrap_or_else(|e| e.into_inner());
             let Some(slot) = slots
-                .get_mut(&job.card_id)
+                .get_mut(&job.id)
                 .filter(|s| s.generation == job.generation)
             else {
                 return;
@@ -129,43 +156,51 @@ impl AppState {
             } else {
                 slot.failures.saturating_add(1)
             };
-            slot.next_due =
-                Instant::now() + Duration::from_secs(delay_secs(slot.every_secs, slot.failures));
-        }
-        let Some(card) = inner.cards.iter().find(|c| c.id == job.card_id) else {
-            return;
+            let wait = delay_secs(slot.every_secs, slot.failures);
+            slot.next_due = Instant::now() + Duration::from_secs(wait);
+            wait
         };
-        let live = inner
-            .sessions
-            .get(&card.session_id)
-            .is_some_and(|s| s.ended_at.is_none());
-        if !live || card.pin.as_ref().and_then(|p| p.refresh.as_ref()).is_none() {
+        if !artifacts.records.contains_key(&job.id) {
             return;
         }
-        let mut card: Card = card.clone();
-        let pin = card.pin.as_mut().expect("checked above");
-        let next_error = result.as_ref().err().cloned();
-        if let Some(error) = &next_error {
-            canvas_core::log::warn(
-                "pin refresh failed",
-                &[("card", &job.card_id), ("error", error)],
-            );
+        let had_error = artifacts.refresh_errors.contains_key(&job.id);
+        match result {
+            Ok(value) => {
+                artifacts.data.insert(job.id.clone(), value.clone());
+                self.publish(CanvasEvent::ArtifactData {
+                    id: job.id.clone(),
+                    value,
+                });
+                if !had_error {
+                    return;
+                }
+                artifacts.refresh_errors.remove(&job.id);
+                canvas_core::log::info("artifact refresh recovered", &[("id", &job.id)]);
+            }
+            Err(message) => {
+                let now = chrono::Utc::now();
+                let retry_at = now + chrono::Duration::seconds(wait as i64);
+                canvas_core::log::warn(
+                    "artifact refresh failed",
+                    &[("id", &job.id), ("error", &message), ("retry_secs", &wait)],
+                );
+                artifacts.refresh_errors.insert(
+                    job.id.clone(),
+                    RefreshError {
+                        message,
+                        at: now.to_rfc3339(),
+                        retry_at: retry_at.to_rfc3339(),
+                    },
+                );
+            }
         }
-        if let Ok(value) = result {
-            inner.data.insert(job.card_id.clone(), value.clone());
-            self.publish(CanvasEvent::CardData {
-                id: job.card_id.clone(),
-                value,
-            });
-        }
-        if pin.refresh_error != next_error {
-            pin.refresh_error = next_error;
-            inner.upsert_card(card.clone());
-            self.publish(CanvasEvent::CardUpserted(card));
+        if let Some(record) = artifacts.records.get(&job.id) {
+            let view = artifacts.view(record);
+            self.publish(CanvasEvent::ArtifactUpserted(Box::new(view)));
         }
     }
 
-    /// How many cards have a refresh loop going.
+    /// How many artifacts have a refresh loop going.
     pub fn refreshing_count(&self) -> usize {
         self.refreshes
             .lock()
@@ -248,20 +283,6 @@ async fn read_capped(pipe: impl tokio::io::AsyncRead + Unpin, cap: usize) -> Vec
     let mut buf = Vec::new();
     let _ = pipe.take(cap as u64).read_to_end(&mut buf).await;
     buf
-}
-
-/// The refresh a post may carry: at least [`canvas_core::MIN_REFRESH_SECS`].
-pub fn check(refresh: &Refresh) -> Result<(), String> {
-    if refresh.command.trim().is_empty() {
-        return Err("a refresh needs a command".to_string());
-    }
-    if refresh.every_secs < canvas_core::MIN_REFRESH_SECS {
-        return Err(format!(
-            "a refresh must run at least every {} seconds",
-            canvas_core::MIN_REFRESH_SECS
-        ));
-    }
-    Ok(())
 }
 
 /// Runs [`AppState::refresh_tick`] every second.

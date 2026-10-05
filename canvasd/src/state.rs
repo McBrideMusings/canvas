@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use canvas_core::{Card, PinScope, Session};
+use canvas_core::{Card, Session};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
@@ -41,9 +41,15 @@ pub enum CanvasEvent {
     ThemeSet(Theme),
     /// An artifact was created or its files changed. Sent to viewers only:
     /// artifacts persist in `artifacts.json`, not the stream.
-    ArtifactUpserted(canvas_core::ArtifactView),
+    ArtifactUpserted(Box<canvas_core::ArtifactView>),
     /// An artifact was deleted. Sent to viewers only.
     ArtifactRemoved(String),
+    /// A value pushed into an artifact's widget and page (`canvas data
+    /// art-…` or its refresh command). Sent to viewers only.
+    ArtifactData {
+        id: String,
+        value: serde_json::Value,
+    },
     /// Asks every open viewer to switch to the Artifacts page and open this
     /// artifact (`canvas focus art-…`). Sent to viewers only.
     ArtifactFocus(String),
@@ -144,7 +150,7 @@ pub struct AppState {
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// The artifact folders being watched; see [`crate::watcher`].
     pub watcher: Arc<crate::watcher::Watcher>,
-    /// One refresh loop per refreshing card; see [`crate::refresh`].
+    /// One refresh loop per refreshing artifact; see [`crate::refresh`].
     pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
     pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
     /// Snapshot requests waiting for a viewer's answer, by request id.
@@ -229,27 +235,13 @@ impl AppState {
         }
     }
 
-    /// Ends a session the way the session-end route does: stamps `ended_at`,
-    /// publishes it, and releases the session's session-scoped pins back to the
-    /// feed. A repo-scoped pin stays held. `None` when the id names no session.
+    /// Ends a session the way the session-end route does: stamps `ended_at`
+    /// and publishes it. `None` when the id names no session.
     pub fn end_session(&self, inner: &mut Inner, id: &str) -> Option<Session> {
         let session = inner.sessions.get_mut(id)?;
         session.ended_at = Some(chrono::Utc::now().to_rfc3339());
         let session = session.clone();
         self.publish(CanvasEvent::SessionUpserted(session.clone()));
-        let released: Vec<Card> = inner
-            .cards
-            .iter()
-            .filter(|c| {
-                c.session_id == id && c.pin.as_ref().is_some_and(|p| p.scope == PinScope::Session)
-            })
-            .cloned()
-            .collect();
-        for mut card in released {
-            card.pin = None;
-            inner.upsert_card(card.clone());
-            self.publish(CanvasEvent::CardUpserted(card));
-        }
         Some(session)
     }
 
@@ -283,6 +275,7 @@ impl AppState {
                     | CanvasEvent::ThemeSet(_)
                     | CanvasEvent::ArtifactUpserted(_)
                     | CanvasEvent::ArtifactRemoved(_)
+                    | CanvasEvent::ArtifactData { .. }
                     | CanvasEvent::ArtifactFocus(_)
                     | CanvasEvent::ArtifactSnapshot { .. }
                     | CanvasEvent::ArtifactPane { .. }
@@ -321,11 +314,6 @@ pub fn spawn_liveness_sweep(state: AppState) {
     });
 }
 
-/// What a pin slot is unique within: the session's GitHub repo, else its cwd.
-pub fn pin_key(session: &Session) -> &str {
-    session.repo.as_deref().unwrap_or(&session.cwd)
-}
-
 impl Inner {
     /// Apply a change the way the handlers made it.
     pub fn apply(&mut self, event: CanvasEvent) {
@@ -357,6 +345,7 @@ impl Inner {
             | CanvasEvent::ThemeSet(_)
             | CanvasEvent::ArtifactUpserted(_)
             | CanvasEvent::ArtifactRemoved(_)
+            | CanvasEvent::ArtifactData { .. }
             | CanvasEvent::ArtifactFocus(_)
             | CanvasEvent::ArtifactSnapshot { .. }
             | CanvasEvent::ArtifactPane { .. } => {}
@@ -369,14 +358,13 @@ impl Inner {
         self.data.remove(card_id);
     }
 
-    /// Drop cards last touched before `cutoff` (never a pinned one), then every
-    /// session with no card left: a session exists only once it has posted,
-    /// however recently it started or ended.
+    /// Drop cards last touched before `cutoff`, then every session with no
+    /// card left: a session exists only once it has posted, however recently
+    /// it started or ended.
     pub fn prune_before(&mut self, cutoff: DateTime<Utc>) {
         let keep = |c: &Card| {
-            c.pin.is_some()
-                || DateTime::parse_from_rfc3339(c.touched_at())
-                    .map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
+            DateTime::parse_from_rfc3339(c.touched_at())
+                .map_or(true, |t| t.with_timezone(&Utc) >= cutoff)
         };
         let stale: Vec<String> = self
             .cards
@@ -404,33 +392,14 @@ impl Inner {
         self.push_card(card);
     }
 
-    /// Push a new card at the front, evicting the oldest unpinned card while
-    /// the ring is over capacity. A pinned card is never evicted, but it counts
-    /// toward the capacity, so it leaves less room for unpinned cards.
+    /// Push a new card at the front, evicting the oldest while the ring is
+    /// over capacity.
     pub fn push_card(&mut self, card: Card) {
         self.cards.push_front(card);
         while self.cards.len() > CARD_RING_CAPACITY {
-            // Index 0 is the card just pushed; it is never the one evicted.
-            let Some(idx) = self.cards.iter().rposition(|c| c.pin.is_none()) else {
-                break;
-            };
-            if idx == 0 {
-                break;
-            }
-            if let Some(evicted) = self.cards.remove(idx) {
+            if let Some(evicted) = self.cards.pop_back() {
                 self.forget(&evicted.id);
             }
         }
-    }
-
-    /// The card holding `slot` under `key` (see [`pin_key`]).
-    pub fn pinned_in(&self, key: &str, slot: &str) -> Option<&Card> {
-        self.cards.iter().find(|c| {
-            c.pin.as_ref().is_some_and(|p| p.slot == slot)
-                && self
-                    .sessions
-                    .get(&c.session_id)
-                    .is_some_and(|s| pin_key(s) == key)
-        })
     }
 }

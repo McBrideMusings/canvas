@@ -9,7 +9,6 @@ pub mod guidance;
 pub mod hook;
 pub mod inline_css;
 pub mod integrations;
-pub mod pin;
 pub mod post;
 pub mod profile;
 pub mod scan;

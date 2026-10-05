@@ -8,10 +8,7 @@
 
 use std::io::Read;
 
-use canvas_core::{Pin, PinScope, PostRequest, Refresh, MIN_REFRESH_SECS};
-
-/// How often `--refresh` runs when `--every` is not given.
-const DEFAULT_REFRESH_SECS: u64 = 30;
+use canvas_core::PostRequest;
 
 use crate::agent::{self, AgentAdapter};
 use crate::client;
@@ -22,33 +19,25 @@ use crate::scan;
 /// The parsed `canvas post` arguments: the positional path (or `-`/absent
 /// for stdin), an explicit `--format md|text|html`, an optional
 /// `--update <card_id>` to replace an existing card instead of creating one,
-/// and `--pin <slot>` with its `--pin-scope session|repo`, `--widget <file>`
-/// and `--refresh <cmd> [--every <secs>]` to hold the card in a pin slot,
 /// and `--focus` to bring the card into view in every open viewer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PostArgs<'a> {
     pub arg: Option<&'a str>,
     pub format_flag: Option<&'a str>,
     pub update_id: Option<&'a str>,
-    pub pin: Option<&'a str>,
-    pub pin_scope: Option<&'a str>,
-    pub widget: Option<&'a str>,
-    pub refresh: Option<&'a str>,
-    pub every: Option<&'a str>,
     pub focus: bool,
 }
 
-/// A malformed `canvas post` argument list. Carries no detail: the caller
-/// always responds by printing the usage line and exiting 2.
+/// A malformed `canvas post` argument list. The caller prints the flag it
+/// names, when it names one, then the usage line, and exits 2.
 #[derive(Debug, PartialEq, Eq)]
-pub struct UsageError;
+pub struct UsageError(pub Option<String>);
 
 /// Parses the arguments to `canvas post` (everything after `post` itself).
 /// Each flag may appear before or after the single positional path/`-`.
-/// `--focus` takes no value. Returns `Err` on a usage error: a flag with no
-/// following value, a flag given twice, a second positional argument,
-/// `--pin-scope`/`--widget`/`--refresh`/`--every` without `--pin`, or
-/// `--every` without `--refresh`. Does not validate the flag values
+/// `--focus` takes no value. Returns `Err` on a usage error: an unknown
+/// flag (named in the error), a flag with no following value, a flag given
+/// twice, or a second positional argument. Does not validate the flag values
 /// themselves — `run` does.
 pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
     let mut parsed = PostArgs::default();
@@ -62,33 +51,21 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
             }
             "--format" => &mut parsed.format_flag,
             "--update" => &mut parsed.update_id,
-            "--pin" => &mut parsed.pin,
-            "--pin-scope" => &mut parsed.pin_scope,
-            "--widget" => &mut parsed.widget,
-            "--refresh" => &mut parsed.refresh,
-            "--every" => &mut parsed.every,
+            other if other.starts_with("--") => {
+                return Err(UsageError(Some(format!("unknown flag {other}"))))
+            }
             other if parsed.arg.is_none() => {
                 parsed.arg = Some(other);
                 i += 1;
                 continue;
             }
-            _ => return Err(UsageError),
+            _ => return Err(UsageError(None)),
         };
         match (flag.is_some(), rest.get(i + 1)) {
             (false, Some(v)) => *flag = Some(v.as_str()),
-            _ => return Err(UsageError),
+            _ => return Err(UsageError(None)),
         }
         i += 2;
-    }
-    let pin_only = parsed.pin_scope.is_some()
-        || parsed.widget.is_some()
-        || parsed.refresh.is_some()
-        || parsed.every.is_some();
-    if parsed.pin.is_none() && pin_only {
-        return Err(UsageError);
-    }
-    if parsed.every.is_some() && parsed.refresh.is_none() {
-        return Err(UsageError);
     }
     Ok(parsed)
 }
@@ -107,14 +84,8 @@ pub fn run(args: PostArgs) -> Result<(), String> {
         eprintln!("{warning}");
     }
     let card = match args.update_id {
-        Some(id) => {
-            if args.pin.is_some() {
-                return Err("--pin cannot be combined with --update".to_string());
-            }
-            client::update_card(id, scanned.html, scanned.images, scanned.targets)?
-        }
+        Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
         None => {
-            let pin = build_pin(&args)?;
             let (adapter, session_id) = session()?;
             let cwd = current_dir()?;
             client::post_explicit(PostRequest {
@@ -124,7 +95,6 @@ pub fn run(args: PostArgs) -> Result<(), String> {
                 html: scanned.html,
                 images: scanned.images,
                 targets: scanned.targets,
-                pin,
                 pid: adapter.pid(),
             })?
         }
@@ -149,69 +119,6 @@ pub fn run(args: PostArgs) -> Result<(), String> {
     }
     println!("{output}");
     Ok(())
-}
-
-/// The slot `--pin` names, with its scope (default session) and the widget
-/// file converted like a card body. A widget is a small tile: unlike the card
-/// it carries no local images or clickable links.
-fn build_pin(args: &PostArgs) -> Result<Option<Pin>, String> {
-    let Some(slot) = args.pin else {
-        return Ok(None);
-    };
-    if slot.trim().is_empty() {
-        return Err("--pin needs a slot name".to_string());
-    }
-    let scope = match args.pin_scope {
-        None | Some("session") => PinScope::Session,
-        Some("repo") => PinScope::Repo,
-        Some(other) => {
-            return Err(format!(
-                "unknown --pin-scope {other:?} (expected session or repo)"
-            ))
-        }
-    };
-    let widget_html = match args.widget {
-        Some(path) => {
-            let widget =
-                std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))?;
-            if widget.trim().is_empty() {
-                return Err("no HTML in the --widget file (empty input)".to_string());
-            }
-            let format = resolve_format(Some(path), None)?;
-            Some(format::convert(&widget, format))
-        }
-        None => None,
-    };
-    let refresh = match args.refresh {
-        Some(command) => {
-            if command.trim().is_empty() {
-                return Err("--refresh needs a command".to_string());
-            }
-            let every_secs = match args.every {
-                None => DEFAULT_REFRESH_SECS,
-                Some(v) => v
-                    .parse::<u64>()
-                    .map_err(|_| format!("--every needs a whole number of seconds, got {v:?}"))?,
-            };
-            if every_secs < MIN_REFRESH_SECS {
-                return Err(format!(
-                    "--every must be at least {MIN_REFRESH_SECS} seconds"
-                ));
-            }
-            Some(Refresh {
-                command: command.to_string(),
-                every_secs,
-            })
-        }
-        None => None,
-    };
-    Ok(Some(Pin {
-        slot: slot.to_string(),
-        scope,
-        widget_html,
-        refresh,
-        refresh_error: None,
-    }))
 }
 
 /// `--format`, else the file extension, else Markdown (including for stdin
@@ -406,65 +313,11 @@ mod tests {
     }
 
     #[test]
-    fn pin_flags_are_parsed() {
-        let rest = args(&[
-            "a.md",
-            "--pin",
-            "status",
-            "--pin-scope",
-            "repo",
-            "--widget",
-            "w.html",
-        ]);
+    fn an_unknown_flag_is_named() {
         assert_eq!(
-            parse_args(&rest).unwrap(),
-            PostArgs {
-                arg: Some("a.md"),
-                pin: Some("status"),
-                pin_scope: Some("repo"),
-                widget: Some("w.html"),
-                ..Default::default()
-            }
+            parse_args(&args(&["a.md", "--pin", "status"])),
+            Err(UsageError(Some("unknown flag --pin".to_string())))
         );
-    }
-
-    #[test]
-    fn pin_scope_or_widget_without_a_pin_is_an_error() {
-        assert!(parse_args(&args(&["a.md", "--pin-scope", "repo"])).is_err());
-        assert!(parse_args(&args(&["a.md", "--widget", "w.html"])).is_err());
-    }
-
-    #[test]
-    fn a_bad_pin_scope_names_the_value() {
-        let rest = args(&["--pin", "s", "--pin-scope", "global"]);
-        let err = build_pin(&parse_args(&rest).unwrap()).unwrap_err();
-        assert!(err.contains("\"global\""), "{err}");
-    }
-
-    #[test]
-    fn refresh_builds_a_pin_with_the_given_interval() {
-        let rest = args(&["--pin", "s", "--refresh", "date", "--every", "7"]);
-        let pin = build_pin(&parse_args(&rest).unwrap()).unwrap().unwrap();
-        assert_eq!(
-            pin.refresh,
-            Some(Refresh {
-                command: "date".to_string(),
-                every_secs: 7
-            })
-        );
-    }
-
-    #[test]
-    fn an_interval_under_the_minimum_is_an_error() {
-        let rest = args(&["--pin", "s", "--refresh", "date", "--every", "2"]);
-        let err = build_pin(&parse_args(&rest).unwrap()).unwrap_err();
-        assert_eq!(err, "--every must be at least 5 seconds");
-    }
-
-    #[test]
-    fn refresh_without_a_pin_or_every_without_refresh_is_an_error() {
-        assert!(parse_args(&args(&["a.md", "--refresh", "date"])).is_err());
-        assert!(parse_args(&args(&["a.md", "--pin", "s", "--every", "9"])).is_err());
     }
 
     #[test]

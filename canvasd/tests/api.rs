@@ -1,8 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use canvas_core::{
-    Agent, Card, EffectiveProfile, Pin, PinScope, ProfileMode, ProfilesState, Session,
-    StateResponse,
+    Agent, Card, EffectiveProfile, ProfileMode, ProfilesState, Session, StateResponse,
 };
 use canvasd::build_router;
 use canvasd::state::{AppState, CanvasEvent};
@@ -1416,218 +1415,61 @@ async fn additive_mode_joins_global_and_repo_text() {
     assert_eq!(p.mode, ProfileMode::Additive);
 }
 
-async fn pin_post(app: &axum::Router, session_id: &str, cwd: &std::path::Path, html: &str) -> Card {
+#[tokio::test]
+async fn no_pins_route_exists_and_a_pin_in_a_post_is_ignored() {
+    let app = app();
     let response = app
         .clone()
         .oneshot(post(
             "/api/posts",
             json!({
-                "session_id": session_id, "cwd": cwd, "agent": "claude-code", "html": html,
-                "pin": {"slot": "status", "scope": "repo", "widgetHtml": "<b>w</b>"},
+                "session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code",
+                "html": "<p>x</p>", "pin": {"slot": "status"},
             }),
         ))
         .await
         .unwrap();
-    json_body(response).await
-}
+    assert_eq!(response.status(), StatusCode::OK);
+    let card: serde_json::Value = json_body(response).await;
+    assert!(card.get("pin").is_none(), "{card}");
+    let id = card["id"].as_str().unwrap();
 
-async fn pinned_card(app: &axum::Router, cwd: &std::path::Path, slot: &str) -> Option<Card> {
-    let uri = format!("/api/pins?cwd={}&slot={slot}", cwd.display());
-    let response = app.clone().oneshot(get(&uri)).await.unwrap();
-    if response.status() != StatusCode::OK {
-        return None;
-    }
-    Some(json_body(response).await)
-}
-
-#[tokio::test]
-async fn a_second_post_to_a_slot_replaces_the_card_in_place() {
-    let app = app();
-    let (main, linked) = git_checkout_with_origin("git@github.com:octo/hello.git");
-
-    let first = pin_post(&app, "p1", &main, "<p>one</p>").await;
-    // Another checkout of the same repo holds the same slot.
-    let second = pin_post(&app, "p2", &linked, "<p>two</p>").await;
-    assert_eq!(second.id, first.id);
-
-    let state: StateResponse =
-        json_body(app.clone().oneshot(get("/api/state")).await.unwrap()).await;
-    let held: Vec<&Card> = state.cards.iter().filter(|c| c.pin.is_some()).collect();
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0].id, first.id);
-    assert_eq!(held[0].html, "<p>two</p>");
-    let pin = held[0].pin.as_ref().unwrap();
-    assert_eq!(pin.slot, "status");
-    assert_eq!(pin.scope, PinScope::Repo);
-    assert_eq!(pin.widget_html.as_deref(), Some("<b>w</b>"));
-
-    // The same slot in another repo is a separate card.
-    let other_repo = std::env::temp_dir();
-    assert_ne!(
-        pin_post(&app, "p3", &other_repo, "<p>x</p>").await.id,
-        first.id
-    );
-}
-
-#[tokio::test]
-async fn a_slot_resolves_to_its_card_and_data_reaches_it() {
-    let app = app();
-    let (main, _) = git_checkout_with_origin("git@github.com:octo/hello.git");
-    let card = pin_post(&app, "p1", &main, "<p>one</p>").await;
-
-    assert_eq!(
-        pinned_card(&app, &main, "status").await.unwrap().id,
-        card.id
-    );
-    assert!(pinned_card(&app, &main, "nope").await.is_none());
-
-    let response = app
+    let pins = app
         .clone()
-        .oneshot(put(
-            &format!("/api/cards/{}/data", card.id),
-            json!({"n": 1}),
-        ))
+        .oneshot(get("/api/pins?cwd=/tmp/proj&slot=status"))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-}
-
-#[tokio::test]
-async fn unpin_clears_the_pin_and_keeps_the_card() {
-    let app = app();
-    let (main, _) = git_checkout_with_origin("git@github.com:octo/hello.git");
-    let card = pin_post(&app, "p1", &main, "<p>one</p>").await;
-    let uri = format!("/api/cards/{}/pin", card.id);
-
-    assert_eq!(
-        app.clone().oneshot(delete(&uri)).await.unwrap().status(),
-        StatusCode::OK
-    );
-    let kept: Card = json_body(
-        app.clone()
-            .oneshot(get(&format!("/api/cards/{}", card.id)))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(kept.pin.is_none());
-    assert_eq!(kept.at, card.at);
-    assert!(pinned_card(&app, &main, "status").await.is_none());
-    assert_eq!(
-        app.clone().oneshot(delete(&uri)).await.unwrap().status(),
-        StatusCode::NOT_FOUND
-    );
-}
-
-#[tokio::test]
-async fn updating_a_pinned_card_keeps_its_pin() {
-    let app = app();
-    let (main, _) = git_checkout_with_origin("git@github.com:octo/hello.git");
-    let card = pin_post(&app, "p1", &main, "<p>one</p>").await;
-
-    let updated: Card = json_body(
-        app.clone()
-            .oneshot(put(
-                &format!("/api/cards/{}", card.id),
-                json!({"html": "<p>new</p>"}),
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(updated.html, "<p>new</p>");
-    assert_eq!(updated.pin, card.pin);
-}
-
-#[tokio::test]
-async fn a_pinned_card_survives_the_ring() {
-    let app = app();
-    let (main, _) = git_checkout_with_origin("git@github.com:octo/hello.git");
-    let pinned = pin_post(&app, "p1", &main, "<p>one</p>").await;
-    for _ in 0..501 {
-        seed_card(&app, "s1", "/tmp/proj").await;
-    }
-
-    let state: StateResponse =
-        json_body(app.clone().oneshot(get("/api/state")).await.unwrap()).await;
-    assert!(state.cards.iter().any(|c| c.id == pinned.id));
-    // The pinned card counts toward the ring: 499 newer posts fill the rest.
-    assert_eq!(state.cards.len(), 500);
-}
-
-#[test]
-fn pruning_by_age_keeps_a_pinned_card() {
-    let old = |id: &str, pin: Option<Pin>| Card {
-        id: id.to_string(),
-        session_id: "s".to_string(),
-        at: "2000-01-01T00:00:00Z".to_string(),
-        updated_at: None,
-        html: String::new(),
-        images: vec![],
-        targets: vec![],
-        pin,
-    };
-    let mut inner = canvasd::state::Inner::default();
-    inner.push_card(old("plain", None));
-    inner.push_card(old(
-        "held",
-        Some(Pin {
-            slot: "s".to_string(),
-            scope: PinScope::Session,
-            widget_html: None,
-            refresh: None,
-            refresh_error: None,
-        }),
-    ));
-    inner.prune_before(chrono::Utc::now());
-    let ids: Vec<&str> = inner.cards.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(ids, ["held"]);
-}
-
-async fn scoped_post(
-    app: &axum::Router,
-    session_id: &str,
-    pid: Option<u32>,
-    slot: &str,
-    scope: &str,
-) -> Card {
-    let response = app
+    assert_eq!(pins.status(), StatusCode::NOT_FOUND);
+    let unpin = app
         .clone()
-        .oneshot(post(
-            "/api/posts",
-            json!({
-                "session_id": session_id, "cwd": std::env::temp_dir(), "agent": "claude-code",
-                "html": "<p>x</p>", "pid": pid, "pin": {"slot": slot, "scope": scope},
-            }),
-        ))
+        .oneshot(delete(&format!("/api/cards/{id}/pin")))
         .await
         .unwrap();
-    json_body(response).await
-}
-
-async fn card_now(app: &axum::Router, id: &str) -> Option<Card> {
-    let response = app
-        .clone()
-        .oneshot(get(&format!("/api/cards/{id}")))
-        .await
-        .unwrap();
-    if response.status() != StatusCode::OK {
-        return None;
-    }
-    Some(json_body(response).await)
+    assert_eq!(unpin.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn a_dead_agent_process_ends_its_session_and_releases_its_session_pins() {
+async fn a_dead_agent_process_ends_its_session() {
     let state = AppState::new();
     let app = build_router(state.clone());
     let mut child = std::process::Command::new("sleep")
         .arg("60")
         .spawn()
         .unwrap();
-    let session_pin = scoped_post(&app, "s1", Some(child.id()), "mine", "session").await;
-    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
-    let no_pid_pin = scoped_post(&app, "s2", None, "other", "session").await;
+    for (session, pid) in [("s1", Some(child.id())), ("s2", None)] {
+        let response = app
+            .clone()
+            .oneshot(post(
+                "/api/posts",
+                json!({
+                    "session_id": session, "cwd": std::env::temp_dir(), "agent": "claude-code",
+                    "html": "<p>x</p>", "pid": pid,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 
     assert_eq!(
         state
@@ -1635,8 +1477,6 @@ async fn a_dead_agent_process_ends_its_session_and_releases_its_session_pins() {
             .await,
         0
     );
-    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_some());
-
     child.kill().unwrap();
     child.wait().unwrap();
     assert_eq!(
@@ -1650,9 +1490,6 @@ async fn a_dead_agent_process_ends_its_session_and_releases_its_session_pins() {
     assert!(inner.sessions["s1"].ended_at.is_some());
     assert!(inner.sessions["s2"].ended_at.is_none());
     drop(inner);
-    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_none());
-    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
-    assert!(card_now(&app, &no_pid_pin.id).await.unwrap().pin.is_some());
     // Already ended: a second sweep finds nothing.
     assert_eq!(
         state
@@ -1660,49 +1497,6 @@ async fn a_dead_agent_process_ends_its_session_and_releases_its_session_pins() {
             .await,
         0
     );
-}
-
-#[tokio::test]
-async fn ending_a_session_releases_only_its_session_pins() {
-    let app = app();
-    let session_pin = scoped_post(&app, "s1", None, "mine", "session").await;
-    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
-
-    let response = app
-        .clone()
-        .oneshot(post("/api/sessions/s1/end", json!({})))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(card_now(&app, &session_pin.id).await.unwrap().pin.is_none());
-    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
-}
-
-#[tokio::test]
-async fn deleting_a_session_keeps_its_repo_pins() {
-    let app = app();
-    let session_pin = scoped_post(&app, "s1", None, "mine", "session").await;
-    let repo_pin = scoped_post(&app, "s1", None, "shared", "repo").await;
-
-    let response = app
-        .clone()
-        .oneshot(delete("/api/sessions/s1"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(card_now(&app, &session_pin.id).await.is_none());
-    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
-    let state: StateResponse =
-        json_body(app.clone().oneshot(get("/api/state")).await.unwrap()).await;
-    assert!(state.sessions.iter().any(|s| s.id == "s1"));
-
-    let response = app
-        .clone()
-        .oneshot(delete("/api/sessions/s1/cards"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(card_now(&app, &repo_pin.id).await.unwrap().pin.is_some());
 }
 
 #[tokio::test]

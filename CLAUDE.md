@@ -14,8 +14,7 @@ beside the terminal all day.
   required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code;
   it also records the agent's `pid` from its first post (`CLAUDE_PID` for Claude
   Code, the first `codex` ancestor for Codex), and a 30s sweep ends a session whose
-  pid is gone, releasing its session-scoped pins; sessions with no pid are never
-  swept), SSE push to
+  pid is gone; sessions with no pid are never swept), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
   `profiles.rs` is the generalized named-profile store a future feature can
   reuse instead of growing its own bespoke override: a "kind" owns its own
@@ -93,17 +92,6 @@ beside the terminal all day.
   image toggles fit and 2.5x, wheel or pinch zooms at the cursor (1x to 8x),
   drag pans while zoomed, `+` `-` `0` zoom and reset, and only the X button,
   Esc or a click on the bare backdrop closes it.
-  A pinned card (`card.pin`) never enters `#cards`: `app.js` puts it on the pin
-  shelf, a `.shelf` section under the toolbar that exists only while something is
-  pinned (label `Pinned · N`, widgets in slot order). A widget is the pin's
-  `widgetHtml` in a sandboxed iframe built like a card's, else the card's first
-  heading (else its first text line, else the slot), under one transparent button; a widget is replaced one at a time and
-  never moved (moving an iframe reloads it). Past the row's width the extra
-  widgets go inert behind an edge fade and a `+N` button that wraps the row.
-  A click opens the card as a `.sheet` dialog over the dimmed feed (Escape,
-  the scrim or Close dismisses it and focus returns to the widget); a pin's
-  `refreshError` shows as a `.w-error` mark and a `.sheet-error` line. A card
-  gaining or losing `pin` through `card-upserted` moves between feed and shelf.
   Settings > Guidance > Post reminders edits each profile as a form
   (`stop-form.js` parses the directive text into a model and re-emits it, keeping
   comments, unknown lines and order) or as raw text; the text stays the only store.
@@ -178,7 +166,7 @@ beside the terminal all day.
   to settle (iframe sized, arrival slide and ring over), scrolls it into
   `#stream`'s view (no ring, nothing cleared) and calls the app's
   `snapshot_reply` command with the card's rect clipped to that view and
-  whether it was clipped, or with why it can't show it (pinned, its session
+  whether it was clipped, or with why it can't show it (its session
   hidden, filtered by the search). `app/src-tauri/src/snapshot.rs` captures the
   rect with WKWebView's `takeSnapshot` and posts the PNG (`x-canvas-clipped:
   true` for a card taller than the window), or the reason as `{"error"}`, to
@@ -219,23 +207,8 @@ beside the terminal all day.
   without rebuilding it, and again after any iframe load. `--update` rebuilds
   the iframe (`upsertCard`), so a dashboard posts its HTML once and streams
   values with `canvas data`. The value is never written to `stream.jsonl`.
-- Pinned posts: `canvas post --pin <slot> [--pin-scope session|repo] [--widget <file>]`
-  holds the card in a slot, unique within the poster's repo (its cwd when it has
-  none); a later post to a held slot replaces that card in place, keeping its id,
-  and takes over its session. A session-scoped pin returns to the feed when its
-  session ends; a repo-scoped pin survives session end, session delete and clearing
-  a session's cards. `canvas unpin <slot|card_id>` clears `pin` and the card
-  returns to the feed at its own `at`; `--refresh '<cmd>' [--every <secs>]` (5s
-  minimum, default 30s) makes the daemon (`canvasd/src/refresh.rs`, a 1s tick) run
-  `sh -c <cmd>` in the session's cwd while the pin exists and its session is live,
-  one run at a time, killed after 60s: stdout JSON goes out as `canvas data` does,
-  anything else sets the pin's `refreshError` (first stderr line or the reason, cleared
-  by the next success) and doubles the wait per failure up to 10 min;
-  `canvas data --slot <slot>` pushes to the
-  card in the slot (`GET /api/pins?cwd=&slot=` resolves it; `DELETE
-  /api/cards/:id/pin` unpins). A pinned card is never evicted from the ring or
-  pruned by age, but counts toward the 500. The window's always-on-top toggle is
-  "keep on top" (`get_keep_on_top`/`set_keep_on_top`), not a pin.
+  The window's always-on-top toggle is "keep on top"
+  (`get_keep_on_top`/`set_keep_on_top`).
 - Artifacts (ADR-0002, `canvasd/src/artifacts.rs`, `artifact_routes.rs`): a web
   page an agent keeps until someone deletes it. An owned one is a folder canvasd
   owns at `artifacts/<id>/` in `CANVAS_DATA_DIR`, its id `art-` plus 10 hex
@@ -308,10 +281,33 @@ beside the terminal all day.
   builds a new frame, so an unloading page can't report onto the next). canvasd keeps the newest 50 per artifact
   in memory (dropped on delete), logs `artifact script error`, and `show`
   lists them as `scriptErrors`.
+  Widgets and refresh: `canvas artifact new|put --widget <file> --refresh '<cmd>'
+  [--every <secs>]` (5s minimum, default 30s; a flag left off keeps what the
+  record has) stores `widgetHtml` and `refresh: {command, everySecs, cwd, pid}`
+  on the record in `artifacts.json` — `cwd` is the CLI's working directory,
+  `pid` the `x-canvas-pid` header. `canvasd/src/refresh.rs` (a 1s tick) runs
+  `sh -c <cmd>` in `cwd` while `pid` is alive (always, with no pid), one run at
+  a time, killed after 60s: stdout JSON is kept as the artifact's `data` and
+  published as `artifact-data`, as `canvas data <art-id>` (`PUT
+  /api/artifacts/:id/data`, up to 256KB, answers `{"viewers": N}`) does;
+  anything else sets `refreshError` `{message, at, retryAt}` (first stderr line
+  or the reason; cleared by the next success, published as `artifact-upserted`,
+  logged `artifact refresh failed`) and doubles the wait per failure up to 10
+  min. The refresh persists with the record, so it runs again after a daemon
+  restart (checked against the same pid); an agent's exit stops it and clears
+  its `refreshError`. `data` and `refreshError` live in memory and ride on the artifact's view
+  (`/api/state`, `show`). The viewer posts `data` into the widget and the
+  open pane as `{type:'canvas-data', value}`, and again after either frame loads.
   The viewer's title bar has a `Timeline | Artifacts` switch (`showPage`, the
   choice in localStorage); the toolbar shows only on the Timeline. The Artifacts
   page lists every artifact, most recently changed first, beside the open one's
-  pane: an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
+  pane. A row (title, muted time, then the widget, under one transparent button)
+  is kept across renders and patched in place (`artifactRows`): its widget is
+  `widgetHtml` in a sandboxed iframe built like a card's, as tall as its content
+  up to 120px, rebuilt only when the HTML or theme changes, and reloaded only
+  when the row moves. A refresh error dims the widget, adds a red dot and a
+  "refresh failed" line, and puts "Refresh failed 2m ago: … · retrying in 4m"
+  under the pane header. The Timeline shows no widgets. The pane is an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
   at its `canvas-size` clamped to the pane or else filling it, reloaded after a
   `put`. Its menu copies the id or folder path and deletes it. A grip at the
   frame's bottom-right corner drags it to another size (clamped to the pane,

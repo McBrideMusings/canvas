@@ -47,7 +47,6 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(routes::delete_card)
                 .put(routes::update_card),
         )
-        .route("/api/cards/:id/pin", delete(routes::unpin_card))
         .route("/api/cards/:id/focus", post(routes::focus_card))
         .route("/api/cards/:id/snapshot", post(routes::snapshot_card))
         .route(
@@ -61,7 +60,6 @@ pub fn build_router(state: AppState) -> Router {
                 .put(routes::report_theme)
                 .get(routes::get_theme),
         )
-        .route("/api/pins", get(routes::get_pinned))
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
         .route(
@@ -89,6 +87,10 @@ pub fn build_router(state: AppState) -> Router {
             post(artifact_routes::relink_artifact),
         )
         .route("/api/artifacts/:id/log", get(artifact_routes::artifact_log))
+        .route(
+            "/api/artifacts/:id/data",
+            put(artifact_routes::put_artifact_data),
+        )
         .route(
             "/api/artifacts/:id/errors",
             post(artifact_routes::report_script_error),

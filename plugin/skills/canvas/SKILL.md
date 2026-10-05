@@ -69,8 +69,8 @@ Canvas window renders it, in the active theme, so you can look at what you
 posted. It prints `{"path": "...", "width": N, "height": N, "clipped": false}`
 (pixels, at the screen's density). Right after a post it waits a few seconds
 for the card to finish arriving. It exits 1 with one stderr line when no window is open, or
-when the window can't show the card: pinned, its session archived or hidden,
-or filtered out by the search (`canvas focus <card_id>` clears the last two).
+when the window can't show the card: its session archived or hidden,
+or filtered out by the search (`canvas focus <card_id>` clears both).
 Only the part inside the window is captured: a card taller than the window
 is cut at the window's bottom edge, and the output says `"clipped": true`.
 
@@ -313,87 +313,80 @@ the first paint of the page should handle having no value yet. A daemon restart 
 it, and the next `canvas data` refills it. `canvas data` exits non-zero with one line on
 stderr for an unknown card id, a value that isn't JSON or one over 256KB.
 
-### Pinned posts and widgets
+### Artifact widgets and live data
 
-Pin a post when its subject stays live for the length of a job: an implementation
-run, a profiling loop, a diagnosis, a disk cleanup, a project's status. A pinned
-post leaves the feed and shows as a small widget on the pin shelf under the
-toolbar; the shelf exists only while something is pinned. Clicking the widget
-opens the full post as a sheet over the feed.
+Give an artifact a widget when its subject stays live for the length of a job: an
+implementation run, a profiling loop, a diagnosis, a disk or service monitor, a project's
+status. The widget shows in the artifact's row on the Artifacts page, under its title
+and time; the Timeline shows nothing for it. Clicking the row opens the full page.
 
 ```
-canvas post card.html --pin <slot> [--pin-scope session|repo] [--widget widget.html]
-canvas post card.html --pin <slot> --refresh '<cmd>' [--every <secs>]
-canvas data --slot <slot> values.json      # or "-" for stdin
-canvas unpin <slot|card_id>
+canvas artifact new --title "Disk monitor" --widget widget.html [--refresh '<cmd>' [--every <secs>]]
+canvas artifact put <id> <file|dir> [--widget widget.html] [--refresh '<cmd>' [--every <secs>]]
+canvas data <artifact_id> values.json      # or "-" for stdin
 ```
 
-- One slot holds one post per repo (per working directory when the session has no
-  GitHub repo). Posting to a held slot again replaces that card in place, keeping its
-  id and taking over its session, so you never track a card id.
-- `--pin-scope` is `session` (the default) or `repo`. A session-scoped pin returns to the
-  feed when its session ends or its agent process dies. A repo-scoped pin survives
-  session end, session delete and clearing a session's cards.
-- `canvas unpin <slot|card_id>` ends the job's pin: the card goes back to the feed at its
-  own time. Run it when the job ends.
-- `--widget <file>` is the widget's HTML, converted like a card body. Without it the shelf
-  shows the card's first heading.
-- `--pin-scope`, `--widget`, `--refresh` and `--every` need `--pin`; `--every` needs
-  `--refresh`; `--pin` cannot be combined with `--update`.
-- Don't pin a one-off answer, a closing report or anything that won't change again.
-  Those belong in the feed.
+- `--widget <file>` is the widget's HTML, converted like a card body (by its extension,
+  else Markdown). A `put` without `--widget` or `--refresh` keeps the ones the artifact
+  has; with one, it replaces it.
+- `--every` needs `--refresh`. A row without a widget shows only its title and time.
+- Delete the artifact when the job ends. Don't make one for a one-off answer, a closing
+  report or anything that won't change again: those belong in the feed.
 
-**A pinned post has two parts.** The full post is an ordinary card and follows every
-rule above. The widget is a separate small HTML document.
+**An artifact with a widget has two parts.** The page is an ordinary artifact and follows
+the rules above. The widget is a separate small HTML document.
 
-**The widget is 200 × 104 px.** Canvas clips anything outside it and never scrolls it, and
-adds no padding: give the widget's body 8 px top and bottom and 10 px left and right, which
-leaves 180 × 88 px of content. Canvas draws the border, the rounded corners, the session
-colour dot and a short age (`12s`, `3m`) in the top-right corner; keep the top-right
-40 × 14 px clear for them.
+**The widget is about 196 px wide and as tall as its content, up to 120 px.** Canvas clips
+anything past that and never scrolls it, and adds no padding: give the widget's body 6 px
+top and bottom and 10 px left and right. Canvas draws the border and the rounded corners,
+and a red dot in the top-right corner when a refresh fails; keep the top-right 16 × 16 px
+clear for it.
 
-Put one glanceable answer in the widget: the number or state someone checks this pin for.
-- Line 1 is a title of 24 characters or fewer, in bold 12 px, that names the job
-  ("implement canvas-12", "p95 /search").
-- Below it goes one of: a progress strip with the current step named in words; two to
-  four counts, each with a word label under it; one big value (about 20 px) with what it
-  moved from; two bars, each with a label and a value; a sparkline under a big value.
-- At most one line of muted detail at 11 px.
+Put one glanceable answer in the widget: the number or state someone checks this
+artifact for.
+- One of: a short status with a word label ("build 42 passing"); one big value (about
+  18 px) with what it moved from; two or three counts, each with a word label; one or two
+  bars, each with a label and a value; a sparkline beside a value.
+- At most one line of muted detail at 11 px. The row's title already names the job; don't
+  repeat it.
 
 Do:
 - Label every number and every colour with a word. Colour never carries the meaning alone
   ("1 missing" in red, not a red "1").
 - Theme it like a card: a light palette on `:root`, overridden under
   `@media (prefers-color-scheme: dark)`. Don't set `html` or `body` background or color.
-- Use the same numbers as the full post, so opening it never contradicts the widget.
-- Keep it under about 4 KB. It re-renders on every update.
+- Use the same numbers as the page, so opening it never contradicts the widget.
+- Keep it under about 4 KB.
 
 Don't:
-- Put links, buttons or inputs in a widget. The whole widget is one click target that
-  opens the full post; put links and controls there.
+- Put links, buttons or inputs in a widget. The whole row is one click target that
+  opens the page; put links and controls there.
 - Use images, external scripts or web fonts.
-- Write prose. If the answer needs a sentence, it belongs in the full post.
+- Write prose. If the answer needs a sentence, it belongs in the page.
 - Use font sizes under 10 px.
-- Repeat the repo or session name. The full post's header already shows both.
 
-**Keeping a pin current.** Refreshing is optional. Either push values yourself whenever
-you have new data, or let the daemon pull them:
+**Keeping it current.** Either push values yourself whenever you have new data, or let
+canvasd pull them:
 
-- `canvas data --slot <slot> <file|->` pushes one JSON value to the card in that slot, the
-  same data channel as `canvas data <card_id>` (see above). An unknown slot exits non-zero
-  with one line on stderr.
-- `--refresh '<cmd>' [--every <secs>]` makes the daemon run `<cmd>` under `sh -c` in the
-  session's working directory, every `--every` seconds (default 30, minimum 5), while the
-  pin exists and its session is live. One run at a time; a run is killed after 60s. Use
-  absolute paths in `<cmd>`: the daemon runs under launchd with a minimal `PATH`.
-- The command prints one JSON value to stdout, not HTML. The daemon delivers it to the
-  full post and the widget as a `canvas-data` message, exactly as `canvas data` does. Both
-  the card and the widget therefore carry a small script that redraws from that value (see
-  "Pushing live data into a card"), and both handle having no value yet on first paint.
+- `canvas data <artifact_id> <file|->` pushes one JSON value to the widget and the open
+  page, the same channel as `canvas data <card_id>` (see above). An unknown id exits
+  non-zero with one line on stderr.
+- `--refresh '<cmd>' [--every <secs>]` makes canvasd run `<cmd>` under `sh -c` in the
+  directory you ran `canvas artifact` from, every `--every` seconds (default 30, minimum
+  5), while the agent that set it is running; a refresh set from a plain shell runs until
+  the artifact is deleted. One run at a time; a run is killed after 60s. Use absolute paths
+  in `<cmd>`: canvasd runs under launchd with a minimal `PATH`.
+- The command prints one JSON value to stdout, not HTML. canvasd delivers it to the widget
+  and the page as a `canvas-data` message, exactly as `canvas data` does. Both therefore
+  carry a small script that redraws from that value (see "Pushing live data into a
+  card"), and both handle having no value yet on first paint. The latest value is kept in
+  memory and sent again whenever either frame loads.
 - If the command exits non-zero, times out or prints something that isn't JSON, the last
-  good value stays on screen, the first stderr line (or the reason) shows as an error mark
-  on the widget and an error line in the sheet, and the daemon waits twice as long after
-  each consecutive failure, up to 10 minutes. The next success clears the error.
+  good value stays on screen, dimmed, with a red dot and "refresh failed" under the
+  widget; the open page shows "Refresh failed 2m ago: <first stderr line or reason> ·
+  retrying in 4m" under its header, and `canvas artifact show <id>` reports it as
+  `refreshError` (`message`, `at`, `retryAt`). canvasd waits twice as long after each
+  consecutive failure, up to 10 minutes. The next success clears the error.
 
 ### Result
 

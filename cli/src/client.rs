@@ -400,31 +400,6 @@ pub fn snapshot(id: &str) -> Result<Snapshot, String> {
     }
 }
 
-/// The card holding `slot` in the repo `cwd` belongs to; `None` when no card
-/// does.
-pub fn find_pinned(cwd: &str, slot: &str) -> Result<Option<Card>, String> {
-    let path = format!(
-        "/api/pins?cwd={}&slot={}",
-        percent_encode(cwd),
-        percent_encode(slot)
-    );
-    match call("GET", &path, None) {
-        Ok(response) => into_json(response).map(Some),
-        Err(Failure::Status(404)) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// `canvas unpin`: releases a card's slot. `Ok(false)` when `card_id` names no
-/// pinned card.
-pub fn unpin_card(card_id: &str) -> Result<bool, String> {
-    match call("DELETE", &format!("/api/cards/{card_id}/pin"), None) {
-        Ok(_) => Ok(true),
-        Err(Failure::Status(404)) => Ok(false),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 /// `canvas card`: one card as the daemon holds it, for an agent handed a
 /// card id (from a pasted post link) to read the HTML the viewer renders.
 pub fn get_card(card_id: &str) -> Result<Card, String> {
