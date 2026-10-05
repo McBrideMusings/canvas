@@ -18,6 +18,7 @@ use state::AppState;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(viewer::index))
+        .route("/canvas.css", get(viewer::stylesheet))
         .route("/api/sessions/:id/end", post(routes::end_session))
         .route("/api/sessions/:id", delete(routes::delete_session))
         .route(

@@ -572,9 +572,14 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// The public stylesheet canvasd serves (`viewer::stylesheet`), the one
+/// stylesheet outside its folder an artifact may link.
+const CANVAS_STYLESHEET: &str = "canvas://localhost/canvas.css";
+
 /// The Content-Security-Policy every artifact file is served with. Scripts,
 /// styles and fonts come from the artifact's own folder, inline, or the
-/// three CDNs a card may use; `connect-src 'none'` keeps the page from
+/// three CDNs a card may use, and styles also from `/canvas.css`;
+/// `connect-src 'none'` keeps the page from
 /// fetching anything, `form-action 'none'` from posting a form, and the
 /// `sandbox` directive keeps it in an opaque origin even when it is opened
 /// outside the viewer's sandboxed iframe.
@@ -584,7 +589,7 @@ pub fn content_security_policy(id: &str) -> String {
     format!(
         "default-src 'none'; \
          script-src {own} 'unsafe-inline' 'unsafe-eval' blob: {cdns}; \
-         style-src {own} 'unsafe-inline' {cdns} https://fonts.googleapis.com; \
+         style-src {own} {CANVAS_STYLESHEET} 'unsafe-inline' {cdns} https://fonts.googleapis.com; \
          font-src {own} data: https://fonts.gstatic.com; \
          img-src * data: blob: canvas:; \
          media-src * data: blob: canvas:; \

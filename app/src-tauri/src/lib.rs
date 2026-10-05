@@ -50,6 +50,23 @@ fn get_keep_on_top(app: tauri::AppHandle) -> bool {
     read_keep_on_top_state(&app)
 }
 
+// viewer/theme.js invokes this on load and on every theme change, with the
+// stored choice or nothing (follow the system). Setting the app's appearance
+// is what makes `prefers-color-scheme` in every frame of every window,
+// artifact panes included, match the theme Canvas shows.
+#[tauri::command]
+fn set_app_theme(app: tauri::AppHandle, theme: Option<String>) -> Result<(), String> {
+    let chosen = match theme.as_deref() {
+        Some("dark") => Some(tauri::Theme::Dark),
+        Some("light") => Some(tauri::Theme::Light),
+        None => None,
+        Some(other) => return Err(format!("unknown theme {other:?}")),
+    };
+    app.set_theme(chosen);
+    canvas_core::log::info("app theme", &[("theme", &theme.as_deref().unwrap_or("system"))]);
+    Ok(())
+}
+
 // Builds the Settings window on canvasd's own /settings.html, or brings the
 // one already open to the front. Closing it only hides it (on_window_event
 // below), so a later call shows the same window again. The gear in the viewer
@@ -179,6 +196,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_keep_on_top,
             get_keep_on_top,
+            set_app_theme,
             open_settings,
             daemon_status,
             integration_status,

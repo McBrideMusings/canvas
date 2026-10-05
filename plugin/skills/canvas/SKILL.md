@@ -98,6 +98,32 @@ To adapt on purpose, define a light palette on `:root` and override it under
 active theme, not the system setting. Text that ends up unreadable against its
 background is recolored at render time.
 
+### The Canvas stylesheet
+
+`<link rel="stylesheet" href="/canvas.css">` gives a post or an artifact
+Canvas's own tokens and base element styles (type, headings, links, code,
+tables, form controls), light and dark, following the active theme. In a post
+`canvas post` inlines it, like any local stylesheet; an artifact loads it from
+canvasd and restyles live when the theme changes, with no reload. An artifact
+that doesn't link it gets no styling from Canvas. Write your own CSS with these
+tokens, each with a literal fallback (`color: var(--color-text, #1a1a1a)`).
+The list is closed; don't invent other names:
+
+- Colour: `--color-surface`, `--color-surface-muted`, `--color-text`,
+  `--color-text-muted`, `--color-text-reversed`, `--color-border`,
+  `--color-primary`, `--color-primary-text` (text on primary), `--color-link`,
+  `--tint-primary`, `--color-danger`, `--tint-danger`, `--color-success`,
+  `--color-alert`.
+- Type: `--font-sans`, `--font-mono`, `--font-weight-normal`,
+  `--font-weight-medium`, `--font-weight-semibold`, `--text-sm` (12px),
+  `--text-base` (14px), `--text-md`, `--text-lg`, `--text-xl`, `--text-2xl` (24px).
+- Spacing and radii: `--space-2`, `--space-4`, `--space-6`, `--space-8`,
+  `--space-12`, `--space-16`, `--space-24`, `--space-32`, `--space-48`,
+  `--control-radius`, `--panel-radius`, `--radius-pill`.
+
+`button.primary` gets the primary fill. The names match Television's public
+tokens, so a page written for one reads in the other.
+
 Code blocks (`<pre>`) render dark with light text. If you paint a background
 inside one — diff rows, highlights — set a dark `color` on that element too, so
 the text stays readable on it (the viewer corrects low contrast, but say what
@@ -208,6 +234,8 @@ never a post. A card sizes itself to its content and takes Canvas's theme, so
 a page that sizes itself from the viewport collapses in one. An artifact is a
 folder of files Canvas keeps until someone deletes it, shown on the Artifacts
 page in a pane with a real viewport, with its own colours and fonts untouched.
+Link `/canvas.css` (above) for Canvas's tokens and base styles; its
+`prefers-color-scheme` queries follow the theme the Canvas window shows.
 
 ```
 canvas artifact new --title "Phone prototype"

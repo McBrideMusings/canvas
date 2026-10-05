@@ -206,6 +206,39 @@ fn a_two_file_artifact_serves_both_files_with_its_csp() {
 }
 
 #[test]
+fn the_canvas_stylesheet_is_served_and_an_artifact_may_link_it() {
+    let daemon = start_daemon(&temp_dir("stylesheet"));
+    let sheet = get(&daemon, "/canvas.css");
+    assert_eq!(sheet.status, 200);
+    assert_eq!(sheet.content_type.as_deref(), Some("text/css"));
+    let css = String::from_utf8_lossy(&sheet.body);
+    assert!(css.contains("--color-surface:"), "the tokens");
+    assert!(css.contains("h1 {"), "the base styles");
+
+    let id = json(&run(&daemon, &["artifact", "new"]))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let folder = daemon.data_dir.join("artifacts").join(&id);
+    std::fs::write(folder.join("index.html"), "<p>in</p>").unwrap();
+    let page = get(&daemon, &format!("/artifacts/{id}/"));
+    let csp = page
+        .headers
+        .iter()
+        .find(|(k, _)| k == "content-security-policy")
+        .map(|(_, v)| v.as_str())
+        .expect("a CSP header");
+    let style_src = csp
+        .split(';')
+        .find(|d| d.trim_start().starts_with("style-src"))
+        .expect("a style-src directive");
+    assert!(
+        style_src.contains(" canvas://localhost/canvas.css "),
+        "{csp}"
+    );
+}
+
+#[test]
 fn file_requests_cannot_leave_the_folder() {
     let daemon = start_daemon(&temp_dir("confine"));
     let id = json(&run(&daemon, &["artifact", "new"]))["id"]

@@ -84,7 +84,14 @@ beside the terminal all day.
   picking one session at a time.
   A theme button between Pin and Sessions switches light and dark for the
   whole window and every card (`theme.js` holds the choice in localStorage,
-  `theme.css` the palette; with nothing stored the system decides). A card
+  `theme.css` the palette; with nothing stored the system decides). `theme.css`
+  builds on the public tokens in `canvas-tokens.css` (Television's names);
+  canvasd serves those plus `canvas-base.css` (base element styles) as
+  `/canvas.css`, which an artifact may link (its CSP allows that one URL) and
+  `canvas post` inlines into a post from the binary's own copy. `theme.js` also
+  calls the app's `set_app_theme` with the stored choice (none: the system), so
+  Canvas.app's appearance, and with it `prefers-color-scheme` in every frame,
+  an artifact's pane included, follows the theme the window shows. A card
   always renders in the active theme: `buildIframeDoc` rewrites its
   `prefers-color-scheme` queries, forces the page surface and ink, and recolors
   text that falls below 4.5:1 contrast; a change rebuilds every card iframe.

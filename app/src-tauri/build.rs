@@ -8,6 +8,7 @@ fn main() {
         .commands(&[
             "set_keep_on_top",
             "get_keep_on_top",
+            "set_app_theme",
             "open_settings",
             "daemon_status",
             "integration_status",

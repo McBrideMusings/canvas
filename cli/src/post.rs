@@ -70,6 +70,16 @@ pub fn parse_args(rest: &[String]) -> Result<PostArgs<'_>, UsageError> {
     Ok(parsed)
 }
 
+/// The bytes a post's `<link rel="stylesheet" href>` inlines: `/canvas.css`
+/// is Canvas's own stylesheet, the copy compiled into this binary (the one
+/// canvasd serves), and any other path a local file.
+fn read_stylesheet(path: &str) -> Option<Vec<u8>> {
+    if path == "/canvas.css" {
+        return Some(canvasd::viewer::canvas_css().into_bytes());
+    }
+    std::fs::read(path).ok()
+}
+
 /// Runs `canvas post` for parsed `args`. `--update` replaces that card's
 /// content in place instead of creating a new one — the session/cwd that
 /// created it aren't touched.
@@ -78,7 +88,7 @@ pub fn run(args: PostArgs) -> Result<(), String> {
     let input = read_html(args.arg, std::io::stdin())?;
     validate(&input)?;
     let converted = format::convert(&input, format);
-    let inlined = inline_css::inline_stylesheets(&converted, |path| std::fs::read(path).ok());
+    let inlined = inline_css::inline_stylesheets(&converted, read_stylesheet);
     let scanned = scan::scan(&inlined.html, |path| std::path::Path::new(path).exists());
     for warning in inlined.warnings.iter().chain(&scanned.warnings) {
         eprintln!("{warning}");
@@ -190,6 +200,17 @@ mod tests {
 
         let html = read_html(Some(path.to_str().unwrap()), Cursor::new(Vec::new())).unwrap();
         assert_eq!(html, "<p>hi</p>");
+    }
+
+    #[test]
+    fn a_link_to_canvas_css_inlines_the_canvas_stylesheet() {
+        let html = r#"<link rel="stylesheet" href="/canvas.css"><p>x</p>"#;
+        let r = inline_css::inline_stylesheets(html, read_stylesheet);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(r.html.starts_with("<style>"), "{}", r.html);
+        assert!(r.html.contains("--color-text:"), "the tokens");
+        assert!(r.html.contains("h1 {"), "the base styles");
+        assert!(r.html.ends_with("</style><p>x</p>"));
     }
 
     #[test]
