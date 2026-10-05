@@ -512,18 +512,53 @@ fn raw_text_end(html: &str, from: usize, name: &str) -> usize {
 }
 
 /// `text` with every `</name` written `<\/name`, so it can't close the
-/// element it is inlined into.
+/// element it is inlined into. In a script, a `<script` between `<!--` and
+/// `-->` is also written `\x3Cscript`: it would put the parser in the
+/// double-escaped state, where the closing `</script>` no longer closes the
+/// element. Both forms read the same inside a JS string, regex or comment,
+/// and nothing else in the text changes.
 fn escape_raw(text: &str, name: &str) -> String {
-    let needle = format!("</{name}");
+    let close = format!("</{name}");
+    let script = name == "script";
     let lower = text.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    // The parser's script-data-escaped state: after `<!--`, until `-->`.
+    let mut escaped = false;
     let mut out = String::with_capacity(text.len());
-    let mut pos = 0;
-    while let Some(i) = lower[pos..].find(&needle) {
-        out.push_str(&text[pos..pos + i]);
-        out.push_str("<\\/");
-        pos += i + 2;
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        let (with, skip) = if rest.starts_with(close.as_bytes()) {
+            ("<\\/", 2)
+        } else if script && !escaped && rest.starts_with(b"<!--") {
+            escaped = true;
+            // From the dashes, so `<!-->` ends the state at once.
+            i += 2;
+            continue;
+        } else if script && escaped && rest.starts_with(b"-->") {
+            escaped = false;
+            i += 3;
+            continue;
+        } else if script
+            && escaped
+            && rest.starts_with(b"<script")
+            && matches!(
+                rest.get(7),
+                None | Some(b'\t' | b'\n' | b'\x0c' | b'\r' | b' ' | b'/' | b'>')
+            )
+        {
+            ("\\x3C", 1)
+        } else {
+            i += 1;
+            continue;
+        };
+        out.push_str(&text[copied..i]);
+        out.push_str(with);
+        i += skip;
+        copied = i;
     }
-    out.push_str(&text[pos..]);
+    out.push_str(&text[copied..]);
     out
 }
 
@@ -669,7 +704,7 @@ mod tests {
 
     fn cdn_files(url: &str, _: Duration) -> Result<Vec<u8>, String> {
         match url {
-            "https://unpkg.com/lib.js" => Ok(b"var s='</script>';".to_vec()),
+            "https://unpkg.com/lib.js" => Ok(b"var s='</script>',t='<!--<SCRIPT>';".to_vec()),
             "https://cdnjs.cloudflare.com/x/css/a.css" => {
                 Ok(b"@import url('b.css') print;.a{src:url(../font/f.woff2?v=1)}".to_vec())
             }
@@ -689,12 +724,31 @@ mod tests {
         );
         let r = export_card(&c, None, files, cdn_files);
         assert!(
-            r.html
-                .contains(r#"<script defer>var s='<\/script>';</script><p>x</p>"#),
+            r.html.contains(
+                r#"<script defer>var s='<\/script>',t='<!--\x3CSCRIPT>';</script><p>x</p>"#
+            ),
             "{}",
             r.html
         );
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn only_a_script_start_inside_an_html_comment_is_escaped() {
+        for (text, want) in [
+            (
+                "<!-- a\nx='<script src=y>'",
+                "<!-- a\nx='\\x3Cscript src=y>'",
+            ),
+            ("'<!--</script>'", "'<!--<\\/script>'"),
+            ("'<!--<scripts>'", "'<!--<scripts>'"),
+            ("'<!-- --><script>'", "'<!-- --><script>'"),
+            ("'<!--><script>'", "'<!--><script>'"),
+            ("<!--<script", "<!--\\x3Cscript"),
+        ] {
+            assert_eq!(escape_raw(text, "script"), want);
+        }
+        assert_eq!(escape_raw("/*<!--<script>*/", "style"), "/*<!--<script>*/");
     }
 
     #[test]
