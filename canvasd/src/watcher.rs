@@ -23,6 +23,7 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 use tokio::time::Instant;
 
 use crate::artifact_routes::save_and_publish;
+use crate::provenance::{Action, Actor};
 use crate::state::AppState;
 
 /// How long a folder must go without a write before its burst ends.
@@ -339,6 +340,9 @@ async fn files_changed(state: &AppState, id: &str, writes: usize) {
     record.updated_at = chrono::Utc::now().to_rfc3339();
     artifacts.fingerprints.insert(id.to_string(), print);
     if let Ok(view) = save_and_publish(state, &artifacts, id).await {
+        artifacts
+            .log_action(id, Action::Change, &Actor::default())
+            .await;
         canvas_core::log::info(
             "artifact files changed",
             &[

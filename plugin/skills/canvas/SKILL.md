@@ -237,6 +237,8 @@ canvas artifact list | show <id> | delete <id>
   submit, so it can't fetch anything or reach Canvas.
 - An artifact belongs to no session: any agent with its id can `put` to it,
   and it outlives the session that made it. Delete one whose job is done.
+  `canvas artifact log <id>` prints which session and agent created, put,
+  relinked or deleted it, and when a saved file changed it.
 
 ### Asking a question in a card and waiting for the answer
 

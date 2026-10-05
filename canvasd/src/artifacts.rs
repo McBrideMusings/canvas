@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use canvas_core::{Artifact, ArtifactSize, ArtifactSource, ArtifactView};
 use serde::{Deserialize, Serialize};
 
+use crate::provenance::{self, Action, Actor};
+
 pub const ARTIFACTS_FILE: &str = "artifacts.json";
 pub const ARTIFACTS_DIR: &str = "artifacts";
 pub const ID_PREFIX: &str = "art-";
@@ -69,6 +71,21 @@ impl Artifacts {
 
     pub fn has_data_dir(&self) -> bool {
         self.data_dir.is_some()
+    }
+
+    /// Appends `action` on `id` by `actor` to the provenance log.
+    pub async fn log_action(&self, id: &str, action: Action, actor: &Actor) {
+        if let Some(dir) = &self.data_dir {
+            provenance::append(dir, id, action, actor).await;
+        }
+    }
+
+    /// `id`'s provenance lines, oldest first; `None` without a data directory.
+    pub async fn log_of(&self, id: &str) -> Option<std::io::Result<Vec<provenance::Entry>>> {
+        match &self.data_dir {
+            Some(dir) => Some(provenance::read(dir, id).await),
+            None => None,
+        }
     }
 
     /// The folder an owned artifact `id` keeps its files in. Only ids

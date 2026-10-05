@@ -1,4 +1,4 @@
-//! `canvas artifact new|put|relink|list|show|delete`: artifacts are folders
+//! `canvas artifact new|put|relink|list|show|delete|log`: artifacts are folders
 //! of files canvasd keeps until someone deletes them, or a folder or HTML file
 //! of the person's that an artifact links to, shown on the Artifacts page as
 //! real web pages. Every verb prints canvasd's JSON on one line and, like
@@ -28,6 +28,9 @@ pub enum Command {
     Delete {
         id: String,
     },
+    Log {
+        id: String,
+    },
 }
 
 pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
@@ -55,6 +58,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         ["list"] => Ok(Command::List),
         ["show", id] => Ok(Command::Show { id: id.to_string() }),
         ["delete", id] => Ok(Command::Delete { id: id.to_string() }),
+        ["log", id] => Ok(Command::Log { id: id.to_string() }),
         _ => Err(UsageError),
     }
 }
@@ -91,6 +95,11 @@ pub fn run(command: Command) -> Result<(), String> {
         Command::Delete { id } => client::artifact_call(
             "DELETE",
             &format!("/api/artifacts/{}", percent_encode(&id)),
+            None,
+        )?,
+        Command::Log { id } => client::artifact_call(
+            "GET",
+            &format!("/api/artifacts/{}/log", percent_encode(&id)),
             None,
         )?,
     };

@@ -308,3 +308,63 @@ async fn torn_last_line_is_skipped() {
     let app = build_router(AppState::open(&dir).await);
     assert_eq!(state_of(&app).await, before);
 }
+
+/// One request carrying the provenance headers `canvas artifact` sends.
+async fn send_as(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> Value {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-canvas-session", "s-prov")
+        .header("x-canvas-agent", "codex")
+        .header("x-canvas-pid", "4242");
+    let body = match body {
+        Some(b) => {
+            req = req.header("content-type", "application/json");
+            Body::from(b.to_string())
+        }
+        None => Body::empty(),
+    };
+    let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+#[tokio::test]
+async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let created = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let page = dir.join("page.html");
+    std::fs::write(&page, "<h1>x</h1>").unwrap();
+    let source = page.to_str().unwrap();
+    send_as(
+        &app,
+        "POST",
+        &format!("/api/artifacts/{id}/put"),
+        Some(json!({ "source": source })),
+    )
+    .await;
+    send_as(&app, "DELETE", &format!("/api/artifacts/{id}"), None).await;
+
+    let app = restart(state, &dir).await;
+    let bytes = send(&app, "GET", &format!("/api/artifacts/{id}/log"), None).await;
+    let log: Value = serde_json::from_slice(&bytes).unwrap();
+    let lines = log.as_array().unwrap();
+    let actions: Vec<&str> = lines
+        .iter()
+        .map(|l| l["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["create", "put", "delete"]);
+    for line in lines {
+        assert_eq!(line["sessionId"], "s-prov");
+        assert_eq!(line["agent"], "codex");
+        assert_eq!(line["pid"], 4242);
+    }
+
+    let unknown = send(&app, "GET", "/api/artifacts/art-0000000000/log", None).await;
+    assert_eq!(
+        String::from_utf8_lossy(&unknown),
+        "no artifact with that id"
+    );
+}

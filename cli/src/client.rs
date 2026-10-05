@@ -59,16 +59,26 @@ fn call_any_status(
     body: Option<&serde_json::Value>,
     timeout: Duration,
 ) -> Result<Response, Failure> {
+    call_with_headers(method, path, body, &[], timeout)
+}
+
+/// [`call_any_status`] with `extra` headers sent alongside.
+fn call_with_headers(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    extra: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Response, Failure> {
     let socket = canvas_core::paths::socket_path()
         .ok_or_else(|| Failure::Transport("no HOME to place the socket".to_string()))?;
     let payload = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
-    let headers: &[(&str, &str)] = if body.is_some() {
-        &[("Content-Type", "application/json")]
-    } else {
-        &[]
-    };
+    let mut headers: Vec<(&str, &str)> = extra.to_vec();
+    if body.is_some() {
+        headers.push(("Content-Type", "application/json"));
+    }
     let started = std::time::Instant::now();
-    let result = unix_http::request(&socket, method, path, headers, &payload, Some(timeout));
+    let result = unix_http::request(&socket, method, path, &headers, &payload, Some(timeout));
     log_call(method, path, started.elapsed().as_millis(), &result);
     result.map_err(|e| Failure::Transport(e.to_string()))
 }
@@ -439,13 +449,26 @@ pub fn focus_artifact(id: &str) -> Result<u64, String> {
 
 /// One `/api/artifacts` call, answering canvasd's JSON. A non-2xx status
 /// becomes one line carrying canvasd's own error text, so `canvas artifact`
-/// says why (an unknown id, a source path that isn't there).
+/// says why (an unknown id, a source path that isn't there). The session,
+/// agent and pid of the coding agent this shell runs under, when there is
+/// one, go along as headers for canvasd's provenance log.
 pub fn artifact_call(
     method: &str,
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let response = call_any_status(method, path, body, timeout()).map_err(|e| e.to_string())?;
+    let actor = crate::agent::from_env()
+        .map(|(adapter, session)| (session, adapter, adapter.pid().map(|p| p.to_string())));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some((session, adapter, pid)) = &actor {
+        headers.push(("X-Canvas-Session", session));
+        headers.push(("X-Canvas-Agent", adapter.name()));
+        if let Some(pid) = pid {
+            headers.push(("X-Canvas-Pid", pid));
+        }
+    }
+    let response =
+        call_with_headers(method, path, body, &headers, timeout()).map_err(|e| e.to_string())?;
     if (200..300).contains(&response.status) {
         return into_json(response);
     }

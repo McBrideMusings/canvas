@@ -80,6 +80,17 @@ async fn a_burst_of_writes_reloads_the_artifact_once() {
     assert_eq!(after["updatedAt"], json!(seen[0]));
     assert_ne!(after["updatedAt"], before["updatedAt"]);
     assert_eq!(after["entry"], "index.html");
+
+    let log = send(&app, "GET", &format!("/api/artifacts/{id}/log"), None).await;
+    let actions: Vec<&Value> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| &l["action"])
+        .collect();
+    assert_eq!(actions, [&json!("create"), &json!("change")]);
+    assert_eq!(log[1]["sessionId"], Value::Null);
+    assert_eq!(log[1]["agent"], Value::Null);
 }
 
 #[tokio::test]

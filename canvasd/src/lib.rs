@@ -1,6 +1,7 @@
 pub mod artifact_routes;
 pub mod artifacts;
 pub mod profiles;
+pub mod provenance;
 pub mod refresh;
 pub mod repo;
 pub mod routes;
@@ -87,6 +88,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/artifacts/:id/relink",
             post(artifact_routes::relink_artifact),
         )
+        .route("/api/artifacts/:id/log", get(artifact_routes::artifact_log))
         .route(
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),

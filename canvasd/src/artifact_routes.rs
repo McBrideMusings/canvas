@@ -10,6 +10,7 @@ use axum::Json;
 use canvas_core::{ArtifactSource, NewArtifactRequest, PutArtifactRequest, RelinkArtifactRequest};
 
 use crate::artifacts::{self, Artifacts};
+use crate::provenance::{Action, Actor};
 use crate::state::{AppState, CanvasEvent};
 
 const NO_DATA_DIR: &str = "canvasd has no data directory to keep artifacts in";
@@ -60,6 +61,7 @@ pub async fn list_artifacts(State(state): State<AppState>) -> Response {
 /// HTML file; otherwise canvasd makes it an empty folder of its own.
 pub async fn new_artifact(
     State(state): State<AppState>,
+    actor: Actor,
     body: Option<Json<NewArtifactRequest>>,
 ) -> Response {
     let NewArtifactRequest { title, link } = body.map(|Json(b)| b).unwrap_or_default();
@@ -92,6 +94,7 @@ pub async fn new_artifact(
                 .fingerprints
                 .insert(id.clone(), artifacts::fingerprint(&root));
             state.watcher.watch(&id, &root);
+            artifacts.log_action(&id, Action::Create, &actor).await;
             canvas_core::log::info(
                 "artifact created",
                 &[
@@ -117,6 +120,7 @@ pub async fn new_artifact(
 pub async fn relink_artifact(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    actor: Actor,
     Json(req): Json<RelinkArtifactRequest>,
 ) -> Response {
     let root = match artifacts::check_link(&req.link) {
@@ -139,6 +143,7 @@ pub async fn relink_artifact(
     match save_and_publish(&state, &artifacts, &id).await {
         Ok(view) => {
             state.watcher.watch(&id, &root);
+            artifacts.log_action(&id, Action::Relink, &actor).await;
             canvas_core::log::info(
                 "artifact relinked",
                 &[("id", &id), ("from", &from), ("to", &view.path)],
@@ -176,6 +181,7 @@ pub async fn get_artifact(State(state): State<AppState>, Path(id): Path<String>)
 pub async fn put_artifact(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    actor: Actor,
     Json(req): Json<PutArtifactRequest>,
 ) -> Response {
     let source = PathBuf::from(&req.source);
@@ -241,6 +247,7 @@ pub async fn put_artifact(
     artifacts.fingerprints.insert(id.clone(), print);
     match save_and_publish(&state, &artifacts, &id).await {
         Ok(view) => {
+            artifacts.log_action(&id, Action::Put, &actor).await;
             canvas_core::log::info(
                 "artifact put",
                 &[
@@ -257,7 +264,11 @@ pub async fn put_artifact(
 
 /// `canvas artifact delete`: removes the record, and an owned artifact's
 /// folder. A linked artifact's files belong to the person and stay.
-pub async fn delete_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+pub async fn delete_artifact(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    actor: Actor,
+) -> Response {
     let mut artifacts = state.artifacts.write().await;
     let Some(record) = artifacts.records.remove(&id) else {
         return not_found();
@@ -282,9 +293,23 @@ pub async fn delete_artifact(State(state): State<AppState>, Path(id): Path<Strin
             }
         }
     }
+    artifacts.log_action(&id, Action::Delete, &actor).await;
     state.publish(CanvasEvent::ArtifactRemoved(id.clone()));
     canvas_core::log::info("artifact deleted", &[("id", &id)]);
     Json(serde_json::json!({ "deleted": id })).into_response()
+}
+
+/// `canvas artifact log`: who created and changed the artifact, oldest
+/// first. The lines outlive the artifact, so a deleted id still answers; an
+/// id with no record and no lines is a 404.
+pub async fn artifact_log(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let artifacts = state.artifacts.read().await;
+    match artifacts.log_of(&id).await {
+        None => no_data_dir(),
+        Some(Err(e)) => failed("reading the artifact log failed", &id, &e),
+        Some(Ok(lines)) if lines.is_empty() && !artifacts.records.contains_key(&id) => not_found(),
+        Some(Ok(lines)) => Json(lines).into_response(),
+    }
 }
 
 /// `canvas focus art-…`: asks every open viewer to switch to the Artifacts

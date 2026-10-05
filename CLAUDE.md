@@ -267,7 +267,14 @@ beside the terminal all day.
   its artifact's bursts (`Watcher::hold`) until it has stamped, so its own
   writes never reload twice; `list`,
   `show <id>` and `delete <id>` (record and folder) round it out, each failing
-  loudly with canvasd's error text. `show` adds `entry` (`index.html`, else the
+  loudly with canvasd's error text. Every create, put, relink, watched change
+  and delete appends a line (`at`, `action`, `sessionId`, `agent`, `pid`) to
+  `artifact-log.jsonl` in `CANVAS_DATA_DIR` (`canvasd/src/provenance.rs`); the
+  CLI sends its agent's session, agent and pid as `x-canvas-session`,
+  `x-canvas-agent` and `x-canvas-pid` headers, and a watched change or a
+  request without them logs nulls. The lines outlive the artifact; `canvas
+  artifact log <id>` (`GET /api/artifacts/:id/log`) prints them as JSON, 404
+  for an id with no record and no lines. The viewer never shows them. `show` adds `entry` (`index.html`, else the
   folder's only top-level HTML file) and `size`, read on every request from the
   entry's `<meta name="canvas-size" content="WxH">`. canvasd serves the files at
   `/artifacts/<id>/<path>` (`/artifacts/<id>/` is the entry) after refusing a
