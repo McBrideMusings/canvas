@@ -6,6 +6,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod bridge;
 mod daemon;
+#[cfg(debug_assertions)]
+mod debug;
+mod export;
 mod integrations;
 mod snapshot;
 
@@ -189,6 +192,7 @@ pub fn run() {
     canvas_core::log::info("app started", &[("version", &env!("CARGO_PKG_VERSION"))]);
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("canvas", |_ctx, request, responder| {
             // The socket read blocks, so each request gets its own thread.
             std::thread::spawn(move || responder.respond(bridge::proxy(request)));
@@ -203,7 +207,8 @@ pub fn run() {
             integration_install,
             relaunch,
             take_pending_card,
-            snapshot::snapshot_reply
+            snapshot::snapshot_reply,
+            export::export_card
         ])
         .setup(|app| {
             // Debug builds aren't bundled (no Resources dir to install from);
@@ -223,6 +228,11 @@ pub fn run() {
             };
             let handle = app.handle().clone();
             std::thread::spawn(move || bridge::forward_events(handle));
+            #[cfg(debug_assertions)]
+            {
+                let eval_handle = app.handle().clone();
+                std::thread::spawn(move || debug::run_eval_queue(eval_handle));
+            }
             app.manage(daemon::DaemonState(std::sync::Mutex::new(install_error)));
             app.manage(PendingCard(std::sync::Mutex::new(None)));
             app.manage(integrations::IntegrationState::default());

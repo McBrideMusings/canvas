@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bash scripts/verify-app.sh <start|shot <png>|stop|env> — run a throwaway canvas daemon
+# bash scripts/verify-app.sh <start|shot <png>|eval <js|->|stop|env> — run a throwaway canvas daemon
 # and a dev Canvas.app on their own Unix socket, and capture the app window.
 #
 # Canvas has no browser-reachable port, so the app window is the only viewer;
@@ -10,6 +10,10 @@
 #
 #   start       build both, start daemon and app, print the socket path
 #   shot <png>  capture the app's "Canvas" window to <png> (no focus taken)
+#   eval <js|-> run a script in the app's main window (no focus taken); the
+#               debug app reads it from ${dir}/debug/eval within 200ms. A
+#               ${dir}/debug/save-path file answers an export's save dialog
+#               (its path; empty for cancelled) — see app/src-tauri/src/debug.rs
 #   env         print `export CANVAS_SOCKET=...` for driving it with `canvas post`
 #   stop        kill exactly the two processes `start` recorded
 set -euo pipefail
@@ -33,7 +37,8 @@ case "${1:-}" in
     echo $! > "${dir}/daemon.pid"
     for _ in $(seq 1 50); do [ -S "${socket}" ] && break; sleep 0.1; done
     [ -S "${socket}" ] || { echo "verify-app: daemon never bound ${socket}" >&2; exit 1; }
-    "${repo_root}/app/src-tauri/target/debug/app" > "${dir}/app.log" 2>&1 &
+    mkdir -p "${dir}/debug/eval"
+    CANVAS_DEBUG_DIR="${dir}/debug" "${repo_root}/app/src-tauri/target/debug/app" > "${dir}/app.log" 2>&1 &
     echo $! > "${dir}/app.pid"
     sleep 3
     echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), socket ${socket}"
@@ -54,6 +59,12 @@ EOF
     screencapture -x -o -l "${win}" "${out}"
     echo "verify-app: wrote ${out}"
     ;;
+  eval)
+    src="${2:?usage: bash scripts/verify-app.sh eval <js|->}"
+    tmp="${dir}/debug/eval/.$$.tmp"
+    if [ "${src}" = "-" ]; then cat > "${tmp}"; else cp "${src}" "${tmp}"; fi
+    mv "${tmp}" "${dir}/debug/eval/$(date +%s%N)-$$.js"
+    ;;
   env)
     echo "export CANVAS_SOCKET=${socket}"
     ;;
@@ -67,7 +78,7 @@ EOF
     echo "verify-app: stopped"
     ;;
   *)
-    echo "usage: bash scripts/verify-app.sh <start|shot <png>|stop|env>" >&2
+    echo "usage: bash scripts/verify-app.sh <start|shot <png>|eval <js|->|stop|env>" >&2
     exit 2
     ;;
 esac

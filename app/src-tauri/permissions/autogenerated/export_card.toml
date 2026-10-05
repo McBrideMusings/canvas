@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-card"
+description = "Enables the export_card command without any pre-configured scope."
+commands.allow = ["export_card"]
+
+[[permission]]
+identifier = "deny-export-card"
+description = "Denies the export_card command without any pre-configured scope."
+commands.deny = ["export_card"]

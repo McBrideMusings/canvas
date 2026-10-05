@@ -860,6 +860,27 @@ html.full-width .empty-state {
   color: var(--danger);
 }
 
+.menu-item[aria-disabled="true"] {
+  color: var(--muted);
+  cursor: default;
+}
+
+.menu-item[aria-disabled="true"]:hover {
+  background: none;
+}
+
+/* "Export failed: <reason>" wraps rather than cutting the reason off. */
+.menu-item.failed {
+  color: var(--danger);
+  background: var(--danger-soft);
+  align-items: flex-start;
+}
+
+.menu-item.failed .menu-item-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .menu-item.danger.confirming {
   background: var(--danger-soft);
   font-weight: 600;

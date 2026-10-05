@@ -84,6 +84,11 @@
         svg.appendChild(svgEl("path", { d: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" }));
         svg.appendChild(svgEl("path", { d: "M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" }));
         break;
+      case "download":
+        svg.appendChild(svgEl("path", { d: "M12 3.5v12" }));
+        svg.appendChild(svgEl("path", { d: "M7 11l5 5 5-5" }));
+        svg.appendChild(svgEl("path", { d: "M4 20.5h16" }));
+        break;
       case "warning":
         svg.appendChild(svgEl("path", { d: "M12 3.5L2.5 20h19z" }));
         svg.appendChild(svgEl("path", { d: "M12 10v4.5" }));
@@ -1175,6 +1180,41 @@
     );
   }
 
+  // The app's export_card fetches canvasd's export of the post, asks where to
+  // save it and writes it; it answers the path, null for a cancelled dialog,
+  // or a one-line reason. The item stays in the menu, marked busy, until then.
+  // aria-disabled rather than disabled: disabling the focused item would drop
+  // focus out of the menu, which closes it.
+  async function exportPost(card, item) {
+    if (item.getAttribute("aria-disabled") === "true") return;
+    item.setAttribute("aria-disabled", "true");
+    item.classList.remove("failed");
+    item.removeAttribute("title");
+    setButtonIcon(item, "download", "Exporting…");
+    let error = null;
+    let path = null;
+    try {
+      path = await window.__TAURI__.core.invoke("export_card", { cardId: card.id });
+    } catch (e) {
+      error = String(e);
+    }
+    item.removeAttribute("aria-disabled");
+    if (error === null) {
+      if (openMenu && openMenu.menu.contains(item)) closeMenu();
+      if (path) toast(`Exported to ${path.split("/").pop()}`);
+      return;
+    }
+    const text = `Export failed: ${error}`;
+    // A card re-render or a click elsewhere can drop the menu mid-export.
+    if (!item.isConnected) {
+      toast(text);
+      return;
+    }
+    item.classList.add("failed");
+    item.title = text;
+    setButtonIcon(item, "download", text);
+  }
+
   function showOnlySession(sessionId) {
     closeMenu();
     selectSession(sessionId);
@@ -1193,6 +1233,12 @@
 
     menu.appendChild(buildMenuItem("copy", "Copy post text", () => copyPostText(card)));
     menu.appendChild(buildMenuItem("link", "Copy post link", () => copyPostLink(card)));
+    if (window.__TAURI__) {
+      const exportItem = buildMenuItem("download", "Export post…", () =>
+        exportPost(card, exportItem)
+      );
+      menu.appendChild(exportItem);
+    }
     menu.appendChild(
       buildMenuItem("filter", `Show only ${sessionName(card.sessionId)}`, () =>
         showOnlySession(card.sessionId)

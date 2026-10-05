@@ -30,6 +30,9 @@ tauri = { version = "2.10.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 canvas-core = { path = "../../canvas-core" }
 tauri-plugin-deep-link = "2"
+# The save dialog behind the card menu's "Export post…" (src/export.rs),
+# opened from Rust only, so the viewer holds no dialog permission.
+tauri-plugin-dialog = "2"
 
 # `canvas snapshot` captures the window's WKWebView (src/snapshot.rs); these
 # are the versions wry already pulls in.

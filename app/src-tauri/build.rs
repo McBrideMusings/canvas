@@ -16,6 +16,7 @@ fn main() {
             "relaunch",
             "take_pending_card",
             "snapshot_reply",
+            "export_card",
         ]),
     ),
   )

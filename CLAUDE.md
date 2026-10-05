@@ -56,6 +56,16 @@ beside the terminal all day.
   `canvas-post://<card_id>` shows the window and parks the id in `PendingCard`,
   and the viewer takes it with `take_pending_card` once its state has loaded,
   clears search and filters, scrolls to the card and rings it.
+  The card menu's "Export post…" calls `export_card` (`export.rs`): it fetches
+  `GET /api/cards/:id/export` over the socket (waiting `EXPORT_DOWNLOAD_SECS`
+  plus 15s), opens a save dialog from Rust (`tauri-plugin-dialog`; the viewer
+  holds no dialog permission), writes the page and returns the path, `null` for
+  a cancelled dialog, or a one-line reason the item shows as "Export failed: …";
+  it logs `post exported`, `post export cancelled` or `post export failed`.
+  A debug build with `CANVAS_DEBUG_DIR` set (`debug.rs`; `verify-app.sh` sets
+  it) runs each `eval/*.js` in that folder in the main window, so a script can
+  drive the viewer without taking focus (`admin verify-app eval <js|->`), and a
+  `save-path` file there answers the save dialog (empty for cancelled).
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
   Its `relaunchNeeded` is true only when a bundled binary exists and differs from
