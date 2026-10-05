@@ -279,3 +279,33 @@ async fn a_write_inside_nested_links_reloads_both() {
     want.sort();
     assert_eq!(seen, want);
 }
+
+#[tokio::test]
+async fn a_linked_folder_missing_at_start_is_watched_once_it_returns() {
+    let dir = temp_dir();
+    let parent = temp_dir();
+    let web = parent.join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "<h1>here</h1>").unwrap();
+    let id = {
+        let app = build_router(AppState::open(&dir).await);
+        send(&app, "POST", "/api/artifacts", Some(json!({ "link": web }))).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    std::fs::rename(&web, parent.join("web-moved")).unwrap();
+    let state = AppState::open(&dir).await;
+    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut rx = state.events.subscribe();
+
+    std::fs::rename(parent.join("web-moved"), &web).unwrap();
+    let back = views_for(&mut rx, &id, Duration::from_secs(3)).await;
+    assert_eq!(back.len(), 1, "got {} views", back.len());
+    assert!(!back[0].source_missing);
+
+    std::fs::write(web.join("index.html"), "<h1>watched</h1>").unwrap();
+    let seen = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;
+    assert_eq!(seen.len(), 1, "got {seen:?}");
+}

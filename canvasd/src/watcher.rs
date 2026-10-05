@@ -9,6 +9,10 @@
 //! `updatedAt` changes. A burst that leaves the folder's
 //! [`fingerprint`](crate::artifacts::fingerprint) as it was last stamped
 //! (a `put`, which stamps itself) publishes nothing.
+//!
+//! The OS refuses to watch a path that doesn't exist (a link whose folder is
+//! gone when canvasd starts), so a path whose watch failed is tried again
+//! every [`RETRY_EVERY`]; once it is watched, it reloads as a burst would.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +29,8 @@ use crate::state::AppState;
 pub const QUIET: Duration = Duration::from_millis(200);
 /// The longest a burst of continuous writes waits before it reloads anyway.
 pub const MAX_WAIT: Duration = Duration::from_secs(2);
+/// How often a path whose OS watch failed is tried again.
+pub const RETRY_EVERY: Duration = Duration::from_secs(1);
 
 /// The paths being watched, by artifact id. Until [`spawn_artifact_watcher`]
 /// starts the OS watcher, `watch` only records the path.
@@ -42,6 +48,9 @@ struct Inner {
     /// Artifacts a `put` is copying into, with how many puts: their bursts
     /// wait until the last put has stamped, however long the copy takes.
     held: HashMap<String, usize>,
+    /// Artifacts whose path has no OS watch because watching it failed, with
+    /// the last error logged for it, so a retry logs only a new error.
+    failed: HashMap<String, String>,
 }
 
 impl Inner {
@@ -52,6 +61,23 @@ impl Inner {
         }
         if let Some(os) = self.os.as_mut() {
             let _ = os.unwatch(path);
+        }
+    }
+
+    /// Asks the OS to watch `path` for `id`, recording a failure for retry.
+    fn watch_os(&mut self, id: &str, path: &Path) {
+        let Some(os) = self.os.as_mut() else { return };
+        match os.watch(path, RecursiveMode::Recursive) {
+            Ok(()) => {
+                self.failed.remove(id);
+            }
+            Err(e) => {
+                canvas_core::log::warn(
+                    "artifact folder not watched",
+                    &[("id", &id), ("path", &path.display()), ("error", &e)],
+                );
+                self.failed.insert(id.to_string(), e.to_string());
+            }
         }
     }
 }
@@ -80,29 +106,77 @@ impl Watcher {
     }
 
     /// Watches `path` recursively on behalf of artifact `id`, replacing any
-    /// path `id` had.
+    /// path `id` had. A path the OS can't watch yet is retried every
+    /// [`RETRY_EVERY`].
     pub fn watch(&self, id: &str, path: &Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut inner = self.lock();
-        if let Some(old) = inner.paths.insert(id.to_string(), path.clone()) {
-            inner.release(&old);
+        let old = inner.paths.insert(id.to_string(), path.clone());
+        if old.as_ref() == Some(&path) && !inner.failed.contains_key(id) {
+            return;
         }
-        if let Some(os) = inner.os.as_mut() {
-            if let Err(e) = os.watch(&path, RecursiveMode::Recursive) {
-                canvas_core::log::warn(
-                    "artifact folder not watched",
-                    &[("id", &id), ("path", &path.display()), ("error", &e)],
-                );
-            }
+        inner.watch_os(id, &path);
+        if let Some(old) = old {
+            inner.release(&old);
         }
     }
 
     /// Stops watching artifact `id`'s path.
     pub fn unwatch(&self, id: &str) {
         let mut inner = self.lock();
+        inner.failed.remove(id);
         if let Some(path) = inner.paths.remove(id) {
             inner.release(&path);
         }
+    }
+
+    /// Tries again to watch every path whose OS watch failed, and returns the
+    /// ids now watched. A path still missing is skipped without asking the OS.
+    fn retry_failed(&self) -> Vec<String> {
+        let mut inner = self.lock();
+        let inner = &mut *inner;
+        let Some(os) = inner.os.as_mut() else {
+            return Vec::new();
+        };
+        let mut watched = Vec::new();
+        for (id, last_error) in inner.failed.iter_mut() {
+            let Some(path) = inner.paths.get_mut(id) else {
+                continue;
+            };
+            // Recorded uncanonicalized while missing; the OS reports events
+            // under the canonical path, which `owners` matches against.
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
+            };
+            match os.watch(&canonical, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    canvas_core::log::info(
+                        "artifact folder watched on retry",
+                        &[("id", id), ("path", &canonical.display())],
+                    );
+                    *path = canonical;
+                    watched.push(id.clone());
+                }
+                Err(e) => {
+                    let error = e.to_string();
+                    if *last_error != error {
+                        canvas_core::log::warn(
+                            "artifact folder retry failed",
+                            &[
+                                ("id", id),
+                                ("path", &canonical.display()),
+                                ("error", &error),
+                            ],
+                        );
+                        *last_error = error;
+                    }
+                }
+            }
+        }
+        for id in &watched {
+            inner.failed.remove(id);
+        }
+        watched
     }
 
     /// Keeps `id`'s bursts pending until the returned guard drops, so the
@@ -132,19 +206,20 @@ impl Watcher {
             .collect()
     }
 
-    /// Hands the watcher the OS watcher and watches every path recorded so far.
-    fn start(&self, mut os: notify::RecommendedWatcher) -> usize {
+    /// Hands the watcher the OS watcher and watches every path recorded so
+    /// far, returning how many the OS took (the rest are retried).
+    fn start(&self, os: notify::RecommendedWatcher) -> usize {
         let mut inner = self.lock();
-        for (id, path) in &inner.paths {
-            if let Err(e) = os.watch(path, RecursiveMode::Recursive) {
-                canvas_core::log::warn(
-                    "artifact folder not watched",
-                    &[("id", id), ("path", &path.display()), ("error", &e)],
-                );
-            }
-        }
         inner.os = Some(os);
-        inner.paths.len()
+        let paths: Vec<(String, PathBuf)> = inner
+            .paths
+            .iter()
+            .map(|(id, path)| (id.clone(), path.clone()))
+            .collect();
+        for (id, path) in &paths {
+            inner.watch_os(id, path);
+        }
+        paths.len() - inner.failed.len()
     }
 }
 
@@ -182,6 +257,8 @@ pub fn spawn_artifact_watcher(state: AppState) {
 
         // Per artifact: the burst's first write, its latest, and how many.
         let mut pending: HashMap<String, (Instant, Instant, usize)> = HashMap::new();
+        let mut retry = tokio::time::interval(RETRY_EVERY);
+        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let due = pending
                 .values()
@@ -201,6 +278,15 @@ pub fn spawn_artifact_watcher(state: AppState) {
                         let burst = pending.entry(id).or_insert((now, now, 0));
                         burst.1 = now;
                         burst.2 += 1;
+                    }
+                }
+                _ = retry.tick() => {
+                    // A burst with no writes: what changed before the watch
+                    // began is in the fingerprint, so it stamps once if
+                    // anything did, and waits out a hold like any burst.
+                    let now = Instant::now();
+                    for id in state.watcher.retry_failed() {
+                        pending.entry(id).or_insert((now, now, 0));
                     }
                 }
                 () = wait => {

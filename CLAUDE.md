@@ -251,8 +251,9 @@ beside the terminal all day.
   the view carries `"sourceMissing": true`, the list row a warning mark, and the
   pane "Source missing" with the path and the relink command; `relink <id>
   <path>` repoints a linked artifact, keeping its id, and watches the new path.
-  A link that moves away and back while canvasd runs recovers by itself; one
-  missing when canvasd starts isn't watched until a relink. `put <id>
+  A link that moves away and back while canvasd runs recovers by itself; a path
+  the OS refused to watch (missing when canvasd starts) is retried every second
+  and, once watched, reloads as a save would. `put <id>
   <file|dir>` sends canvasd the absolute path
   and canvasd copies the file, or the folder's contents, in (a symlinked folder is
   skipped, a symlinked destination replaced) and stamps `updatedAt`. Saving a
