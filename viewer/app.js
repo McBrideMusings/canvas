@@ -2086,6 +2086,27 @@
     const data = event.data;
     if (!data) return;
 
+    if (data.type === "canvas-artifact-error") {
+      // canvasd serves every artifact page with a script that posts these.
+      // Only the pane's own frame counts, and the artifact is the one that
+      // frame was built for, never what the message names: each artifact
+      // gets a frame of its own, so no page can report onto another.
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      const line = (n) => (Number.isInteger(n) && n > 0 ? n : undefined);
+      fetch(`/api/artifacts/${encodeURIComponent(artifactFrameId)}/errors`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: data.kind === "rejection" ? "rejection" : "error",
+          message: String(data.message),
+          source: typeof data.source === "string" ? data.source : undefined,
+          line: line(data.line),
+          column: line(data.column),
+        }),
+      }).catch(() => {});
+      return;
+    }
+
     if (data.type === "canvas-resize") {
       for (const frame of cardFrames()) {
         if (frame.contentWindow === event.source) {
@@ -3084,6 +3105,9 @@
   // box with the grip, so the grip follows the frame's corner.
   let artifactFrame = null;
   let artifactFrameSrc = null;
+  // The artifact the frame was built for. Switching artifact builds a new
+  // frame, so a page still unloading never shares a window with the next.
+  let artifactFrameId = null;
   let artifactBox = null;
   let artifactFull = false;
 
@@ -3092,6 +3116,7 @@
     artifactBox = null;
     artifactFrame = null;
     artifactFrameSrc = null;
+    artifactFrameId = null;
   }
 
   function paintArtifactPane() {
@@ -3129,7 +3154,9 @@
     }
     const src = `/artifacts/${encodeURIComponent(artifact.id)}/`;
     const loaded = `${src}@${artifact.updatedAt}`;
+    if (artifactFrameId !== artifact.id) dropArtifactFrame();
     if (!artifactFrame) {
+      artifactFrameId = artifact.id;
       artifactBox = document.createElement("div");
       artifactBox.className = "artifact-frame-box";
       artifactFrame = document.createElement("iframe");

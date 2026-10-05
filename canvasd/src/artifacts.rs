@@ -5,10 +5,12 @@
 //! `profiles.json`, outside the 24h stream, and are never evicted or pruned:
 //! an artifact stays until someone deletes it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use canvas_core::{Artifact, ArtifactSize, ArtifactSource, ArtifactView};
+use canvas_core::{
+    Artifact, ArtifactScriptError, ArtifactSize, ArtifactSource, ArtifactView, ScriptErrorReport,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::provenance::{self, Action, Actor};
@@ -19,6 +21,11 @@ pub const ID_PREFIX: &str = "art-";
 
 /// How much of the entry page is read looking for `canvas-size`.
 const SIZE_SCAN_BYTES: usize = 64 * 1024;
+
+/// How many script errors canvasd keeps per artifact; older ones drop off.
+const SCRIPT_ERRORS_KEPT: usize = 50;
+/// The longest message or source a script error keeps, in bytes.
+const SCRIPT_ERROR_TEXT_MAX: usize = 2048;
 
 #[derive(Default, Serialize, Deserialize)]
 struct ArtifactsFile {
@@ -37,6 +44,9 @@ pub struct Artifacts {
     /// no longer matches, so the writes of a `put` (which stamps itself)
     /// don't reload the pane a second time.
     pub fingerprints: HashMap<String, u64>,
+    /// The newest [`SCRIPT_ERRORS_KEPT`] errors each artifact's page threw
+    /// in a viewer's pane, oldest first, in memory only.
+    script_errors: HashMap<String, VecDeque<ArtifactScriptError>>,
     data_dir: Option<PathBuf>,
 }
 
@@ -65,6 +75,7 @@ impl Artifacts {
         Artifacts {
             records,
             fingerprints: HashMap::new(),
+            script_errors: HashMap::new(),
             data_dir: Some(dir.to_path_buf()),
         }
     }
@@ -86,6 +97,36 @@ impl Artifacts {
             Some(dir) => Some(provenance::read(dir, id).await),
             None => None,
         }
+    }
+
+    /// Keeps one error `id`'s page threw, dropping the oldest past
+    /// [`SCRIPT_ERRORS_KEPT`]. Long text is cut, so a page can't fill memory.
+    pub fn record_script_error(&mut self, id: &str, mut report: ScriptErrorReport) {
+        report.message = clip(report.message);
+        report.source = report.source.map(clip);
+        let kept = self.script_errors.entry(id.to_string()).or_default();
+        if kept.len() == SCRIPT_ERRORS_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back(ArtifactScriptError {
+            at: chrono::Utc::now().to_rfc3339(),
+            report,
+        });
+    }
+
+    /// [`Self::view`] plus the errors its page threw, for `artifact show`.
+    pub fn view_with_errors(&self, artifact: &Artifact) -> ArtifactView {
+        let mut view = self.view(artifact);
+        if let Some(kept) = self.script_errors.get(&artifact.id) {
+            view.script_errors = kept.iter().cloned().collect();
+        }
+        view
+    }
+
+    /// Forgets everything kept in memory for `id`, once its record is gone.
+    pub fn forget(&mut self, id: &str) {
+        self.fingerprints.remove(id);
+        self.script_errors.remove(id);
     }
 
     /// The folder an owned artifact `id` keeps its files in. Only ids
@@ -160,6 +201,7 @@ impl Artifacts {
             source_missing,
             entry,
             size,
+            script_errors: Vec::new(),
         }
     }
 
@@ -169,6 +211,17 @@ impl Artifacts {
         list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         list.into_iter().map(|a| self.view(a)).collect()
     }
+}
+
+fn clip(mut text: String) -> String {
+    if text.len() > SCRIPT_ERROR_TEXT_MAX {
+        let mut end = SCRIPT_ERROR_TEXT_MAX;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
 }
 
 fn is_html(name: &str) -> bool {
@@ -353,6 +406,102 @@ pub fn resolve_file(folder: &Path, rel: &str) -> Result<PathBuf, Refusal> {
     Ok(resolved)
 }
 
+/// The `<script>` every artifact HTML page is served with, ahead of
+/// the page's own: `error_relay.js` posts each uncaught error and unhandled
+/// rejection to the viewer as `canvas-artifact-error`, since the pane's
+/// opaque origin leaves the viewer no other way to see them. The viewer
+/// accepts one only from its own pane's frame, and files it under the
+/// artifact it built that frame for. Comments go and the lines join into one, so
+/// the page's own line numbers stay where they were.
+static ERROR_RELAY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let mut code = include_str!("error_relay.js").to_string();
+    while let Some(start) = code.find("/*") {
+        let end = code[start..]
+            .find("*/")
+            .map_or(code.len(), |e| start + e + 2);
+        code.replace_range(start..end, "");
+    }
+    let line = code
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("<script>{line}</script>")
+});
+
+/// An artifact's HTML page as canvasd serves it: every `<script src>`
+/// without a `crossorigin` attribute gains one, so WebKit reports an error at
+/// its top level in full rather than as "Script error." (the folder and the
+/// three CDNs the CSP allows all answer with `Access-Control-Allow-Origin:
+/// *`), and [`ERROR_RELAY`] goes where it runs
+/// before any of the page's scripts but leaves the doctype first: just
+/// inside `<head>`, else just inside `<html>`, else after the doctype, else
+/// at the start.
+pub fn served_page(html: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(html.len() + 1024);
+    let lower = html.to_ascii_lowercase();
+    let mut copied = 0;
+    for (at, end) in tags(&lower, b"<script") {
+        let name_end = at + b"<script".len();
+        let attrs = &lower[name_end..end];
+        if has_attr(attrs, b"src") && !has_attr(attrs, b"crossorigin") {
+            out.extend_from_slice(&html[copied..name_end]);
+            out.extend_from_slice(b" crossorigin");
+            copied = name_end;
+        }
+    }
+    out.extend_from_slice(&html[copied..]);
+
+    let lower = out.to_ascii_lowercase();
+    let at = [&b"<head"[..], b"<html", b"<!doctype"]
+        .iter()
+        .find_map(|name| tags(&lower, name).next().map(|(_, end)| end + 1))
+        .unwrap_or(0);
+    out.splice(at..at, ERROR_RELAY.bytes());
+    out
+}
+
+const SPACE: &[u8] = b" \t\n\r\x0c";
+
+/// Each `name` tag in lowercased `html`, as the offsets of its `<` and its
+/// closing `>`. `<header>` is not a `<head` tag.
+fn tags<'a>(lower: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = (usize, usize)> + 'a {
+    let mut from = 0;
+    std::iter::from_fn(move || {
+        while let Some(at) = find(&lower[from..], name).map(|i| i + from) {
+            from = at + name.len();
+            let next = lower.get(from).copied()?;
+            if next == b'>' || next == b'/' || SPACE.contains(&next) {
+                let end = find(&lower[from..], b">")? + from;
+                from = end;
+                return Some((at, end));
+            }
+        }
+        None
+    })
+}
+
+/// Whether a tag's lowercased attribute text names attribute `name`.
+fn has_attr(attrs: &[u8], name: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(at) = find(&attrs[from..], name).map(|i| i + from) {
+        from = at + name.len();
+        let before = at.checked_sub(1).map(|i| attrs[i]);
+        let after = attrs.get(from).copied();
+        if before.is_some_and(|b| SPACE.contains(&b))
+            && after.is_none_or(|b| b == b'=' || b == b'/' || SPACE.contains(&b))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 /// The Content-Security-Policy every artifact file is served with. Scripts,
 /// styles and fonts come from the artifact's own folder, inline, or the
 /// three CDNs a card may use; `connect-src 'none'` keeps the page from
@@ -507,6 +656,55 @@ mod tests {
         assert_eq!(
             parse_canvas_size(r#"<meta name="canvas-size" content="0x844">"#),
             None
+        );
+    }
+
+    #[test]
+    fn error_relay_goes_inside_head_and_never_before_the_doctype() {
+        let relay = ERROR_RELAY.as_str();
+        let place = |html: &str| {
+            String::from_utf8(served_page(html.as_bytes()))
+                .unwrap()
+                .replace(relay, "|")
+        };
+        assert_eq!(
+            place("<!DOCTYPE html><HTML lang=en><Head><script>x()</script>"),
+            "<!DOCTYPE html><HTML lang=en><Head>|<script>x()</script>"
+        );
+        assert_eq!(
+            place("<!doctype html><html><header>h</header>"),
+            "<!doctype html><html>|<header>h</header>"
+        );
+        assert_eq!(place("<!doctype html><p>x"), "<!doctype html>|<p>x");
+        assert_eq!(place("<p>x"), "|<p>x");
+    }
+
+    #[test]
+    fn error_relay_is_one_line() {
+        let relay = ERROR_RELAY.as_str();
+        assert!(!relay.contains('\n'));
+        assert!(!relay.contains("/*"));
+        assert!(relay.ends_with("})();</script>"));
+    }
+
+    #[test]
+    fn script_src_tags_gain_crossorigin_once() {
+        let page = |html: &str| {
+            String::from_utf8(served_page(html.as_bytes()))
+                .unwrap()
+                .replace(ERROR_RELAY.as_str(), "")
+        };
+        assert_eq!(
+            page(r#"<SCRIPT SRC="a.js"></SCRIPT><script>x()</script>"#),
+            r#"<SCRIPT crossorigin SRC="a.js"></SCRIPT><script>x()</script>"#
+        );
+        assert_eq!(
+            page(r#"<script type=module src=a.js crossorigin=anonymous></script>"#),
+            r#"<script type=module src=a.js crossorigin=anonymous></script>"#
+        );
+        assert_eq!(
+            page(r#"<script data-src="a"></script><scripts src=b>"#),
+            r#"<script data-src="a"></script><scripts src=b>"#
         );
     }
 }

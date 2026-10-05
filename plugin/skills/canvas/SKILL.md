@@ -239,6 +239,14 @@ canvas artifact list | show <id> | delete <id>
   `allow-same-origin`: scripts, styles and fonts load from its own folder,
   inline, or the three CDNs below; `connect-src` is closed and forms can't
   submit, so it can't fetch anything or reach Canvas.
+- A page that throws reports it: while a viewer shows the artifact, `show`
+  lists its newest 50 uncaught errors and unhandled rejections under
+  `scriptErrors` (`at`, `kind`, `message`, `source`, `line`, `column`). Check
+  it after a `put` or a save; an empty pane usually has one there. They live
+  in memory only, so a daemon restart clears them. WebKit hides the message
+  of an error thrown at the top level of an inline `<script>` or by an
+  `onclick="…"` attribute; the entry says so, and moving that code into a
+  `.js` file brings the message and line back.
 - An artifact belongs to no session: any agent with its id can `put` to it,
   and it outlives the session that made it. Delete one whose job is done.
   `canvas artifact log <id>` prints which session and agent created, put,

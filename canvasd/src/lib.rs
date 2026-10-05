@@ -90,6 +90,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/artifacts/:id/log", get(artifact_routes::artifact_log))
         .route(
+            "/api/artifacts/:id/errors",
+            post(artifact_routes::report_script_error),
+        )
+        .route(
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),
         )

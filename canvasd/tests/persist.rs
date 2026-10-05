@@ -368,3 +368,105 @@ async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
         "no artifact with that id"
     );
 }
+
+#[tokio::test]
+async fn script_errors_list_per_artifact_and_keep_the_newest_50() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let a = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for n in 1..=55 {
+        send(
+            &app,
+            "POST",
+            &format!("/api/artifacts/{a}/errors"),
+            Some(json!({ "kind": "error", "message": format!("boom {n}"), "line": n })),
+        )
+        .await;
+    }
+    send(
+        &app,
+        "POST",
+        &format!("/api/artifacts/{b}/errors"),
+        Some(json!({ "kind": "rejection", "message": "Error: nope" })),
+    )
+    .await;
+
+    let shown: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{a}"), None).await)
+            .unwrap();
+    let errors = shown["scriptErrors"].as_array().unwrap();
+    assert_eq!(errors.len(), 50);
+    assert_eq!(errors[0]["message"], "boom 6");
+    assert_eq!(errors[49]["message"], "boom 55");
+    assert_eq!(errors[49]["line"], 55);
+    assert_eq!(errors[49]["kind"], "error");
+    assert!(errors[49]["at"].is_string());
+
+    let other: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{b}"), None).await)
+            .unwrap();
+    assert_eq!(
+        other["scriptErrors"],
+        json!([{ "at": other["scriptErrors"][0]["at"], "kind": "rejection", "message": "Error: nope" }])
+    );
+
+    let list: Value =
+        serde_json::from_slice(&send(&app, "GET", "/api/artifacts", None).await).unwrap();
+    assert!(list
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a.get("scriptErrors").is_none()));
+
+    let unknown = send(
+        &app,
+        "POST",
+        "/api/artifacts/art-0000000000/errors",
+        Some(json!({ "kind": "error", "message": "x" })),
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&unknown),
+        "no artifact with that id"
+    );
+}
+
+#[tokio::test]
+async fn artifact_html_is_served_with_the_error_relay_and_other_files_untouched() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let id = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("index.html"),
+        "<!doctype html><html><head><script src=app.js></script></head></html>",
+    )
+    .unwrap();
+    std::fs::write(src.join("app.js"), "throw new Error('x')").unwrap();
+    send_as(
+        &app,
+        "POST",
+        &format!("/api/artifacts/{id}/put"),
+        Some(json!({ "source": src.to_str().unwrap() })),
+    )
+    .await;
+
+    let page =
+        String::from_utf8(send(&app, "GET", &format!("/artifacts/{id}/"), None).await).unwrap();
+    let relay_at = page.find("canvas-artifact-error").unwrap();
+    assert!(page.starts_with("<!doctype html><html><head><script>"));
+    assert!(relay_at < page.find("app.js").unwrap());
+    let script = send(&app, "GET", &format!("/artifacts/{id}/app.js"), None).await;
+    assert_eq!(String::from_utf8_lossy(&script), "throw new Error('x')");
+}

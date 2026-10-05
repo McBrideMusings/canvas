@@ -7,7 +7,10 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use canvas_core::{ArtifactSource, NewArtifactRequest, PutArtifactRequest, RelinkArtifactRequest};
+use canvas_core::{
+    ArtifactSource, NewArtifactRequest, PutArtifactRequest, RelinkArtifactRequest,
+    ScriptErrorReport,
+};
 
 use crate::artifacts::{self, Artifacts};
 use crate::provenance::{Action, Actor};
@@ -166,12 +169,12 @@ pub async fn relink_artifact(
     }
 }
 
-/// `canvas artifact show`: the record plus its folder, entry page and
-/// declared size.
+/// `canvas artifact show`: the record plus its folder, entry page,
+/// declared size and the newest errors its page threw.
 pub async fn get_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let artifacts = state.artifacts.read().await;
     match artifacts.records.get(&id) {
-        Some(record) => Json(artifacts.view(record)).into_response(),
+        Some(record) => Json(artifacts.view_with_errors(record)).into_response(),
         None => not_found(),
     }
 }
@@ -278,7 +281,7 @@ pub async fn delete_artifact(
         return failed("saving artifacts.json failed", &id, &e);
     }
     state.watcher.unwatch(&id);
-    artifacts.fingerprints.remove(&id);
+    artifacts.forget(&id);
     let owned_folder = match record.source {
         ArtifactSource::Owned => artifacts.folder(&id),
         ArtifactSource::Linked { .. } => None,
@@ -310,6 +313,32 @@ pub async fn artifact_log(State(state): State<AppState>, Path(id): Path<String>)
         Some(Ok(lines)) if lines.is_empty() && !artifacts.records.contains_key(&id) => not_found(),
         Some(Ok(lines)) => Json(lines).into_response(),
     }
+}
+
+/// The viewer relays one uncaught error or unhandled rejection from the
+/// pane showing `id`; `canvas artifact show` lists the newest ones.
+pub async fn report_script_error(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(report): Json<ScriptErrorReport>,
+) -> Response {
+    let mut artifacts = state.artifacts.write().await;
+    if !artifacts.records.contains_key(&id) {
+        return not_found();
+    }
+    canvas_core::log::warn(
+        "artifact script error",
+        &[
+            ("id", &id),
+            ("kind", &format!("{:?}", report.kind)),
+            ("message", &report.message),
+            ("source", &report.source.as_deref().unwrap_or("")),
+            ("line", &report.line.unwrap_or(0)),
+            ("column", &report.column.unwrap_or(0)),
+        ],
+    );
+    artifacts.record_script_error(&id, report);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// `canvas focus art-…`: asks every open viewer to switch to the Artifacts
@@ -435,6 +464,11 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
         Err(e) => return failed("reading an artifact file failed", &id, &e),
     };
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
+    let bytes = if mime.essence_str() == "text/html" {
+        artifacts::served_page(&bytes)
+    } else {
+        bytes
+    };
     let content_type = match (mime.type_(), mime.subtype().as_str()) {
         (mime_guess::mime::TEXT, _) | (_, "javascript" | "json" | "xml" | "svg+xml") => {
             format!("{}; charset=utf-8", mime.essence_str())

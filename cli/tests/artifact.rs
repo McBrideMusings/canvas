@@ -94,6 +94,15 @@ fn get(daemon: &Daemon, path: &str) -> canvas_core::unix_http::Response {
     .expect("canvasd answered")
 }
 
+/// An HTML page as the artifact holds it: canvasd serves it with its error
+/// relay script first, which this cuts off.
+fn page_of(body: &[u8]) -> &[u8] {
+    let relay = b"<script>(() => { const send = ";
+    assert!(body.starts_with(relay), "served without the error relay");
+    let end = body.windows(9).position(|w| w == b"</script>").unwrap() + 9;
+    &body[end..]
+}
+
 #[test]
 fn new_put_show_list_delete_round_trip() {
     let daemon = start_daemon(&temp_dir("life"));
@@ -174,7 +183,10 @@ fn a_two_file_artifact_serves_both_files_with_its_csp() {
 
     let page = get(&daemon, &format!("/artifacts/{id}/"));
     assert_eq!(page.status, 200);
-    assert_eq!(page.body, br#"<script src="./app.js"></script>"#);
+    assert_eq!(
+        page_of(&page.body),
+        br#"<script crossorigin src="./app.js"></script>"#
+    );
     assert_eq!(
         page.content_type.as_deref(),
         Some("text/html; charset=utf-8")
@@ -242,7 +254,7 @@ fn an_artifact_survives_a_daemon_restart() {
     assert_eq!(shown["title"], "Kept");
     assert_eq!(shown["createdAt"], created["createdAt"]);
     assert_eq!(
-        get(&daemon, &format!("/artifacts/{id}/")).body,
+        page_of(&get(&daemon, &format!("/artifacts/{id}/")).body),
         b"<p>kept</p>"
     );
 }
@@ -412,7 +424,7 @@ fn a_linked_folder_serves_goes_missing_and_relinks_with_its_id() {
     assert_eq!(created.get("sourceMissing"), None);
     assert!(!daemon.data_dir.join("artifacts").join(&id).exists());
     assert_eq!(
-        get(&daemon, &format!("/artifacts/{id}/")).body,
+        page_of(&get(&daemon, &format!("/artifacts/{id}/")).body),
         b"<p>linked</p>"
     );
     for path in [
@@ -440,7 +452,7 @@ fn a_linked_folder_serves_goes_missing_and_relinks_with_its_id() {
     assert_eq!(relinked["link"], moved.to_str().unwrap());
     assert_eq!(relinked.get("sourceMissing"), None);
     assert_eq!(
-        get(&daemon, &format!("/artifacts/{id}/")).body,
+        page_of(&get(&daemon, &format!("/artifacts/{id}/")).body),
         b"<p>linked</p>"
     );
 

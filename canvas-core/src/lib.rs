@@ -304,6 +304,45 @@ pub struct ArtifactView {
     /// The entry page's declared `canvas-size`, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<ArtifactSize>,
+    /// The newest uncaught errors and unhandled rejections its page threw in
+    /// a viewer's pane, oldest first, in memory only. Only `GET
+    /// /api/artifacts/:id` (`canvas artifact show`) fills it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub script_errors: Vec<ArtifactScriptError>,
+}
+
+/// Which kind of page failure an [`ArtifactScriptError`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptErrorKind {
+    /// An uncaught exception (`window` `error` event).
+    Error,
+    /// A promise rejection nothing handled (`unhandledrejection`).
+    Rejection,
+}
+
+/// Body for `POST /api/artifacts/:id/errors`: one failure the viewer relays
+/// from the artifact's pane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptErrorReport {
+    pub kind: ScriptErrorKind,
+    pub message: String,
+    /// The script URL the error came from, when the browser names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
+/// One relayed page failure as `canvas artifact show` lists it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactScriptError {
+    /// When canvasd received it (RFC 3339).
+    pub at: String,
+    #[serde(flatten)]
+    pub report: ScriptErrorReport,
 }
 
 /// Body for `POST /api/artifacts`.

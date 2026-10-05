@@ -286,6 +286,19 @@ beside the terminal all day.
   `artifact-removed` SSE events are viewer-only; `/api/state` carries
   `artifacts`. `canvas focus <art-id>` (`POST /api/artifacts/:id/focus`,
   `artifact-focus`) switches every viewer to the Artifacts page on that artifact.
+  Script errors: canvasd serves every artifact HTML page with
+  `canvasd/src/error_relay.js` first inside `<head>` (joined onto one line so
+  the page's line numbers hold) and `crossorigin` added to each `<script src>`
+  lacking one. The pane's opaque origin makes WebKit mask nearly every error as
+  "Script error.", so the relay wraps timers, animation frames, microtasks,
+  listeners, `on*` properties and observers, reports the real error from its
+  stack, rethrows, and drops the masked copy; it posts `canvas-artifact-error`
+  `{kind, message, source, line, column}` to the viewer, which relays it
+  to `POST /api/artifacts/:id/errors` only when the sender is the pane's
+  frame, under the artifact that frame was built for (switching artifact
+  builds a new frame, so an unloading page can't report onto the next). canvasd keeps the newest 50 per artifact
+  in memory (dropped on delete), logs `artifact script error`, and `show`
+  lists them as `scriptErrors`.
   The viewer's title bar has a `Timeline | Artifacts` switch (`showPage`, the
   choice in localStorage); the toolbar shows only on the Timeline. The Artifacts
   page lists every artifact, most recently changed first, beside the open one's
@@ -361,7 +374,9 @@ beside the terminal all day.
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without
   `allow-same-origin`. canvasd serves its files only from inside its folder
   (no `..`, no symlink out) and always with the artifact CSP; never serve them
-  without it.
+  without it. The only change canvasd makes to a served page is to an HTML
+  file: the error relay first inside `<head>` and `crossorigin` on each
+  `<script src>` lacking one.
 - canvasd has no TCP listener, so nothing reaches it except a process that can
   open its 0600 socket, and its routes carry no Host or Origin checks. Never add
   a TCP or other network listener to it; a client that needs it goes through the
