@@ -417,9 +417,11 @@ beside the terminal all day.
   `guidance.md`. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas integrations install claude-code [repo]` registers the checkout as a
   local `directory` marketplace (never a git remote, so the plugin comes from the same checkout as the binary) and
-  installs or updates `canvas@canvas` from it. `admin deploy canvas` installs
+  installs or updates `canvas@canvas` from it. `admin deploy` (`scripts/deploy.sh`) installs
   the `canvas` binary and then runs `canvas integrations install` for each
-  detected agent, so the binary and the plugin always come from the same commit. Bump `plugin/.claude-plugin/plugin.json`'s
+  detected agent, so the binary and the plugin always come from the same commit;
+  it then quits a running Canvas.app, replaces `/Applications/Canvas.app` and
+  opens it again in the background (`open -g`). Bump `plugin/.claude-plugin/plugin.json`'s
   `version` when `plugin/` changes, or `claude plugin update` keeps the old copy.
 
 ## Rules
