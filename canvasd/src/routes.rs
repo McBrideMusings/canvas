@@ -417,25 +417,56 @@ pub async fn snapshot_card(State(state): State<AppState>, Path(id): Path<String>
     if !state.inner.read().await.cards.iter().any(|c| c.id == id) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    snapshot(&state, Snapshotted::Card, id).await
+}
+
+/// What a snapshot captures: a card in the stream, or an artifact's pane.
+#[derive(Clone, Copy)]
+pub enum Snapshotted {
+    Card,
+    Artifact,
+}
+
+impl Snapshotted {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Card => "card",
+            Self::Artifact => "artifact",
+        }
+    }
+}
+
+/// Publishes the capture request and waits for the first viewer's answer,
+/// for `snapshot_card` and `snapshot_artifact` alike: the PNG, 409 when no
+/// viewer is open, 422 with the viewer's reason, 504 when none answered.
+pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Response {
     let request = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.snapshots.lock().unwrap().insert(request.clone(), tx);
     let _waiting = Waiting {
-        state: &state,
+        state,
         request: &request,
     };
-    let viewers = state.publish(CanvasEvent::CardSnapshot {
-        id: id.clone(),
-        request: request.clone(),
+    let (event_id, event_request) = (id.clone(), request.clone());
+    let viewers = state.publish(match what {
+        Snapshotted::Card => CanvasEvent::CardSnapshot {
+            id: event_id,
+            request: event_request,
+        },
+        Snapshotted::Artifact => CanvasEvent::ArtifactSnapshot {
+            id: event_id,
+            request: event_request,
+        },
     });
+    let noun = what.noun();
     canvas_core::log::info(
         "snapshot requested",
-        &[("card", &id), ("request", &request), ("viewers", &viewers)],
+        &[(noun, &id), ("request", &request), ("viewers", &viewers)],
     );
     if viewers == 0 {
         return (
             StatusCode::CONFLICT,
-            "no Canvas viewer is open to capture the card",
+            format!("no Canvas viewer is open to capture the {noun}"),
         )
             .into_response();
     }
@@ -444,7 +475,7 @@ pub async fn snapshot_card(State(state): State<AppState>, Path(id): Path<String>
             canvas_core::log::info(
                 "snapshot captured",
                 &[
-                    ("card", &id),
+                    (noun, &id),
                     ("request", &request),
                     ("bytes", &png.len()),
                     ("clipped", &clipped),
@@ -461,15 +492,12 @@ pub async fn snapshot_card(State(state): State<AppState>, Path(id): Path<String>
         Ok(Ok(SnapshotReply::Failed(reason))) => {
             canvas_core::log::info(
                 "snapshot refused",
-                &[("card", &id), ("request", &request), ("reason", &reason)],
+                &[(noun, &id), ("request", &request), ("reason", &reason)],
             );
             (StatusCode::UNPROCESSABLE_ENTITY, reason).into_response()
         }
         _ => {
-            canvas_core::log::warn(
-                "snapshot timed out",
-                &[("card", &id), ("request", &request)],
-            );
+            canvas_core::log::warn("snapshot timed out", &[(noun, &id), ("request", &request)]);
             (
                 StatusCode::GATEWAY_TIMEOUT,
                 format!(
@@ -669,6 +697,9 @@ pub async fn events(
         Ok(CanvasEvent::ArtifactFocus(id)) => Some(Ok(SseEvent::default()
             .event("artifact-focus")
             .data(serde_json::json!({ "id": id }).to_string()))),
+        Ok(CanvasEvent::ArtifactSnapshot { id, request }) => Some(Ok(SseEvent::default()
+            .event("artifact-snapshot")
+            .data(serde_json::json!({ "id": id, "request": request }).to_string()))),
         Ok(CanvasEvent::ArtifactPane { id, action }) => {
             let mut data = serde_json::to_value(action).unwrap_or_default();
             data["id"] = serde_json::Value::String(id);

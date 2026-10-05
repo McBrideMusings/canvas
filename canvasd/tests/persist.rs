@@ -439,6 +439,71 @@ async fn script_errors_list_per_artifact_and_keep_the_newest_50() {
 }
 
 #[tokio::test]
+async fn artifact_snapshot_asks_the_viewer_and_answers_its_png() {
+    use futures::StreamExt;
+
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let id = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snapshot = |id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/artifacts/{id}/snapshot"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let unknown = app
+        .clone()
+        .oneshot(snapshot("art-0000000000"))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+    let nobody = app.clone().oneshot(snapshot(&id)).await.unwrap();
+    assert_eq!(nobody.status(), 409);
+    let body = nobody.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        &body[..],
+        b"no Canvas viewer is open to capture the artifact"
+    );
+
+    let events = app
+        .clone()
+        .oneshot(Request::get("/api/events").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let mut events = events.into_body().into_data_stream();
+    let waiting = tokio::spawn(app.clone().oneshot(snapshot(&id)));
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+        .await
+        .expect("no event within 2s")
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    assert!(text.contains("event: artifact-snapshot"), "{text}");
+    let data: Value =
+        serde_json::from_str(text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap()).unwrap();
+    assert_eq!(data["id"], id.as_str());
+    let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
+    let answer = Request::post(format!(
+        "/api/snapshots/{}",
+        data["request"].as_str().unwrap()
+    ))
+    .header("content-type", "image/png")
+    .body(Body::from(png.clone()))
+    .unwrap();
+    assert_eq!(app.clone().oneshot(answer).await.unwrap().status(), 204);
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.to_vec(), png);
+}
+
+#[tokio::test]
 async fn artifact_html_is_served_with_the_error_relay_and_other_files_untouched() {
     let dir = temp_dir();
     let app = build_router(AppState::open(&dir).await);

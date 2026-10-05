@@ -1,8 +1,9 @@
 //! The app's half of `canvas snapshot`. canvasd sends the viewer a
 //! `card-snapshot` event; the viewer scrolls the card into view and calls
 //! `snapshot_reply` with the card's on-screen rect, or with why it can't show
-//! the card. This captures that rect of the window's WKWebView, so the PNG is
-//! the card exactly as rendered in the active theme, and posts the PNG (or the
+//! the card. An `artifact-snapshot` event does the same with the open
+//! artifact frame's rect. This captures that rect of the window's WKWebView,
+//! so the PNG is exactly what the window renders, and posts the PNG (or the
 //! reason) to canvasd's `/api/snapshots/:request`, which answers the waiting
 //! CLI.
 

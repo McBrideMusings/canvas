@@ -3162,6 +3162,9 @@
       artifactFrame = document.createElement("iframe");
       artifactFrame.className = "artifact-frame";
       artifactFrame.setAttribute("sandbox", "allow-scripts");
+      // `canvas snapshot` waits for the page to load before capturing it.
+      const frame = artifactFrame;
+      frame.addEventListener("load", () => (frame.dataset.loaded = "true"));
       artifactBox.append(artifactFrame, buildPaneGrip());
       artifactStageEl.appendChild(artifactBox);
       paneObserver.observe(artifactBox);
@@ -3175,6 +3178,7 @@
     if (artifactFrameSrc !== loaded) {
       const sameUrl = artifactFrameSrc && artifactFrameSrc.startsWith(`${src}@`);
       artifactFrameSrc = loaded;
+      delete artifactFrame.dataset.loaded;
       if (sameUrl) artifactFrame.src = "about:blank";
       artifactFrame.src = src;
     }
@@ -3289,7 +3293,19 @@
     artifactListEl
       .querySelector(`.artifact-row[data-artifact-id="${CSS.escape(id)}"]`)
       ?.scrollIntoView({ block: "nearest" });
+    // Opening it may have built a new frame, so ring the one showing now.
+    // No frame (source missing, no entry page): the pane's notice says why.
+    const box = artifactBox;
+    if (!box) return;
+    clearTimeout(artifactRingTimer);
+    box.classList.remove("ring");
+    void box.offsetWidth;
+    box.classList.add("ring");
+    artifactRingTimer = setTimeout(() => box.classList.remove("ring"), 1900);
   }
+
+  // A second focus restarts the ring, so the first one's timer can't end it.
+  let artifactRingTimer = null;
 
   // ---- Artifact pane: resize grip and full window -------------------------
   // The size the person chose for each artifact's frame, by id, kept in
@@ -3588,6 +3604,9 @@
     handlers["card-snapshot"] = ({ id, request }) => {
       snapshots = snapshots.then(() => snapshotCard(id, request)).catch(() => {});
     };
+    handlers["artifact-snapshot"] = ({ id, request }) => {
+      snapshots = snapshots.then(() => snapshotArtifact(id, request)).catch(() => {});
+    };
 
     handlers["card-removed"] = ({ id }) => removeCard(id);
 
@@ -3695,6 +3714,55 @@
     const bottom = Math.min(box.bottom, view.bottom);
     const rect = { x: box.left, y: top, width: box.width, height: bottom - top };
     const clipped = top > box.top || bottom < box.bottom;
+    document.documentElement.classList.add("snapshotting");
+    await reply({ rect, clipped });
+    document.documentElement.classList.remove("snapshotting");
+  }
+
+  // `canvas snapshot art-…`: hands the app the open artifact frame's
+  // on-screen rect, as shown — its chosen size or full window included —
+  // once the page has loaded and the frame's size and any focus ring have
+  // held for 100ms (3s at most). Like a card's, it changes nothing about the
+  // view: an artifact that isn't the one showing gets a reason naming
+  // `canvas focus`, which shows it.
+  async function snapshotArtifact(id, request) {
+    const reply = (answer) =>
+      tauriCore.invoke("snapshot_reply", { request, ...answer }).catch(() => {});
+    const artifact = artifacts.get(id);
+    let error = null;
+    if (!artifact) error = "the viewer has no artifact with that id";
+    else if (page !== "artifacts")
+      error = `the Timeline is showing, not the Artifacts page; canvas focus ${id} shows the artifact`;
+    else if (openArtifactId !== id)
+      error = `another artifact is open in the pane; canvas focus ${id} shows this one`;
+    else if (artifact.sourceMissing) error = "the artifact's linked source no longer exists";
+    else if (!artifact.entry) error = "the artifact has no entry page to show";
+    else if (!artifactFrame) error = "the pane has no frame showing the artifact";
+    if (error) return reply({ error });
+
+    const deadline = Date.now() + 3000;
+    let last = "";
+    while (Date.now() < deadline) {
+      const frame = artifactFrame;
+      const box = frame?.getBoundingClientRect();
+      const now = box ? `${box.left}:${box.top}:${box.width}:${box.height}` : "";
+      const ready = frame?.dataset.loaded && !artifactBox.classList.contains("ring");
+      if (ready && now === last) break;
+      last = now;
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    // The frame showing now: an `upsert` during the wait may have rebuilt it.
+    if (!artifactFrame || artifactFrameId !== id) {
+      return reply({ error: "the artifact stopped showing before it could be captured" });
+    }
+    const box = artifactFrame.getBoundingClientRect();
+    const view = artifactStageEl.getBoundingClientRect();
+    const top = Math.max(box.top, view.top);
+    const bottom = Math.min(box.bottom, view.bottom);
+    const left = Math.max(box.left, view.left);
+    const right = Math.min(box.right, view.right);
+    const rect = { x: left, y: top, width: right - left, height: bottom - top };
+    const clipped = top > box.top || bottom < box.bottom || left > box.left || right < box.right;
     document.documentElement.classList.add("snapshotting");
     await reply({ rect, clipped });
     document.documentElement.classList.remove("snapshotting");

@@ -47,6 +47,12 @@ pub enum CanvasEvent {
     /// Asks every open viewer to switch to the Artifacts page and open this
     /// artifact (`canvas focus art-…`). Sent to viewers only.
     ArtifactFocus(String),
+    /// Asks a viewer to capture an artifact's pane as rendered (`canvas
+    /// snapshot art-…`); answered like `CardSnapshot`. Sent to viewers only.
+    ArtifactSnapshot {
+        id: String,
+        request: String,
+    },
     /// Asks every open viewer to change an artifact's pane the way the
     /// person would by hand (`canvas artifact pane`). Sent to viewers only.
     ArtifactPane {
@@ -278,6 +284,7 @@ impl AppState {
                     | CanvasEvent::ArtifactUpserted(_)
                     | CanvasEvent::ArtifactRemoved(_)
                     | CanvasEvent::ArtifactFocus(_)
+                    | CanvasEvent::ArtifactSnapshot { .. }
                     | CanvasEvent::ArtifactPane { .. }
             ) {
                 store.append(&event);
@@ -351,6 +358,7 @@ impl Inner {
             | CanvasEvent::ArtifactUpserted(_)
             | CanvasEvent::ArtifactRemoved(_)
             | CanvasEvent::ArtifactFocus(_)
+            | CanvasEvent::ArtifactSnapshot { .. }
             | CanvasEvent::ArtifactPane { .. } => {}
         }
     }

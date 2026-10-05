@@ -1,17 +1,18 @@
-//! `canvas snapshot <card_id> <out.png>`: asks the open viewer to capture the
-//! card as it renders it, in the active theme, and writes that PNG to the
-//! path. Prints `{"path": "...", "width": N, "height": N, "clipped": bool}`,
-//! the size in pixels; `clipped` (with a stderr note) when the card is taller
-//! than the window and the PNG stops at its bottom edge. No viewer open, or a
-//! card the viewer can't show (filtered out, archived, pinned), is an error
-//! naming why.
+//! `canvas snapshot <card_id|artifact_id> <out.png>`: asks the open viewer to
+//! capture the card as it renders it, in the active theme, or for an `art-`
+//! id the artifact's pane as it shows it, and writes that PNG to the path.
+//! Prints `{"path": "...", "width": N, "height": N, "clipped": bool}`, the
+//! size in pixels; `clipped` (with a stderr note) when the card is taller than
+//! the window and the PNG stops at its bottom edge. No viewer open, or a card
+//! or artifact the viewer isn't showing (filtered out, archived, pinned, the
+//! other page, another artifact open), is an error naming why.
 
 use std::path::Path;
 
 use crate::client;
 
-pub fn run(card_id: &str, out: &str) -> Result<(), String> {
-    let client::Snapshot { png, clipped } = client::snapshot_card(card_id)?;
+pub fn run(id: &str, out: &str) -> Result<(), String> {
+    let client::Snapshot { png, clipped } = client::snapshot(id)?;
     let (width, height) =
         png_size(&png).ok_or("the viewer sent back something that is not a PNG")?;
     let path = std::path::absolute(Path::new(out)).map_err(|e| format!("{out}: {e}"))?;
@@ -20,7 +21,7 @@ pub fn run(card_id: &str, out: &str) -> Result<(), String> {
     canvas_core::log::info(
         "snapshot written",
         &[
-            ("card", &card_id),
+            ("id", &id),
             ("path", &shown),
             ("bytes", &png.len()),
             ("width", &width),

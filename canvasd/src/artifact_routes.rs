@@ -353,6 +353,15 @@ pub async fn focus_artifact(State(state): State<AppState>, Path(id): Path<String
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
+/// `canvas snapshot art-…`: asks the open viewers to capture the artifact's
+/// pane as rendered, answered like a card's snapshot. 404 for an unknown id.
+pub async fn snapshot_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if !state.artifacts.read().await.records.contains_key(&id) {
+        return not_found();
+    }
+    crate::routes::snapshot(&state, crate::routes::Snapshotted::Artifact, id).await
+}
+
 /// `canvas artifact pane <id> --size|--reset|--full|--exit`: asks every open
 /// viewer to open the artifact and change its pane as a drag of the grip, a
 /// double-click on it, or the full-window control would. Answers how many

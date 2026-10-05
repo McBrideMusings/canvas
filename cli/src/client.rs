@@ -363,20 +363,26 @@ pub fn viewer_theme() -> Result<Option<String>, String> {
 /// room to answer that it gave up.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(25);
 
-/// What a viewer captured of a card for `canvas snapshot`.
+/// What a viewer captured of a card or artifact pane for `canvas snapshot`.
 pub struct Snapshot {
     pub png: Vec<u8>,
     /// The card is taller than the window, so the PNG stops at its edge.
     pub clipped: bool,
 }
 
-/// `canvas snapshot`: the PNG an open viewer captured of the card. An error
-/// is canvasd's one-line reason: no viewer open, the viewer's own reason it
-/// could not capture the card, or that no viewer answered in time.
-pub fn snapshot_card(card_id: &str) -> Result<Snapshot, String> {
+/// `canvas snapshot`: the PNG an open viewer captured of the card, or of the
+/// artifact's pane for an `art-` id. An error is canvasd's one-line reason: no
+/// viewer open, the viewer's own reason it could not capture it, or that no
+/// viewer answered in time.
+pub fn snapshot(id: &str) -> Result<Snapshot, String> {
+    let (route, noun) = if id.starts_with(canvasd::artifacts::ID_PREFIX) {
+        ("artifacts", "artifact")
+    } else {
+        ("cards", "card")
+    };
     let response = call_any_status(
         "POST",
-        &format!("/api/cards/{card_id}/snapshot"),
+        &format!("/api/{route}/{}/snapshot", percent_encode(id)),
         Some(&serde_json::json!({})),
         SNAPSHOT_TIMEOUT,
     )
@@ -386,7 +392,9 @@ pub fn snapshot_card(card_id: &str) -> Result<Snapshot, String> {
             clipped: response.header("x-canvas-clipped") == Some("true"),
             png: response.body,
         }),
-        404 => Err("canvasd returned HTTP 404 (no card with that id)".to_string()),
+        404 => Err(format!(
+            "canvasd returned HTTP 404 (no {noun} with that id)"
+        )),
         status => Err(canvas_core::log::error_text(&response.body)
             .unwrap_or_else(|| format!("canvasd returned HTTP {status}"))),
     }

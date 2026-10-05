@@ -285,7 +285,16 @@ beside the terminal all day.
   `bridge.rs` passes those two headers through. `artifact-upserted` and
   `artifact-removed` SSE events are viewer-only; `/api/state` carries
   `artifacts`. `canvas focus <art-id>` (`POST /api/artifacts/:id/focus`,
-  `artifact-focus`) switches every viewer to the Artifacts page on that artifact.
+  `artifact-focus`) switches every viewer to the Artifacts page on that artifact
+  and rings its frame; `--focus` on `artifact new|put` does the same once the
+  artifact is written and adds `viewers` to the JSON (zero is a stderr warning,
+  as for `post --focus`). `canvas snapshot <art-id> <out.png>` (`POST
+  /api/artifacts/:id/snapshot`, the viewer-only `artifact-snapshot` event)
+  shares the card snapshot's wait and `/api/snapshots/:request` reply: the
+  viewer waits up to 3s for the page to load and the ring to end, then hands
+  the app the open frame's rect at whatever size it shows (chosen, declared,
+  full window), or refuses when the Timeline or another artifact is showing,
+  naming `canvas focus`.
   Script errors: canvasd serves every artifact HTML page with
   `canvasd/src/error_relay.js` first inside `<head>` (joined onto one line so
   the page's line numbers hold) and `crossorigin` added to each `<script src>`

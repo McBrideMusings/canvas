@@ -98,6 +98,10 @@ pub fn build_router(state: AppState) -> Router {
             post(artifact_routes::focus_artifact),
         )
         .route(
+            "/api/artifacts/:id/snapshot",
+            post(artifact_routes::snapshot_artifact),
+        )
+        .route(
             "/api/artifacts/:id/pane",
             post(artifact_routes::pane_artifact),
         )

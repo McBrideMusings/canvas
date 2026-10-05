@@ -3,6 +3,8 @@
 //! HTML file of the person's that an artifact links to, shown on the Artifacts
 //! page as real web pages. Every verb prints canvasd's JSON on one line and,
 //! like `canvas post`, fails loudly: one stderr line, non-zero exit.
+//! `--focus` on `new` or `put` then switches every open viewer to the
+//! artifact and adds `viewers` to the JSON.
 //!
 //! `pane <id> --size WxH|--reset|--full|--exit` changes the open viewers' pane
 //! for that artifact as the person would by hand, printing `{"viewers": N}`
@@ -17,10 +19,12 @@ pub enum Command {
     New {
         title: Option<String>,
         link: Option<String>,
+        focus: bool,
     },
     Put {
         id: String,
         source: String,
+        focus: bool,
     },
     Relink {
         id: String,
@@ -50,7 +54,16 @@ pub const NO_VIEWER: &str = "no Canvas viewer is open to change the pane";
 pub const NOT_REPORTED: &str = "no open Canvas viewer has reported an artifact pane";
 
 pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
-    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut words: Vec<&str> = args.iter().map(String::as_str).collect();
+    // `--focus` takes no value and goes anywhere after `new` or `put`.
+    let focus = match words.iter().filter(|w| **w == "--focus").count() {
+        0 => false,
+        1 if matches!(words.first(), Some(&"new" | &"put")) => {
+            words.retain(|w| *w != "--focus");
+            true
+        }
+        _ => return Err(UsageError),
+    };
     match words.as_slice() {
         ["new", flags @ ..] => {
             let (mut title, mut link) = (None, None);
@@ -61,11 +74,12 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
                     _ => return Err(UsageError),
                 }
             }
-            Ok(Command::New { title, link })
+            Ok(Command::New { title, link, focus })
         }
         ["put", id, source] => Ok(Command::Put {
             id: id.to_string(),
             source: source.to_string(),
+            focus,
         }),
         ["relink", id, link] => Ok(Command::Relink {
             id: id.to_string(),
@@ -104,26 +118,28 @@ fn parse_pane_action(flag: &[&str]) -> Result<serde_json::Value, UsageError> {
 
 pub fn run(command: Command) -> Result<(), String> {
     let value = match command {
-        Command::New { title, link } => {
+        Command::New { title, link, focus } => {
             let link = link.as_deref().map(absolute).transpose()?;
-            client::artifact_call(
+            let value = client::artifact_call(
                 "POST",
                 "/api/artifacts",
                 Some(&serde_json::json!({ "title": title, "link": link })),
-            )?
+            )?;
+            with_focus(value, focus)
         }
         Command::Relink { id, link } => client::artifact_call(
             "POST",
             &format!("/api/artifacts/{}/relink", percent_encode(&id)),
             Some(&serde_json::json!({ "link": absolute(&link)? })),
         )?,
-        Command::Put { id, source } => {
+        Command::Put { id, source, focus } => {
             let source = absolute(&source)?;
-            client::artifact_call(
+            let value = client::artifact_call(
                 "POST",
                 &format!("/api/artifacts/{}/put", percent_encode(&id)),
                 Some(&serde_json::json!({ "source": source })),
-            )?
+            )?;
+            with_focus(value, focus)
         }
         Command::List => client::artifact_call("GET", "/api/artifacts", None)?,
         Command::Show { id } => client::artifact_call(
@@ -162,6 +178,31 @@ pub fn run(command: Command) -> Result<(), String> {
     };
     println!("{value}");
     Ok(())
+}
+
+/// `--focus` on `new` or `put`: once the artifact is written, every open
+/// viewer switches to it, as `canvas focus` does, and the output gains
+/// `viewers`. The artifact exists either way, so a focus that reached nobody
+/// is a stderr warning, not a failure an agent would answer by running the
+/// command again.
+fn with_focus(mut value: serde_json::Value, focus: bool) -> serde_json::Value {
+    if !focus {
+        return value;
+    }
+    let Some(id) = value["id"].as_str().map(str::to_string) else {
+        eprintln!("written, but canvasd's answer carried no id to focus");
+        return value;
+    };
+    match client::focus_artifact(&id) {
+        Ok(viewers) => {
+            if viewers == 0 {
+                eprintln!("{}", crate::focus::NO_VIEWER_ARTIFACT);
+            }
+            value["viewers"] = viewers.into();
+        }
+        Err(e) => eprintln!("written, but could not focus the artifact: {e}"),
+    }
+    value
 }
 
 /// canvasd reads the path itself, so it must not depend on this shell's
@@ -203,6 +244,31 @@ mod tests {
             parse_args(&args(&["pane"])),
             Ok(Command::PaneShown)
         ));
+    }
+
+    #[test]
+    fn focus_goes_anywhere_after_new_or_put_and_nowhere_else() {
+        let Ok(Command::New { title, focus, .. }) =
+            parse_args(&args(&["new", "--focus", "--title", "Plan"]))
+        else {
+            panic!("new --focus did not parse");
+        };
+        assert_eq!((title.as_deref(), focus), (Some("Plan"), true));
+        let Ok(Command::Put { id, source, focus }) =
+            parse_args(&args(&["put", "art-1", "site", "--focus"]))
+        else {
+            panic!("put --focus did not parse");
+        };
+        assert_eq!(
+            (id.as_str(), source.as_str(), focus),
+            ("art-1", "site", true)
+        );
+        assert!(matches!(
+            parse_args(&args(&["put", "art-1", "site"])),
+            Ok(Command::Put { focus: false, .. })
+        ));
+        assert!(parse_args(&args(&["new", "--focus", "--focus"])).is_err());
+        assert!(parse_args(&args(&["show", "art-1", "--focus"])).is_err());
     }
 
     #[test]
