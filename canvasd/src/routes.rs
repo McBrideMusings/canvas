@@ -202,7 +202,12 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
         (card, inner.data.get(&id).cloned())
     };
     let result = tokio::task::spawn_blocking(move || {
-        crate::export::export_card(&card, data.as_ref(), |p| std::fs::read(p))
+        crate::export::export_card(
+            &card,
+            data.as_ref(),
+            |p| std::fs::read(p),
+            crate::cdn::fetch,
+        )
     })
     .await;
     let Ok(result) = result else {

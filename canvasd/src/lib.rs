@@ -1,5 +1,6 @@
 pub mod artifact_routes;
 pub mod artifacts;
+pub mod cdn;
 pub mod export;
 pub mod profiles;
 pub mod provenance;

@@ -132,6 +132,16 @@ pub enum ExportWarningKind {
     FetchFailed,
 }
 
+/// Largest single asset embedded as a `data:` URI or inline block: a local
+/// stylesheet's font or image in `canvas post`, a CDN download in an export.
+/// Anything over it stays a plain reference and warns.
+pub const MAX_ASSET_BYTES: usize = 512 * 1024;
+
+/// Seconds an export may spend downloading CDN assets, all of them together;
+/// a download the budget can't cover is skipped with a warning. The CLI waits
+/// this long plus time to read and encode the card's images.
+pub const EXPORT_DOWNLOAD_SECS: u64 = 20;
+
 /// The extensions `/api/cards/:id/images/:n` serves and an export inlines;
 /// no other file is read for a card.
 pub const MEDIA_EXTS: &[&str] = &[

@@ -165,7 +165,14 @@ beside the terminal all day.
   "image missing" placeholder), each `#canvas-open-<n>` anchor becomes a real
   `target="_blank"` link (http/https) or plain text (a local path), and a shim
   delivers the card's latest `canvas data` value as `canvas-data` and swallows
-  `canvas-reply`. None of `buildIframeDoc`'s theming, sizing or sandbox is
+  `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
+  and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
+  unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
+  cap) and inlined — scripts and styles as blocks, fonts as `data:` URIs; a
+  failure keeps the link and adds a `fetch-failed` warning, and each download
+  logs `export fetch` or `export fetch failed`. A debug build fetches through
+  `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build
+  ignores it. None of `buildIframeDoc`'s theming, sizing or sandbox is
   carried; `prefers-color-scheme` rules stay, so the reader's system picks.
   The route answers `{html, warnings}` (`ExportResult` in `canvas-core`,
   which also holds the shared `base64` and the `html` tag scanner); canvasd

@@ -6,12 +6,8 @@
 
 use std::path::Path;
 
-use canvas_core::base64;
 use canvas_core::html::{find_attr_value_range, next_tag, tag_name};
-
-/// Largest single asset embedded as a `data:` URI. Posts travel as one JSON
-/// body, so a font or image over this stays a plain `url()` and warns.
-const MAX_ASSET_BYTES: usize = 512 * 1024;
+use canvas_core::{base64, MAX_ASSET_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inlined {

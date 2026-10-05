@@ -406,8 +406,9 @@ pub fn get_card(card_id: &str) -> Result<Card, String> {
     handle_card_response(call("GET", &format!("/api/cards/{card_id}"), None))
 }
 
-/// Reading and encoding a card's images can outlast the 1s default.
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(30);
+/// CDN downloads (bounded by `EXPORT_DOWNLOAD_SECS`) plus reading and
+/// encoding a card's images.
+const EXPORT_TIMEOUT: Duration = Duration::from_secs(canvas_core::EXPORT_DOWNLOAD_SECS + 15);
 
 /// `canvas export`: the card as a standalone page, plus its warnings.
 pub fn export_card(card_id: &str) -> Result<canvas_core::ExportResult, String> {

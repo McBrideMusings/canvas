@@ -21,6 +21,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 tower = { version = "0.5", features = ["util"] }
 notify = "7"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
