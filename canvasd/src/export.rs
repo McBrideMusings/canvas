@@ -745,6 +745,12 @@ mod tests {
             ("'<!-- --><script>'", "'<!-- --><script>'"),
             ("'<!--><script>'", "'<!--><script>'"),
             ("<!--<script", "<!--\\x3Cscript"),
+            ("'<!---><script>'", "'<!---><script>'"),
+            (
+                "'<!--<script/<script\t<script\n'",
+                "'<!--\\x3Cscript/\\x3Cscript\t\\x3Cscript\n'",
+            ),
+            ("<!--\nn-->0;'<script>'", "<!--\nn-->0;'<script>'"),
         ] {
             assert_eq!(escape_raw(text, "script"), want);
         }
