@@ -251,13 +251,15 @@ pub struct StateResponse {
     pub artifacts: Vec<ArtifactView>,
 }
 
-/// Where an artifact's files live. Only `owned` exists yet: a folder canvasd
-/// keeps under `artifacts/<id>/` in its data directory.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ArtifactKind {
-    #[default]
+/// Where an artifact's files live, written as `"kind"` on the record:
+/// `owned` is a folder canvasd keeps under `artifacts/<id>/` in its data
+/// directory; `linked` is an absolute folder or HTML file the person owns,
+/// recorded as `link`, which canvasd watches and serves but never writes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ArtifactSource {
     Owned,
+    Linked { link: String },
 }
 
 /// One artifact as canvasd persists it in `artifacts.json`.
@@ -268,8 +270,8 @@ pub struct Artifact {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(default)]
-    pub kind: ArtifactKind,
+    #[serde(flatten)]
+    pub source: ArtifactSource,
     /// RFC 3339.
     pub created_at: String,
     /// When the record or its files last changed through canvasd (RFC 3339).
@@ -289,10 +291,14 @@ pub struct ArtifactSize {
 pub struct ArtifactView {
     #[serde(flatten)]
     pub artifact: Artifact,
-    /// The artifact's folder, absolute.
+    /// Where the files are, absolute: the owned folder, or the linked path.
     pub path: String,
+    /// True when a linked artifact's path no longer exists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_missing: bool,
     /// The page the pane opens: `index.html`, else the folder's only
-    /// top-level HTML file. Absent while the folder has neither.
+    /// top-level HTML file, or the linked HTML file itself. Absent while
+    /// there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
     /// The entry page's declared `canvas-size`, when it has one.
@@ -305,6 +311,16 @@ pub struct ArtifactView {
 pub struct NewArtifactRequest {
     #[serde(default)]
     pub title: Option<String>,
+    /// An absolute folder or HTML file to link instead of making a folder.
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+/// Body for `POST /api/artifacts/:id/relink`: the linked artifact's new
+/// absolute folder or HTML file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelinkArtifactRequest {
+    pub link: String,
 }
 
 /// Body for `POST /api/artifacts/:id/put`: an absolute path to a file, copied

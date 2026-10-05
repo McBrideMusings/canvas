@@ -1,5 +1,6 @@
 //! Artifacts: folders of files canvasd owns under `artifacts/<id>/` in its
-//! data directory, shown on the viewer's Artifacts page as real web pages
+//! data directory, or a folder or HTML file the person owns that an artifact
+//! links to, shown on the viewer's Artifacts page as real web pages
 //! (ADR-0002). The records persist in `artifacts.json` beside
 //! `profiles.json`, outside the 24h stream, and are never evicted or pruned:
 //! an artifact stays until someone deletes it.
@@ -7,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use canvas_core::{Artifact, ArtifactKind, ArtifactSize, ArtifactView};
+use canvas_core::{Artifact, ArtifactSize, ArtifactSource, ArtifactView};
 use serde::{Deserialize, Serialize};
 
 pub const ARTIFACTS_FILE: &str = "artifacts.json";
@@ -66,14 +67,29 @@ impl Artifacts {
         }
     }
 
-    pub fn root(&self) -> Option<PathBuf> {
-        self.data_dir.as_ref().map(|d| d.join(ARTIFACTS_DIR))
+    pub fn has_data_dir(&self) -> bool {
+        self.data_dir.is_some()
     }
 
-    /// The folder holding `id`'s files. Only ids canvasd minted reach here,
-    /// so the id is a safe path segment.
+    /// The folder an owned artifact `id` keeps its files in. Only ids
+    /// canvasd minted reach here, so the id is a safe path segment.
     pub fn folder(&self, id: &str) -> Option<PathBuf> {
-        self.root().map(|r| r.join(id))
+        self.data_dir
+            .as_ref()
+            .map(|d| d.join(ARTIFACTS_DIR).join(id))
+    }
+
+    /// Where `artifact`'s files are: its owned folder, or the path it links.
+    pub fn source_path(&self, artifact: &Artifact) -> Option<PathBuf> {
+        match &artifact.source {
+            ArtifactSource::Owned => self.folder(&artifact.id),
+            ArtifactSource::Linked { link } => Some(PathBuf::from(link)),
+        }
+    }
+
+    /// [`Self::source_path`] for the record `id`, when there is one.
+    pub fn source_path_of(&self, id: &str) -> Option<PathBuf> {
+        self.records.get(id).and_then(|a| self.source_path(a))
     }
 
     /// Writes every record to `artifacts.json` through a temporary file, so
@@ -103,27 +119,28 @@ impl Artifacts {
         }
     }
 
-    pub fn new_record(&self, title: Option<String>) -> Artifact {
+    pub fn new_record(&self, title: Option<String>, source: ArtifactSource) -> Artifact {
         let now = chrono::Utc::now().to_rfc3339();
         Artifact {
             id: self.new_id(),
             title: title.filter(|t| !t.trim().is_empty()),
-            kind: ArtifactKind::Owned,
+            source,
             created_at: now.clone(),
             updated_at: now,
         }
     }
 
-    /// The record plus what its folder holds right now.
+    /// The record plus what its files hold right now.
     pub fn view(&self, artifact: &Artifact) -> ArtifactView {
-        let folder = self.folder(&artifact.id).unwrap_or_default();
-        let entry = entry_name(&folder);
-        let size = entry
-            .as_ref()
-            .and_then(|name| declared_size(&folder.join(name)));
+        let root = self.source_path(artifact).unwrap_or_default();
+        let source_missing =
+            matches!(artifact.source, ArtifactSource::Linked { .. }) && !root.exists();
+        let entry = entry_name(&root);
+        let size = entry_page(&root).and_then(|page| declared_size(&page));
         ArtifactView {
             artifact: artifact.clone(),
-            path: folder.to_string_lossy().into_owned(),
+            path: root.to_string_lossy().into_owned(),
+            source_missing,
             entry,
             size,
         }
@@ -137,8 +154,48 @@ impl Artifacts {
     }
 }
 
-/// `index.html`, else the folder's only top-level `.html`/`.htm` file.
+fn is_html(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+/// Checks a path offered to `new --link` or `relink`: absolute, and an
+/// existing folder or `.html`/`.htm` file. The error is canvasd's answer.
+pub fn check_link(link: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(link);
+    if !path.is_absolute() {
+        return Err(format!("{link} is not an absolute path"));
+    }
+    let meta = std::fs::metadata(&path).map_err(|_| format!("no folder or HTML file at {link}"))?;
+    let html = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(is_html);
+    if meta.is_dir() || (meta.is_file() && html) {
+        Ok(path)
+    } else {
+        Err(format!("{link} is not a folder or an .html file"))
+    }
+}
+
+/// The page an artifact rooted at `root` opens: a linked HTML file itself,
+/// else [`entry_name`] inside the folder.
+fn entry_page(root: &Path) -> Option<PathBuf> {
+    if root.is_file() {
+        return Some(root.to_path_buf());
+    }
+    entry_name(root).map(|name| root.join(name))
+}
+
+/// The entry's file name: a linked HTML file's own name, else `index.html`,
+/// else the folder's only top-level `.html`/`.htm` file.
 pub fn entry_name(folder: &Path) -> Option<String> {
+    if folder.is_file() {
+        return folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+    }
     if folder.join("index.html").is_file() {
         return Some("index.html".to_string());
     }
@@ -147,10 +204,7 @@ pub fn entry_name(folder: &Path) -> Option<String> {
         .filter_map(Result::ok)
         .filter(|e| e.path().is_file())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| {
-            let lower = name.to_ascii_lowercase();
-            lower.ends_with(".html") || lower.ends_with(".htm")
-        })
+        .filter(|name| is_html(name))
         .collect();
     match pages.as_slice() {
         [only] => Some(only.clone()),
@@ -223,6 +277,8 @@ pub enum Refusal {
     Escapes,
     /// A folder with no `index.html`.
     NoIndex,
+    /// The linked folder or file no longer exists.
+    SourceMissing,
 }
 
 impl Refusal {
@@ -232,6 +288,7 @@ impl Refusal {
             Refusal::Missing => "no such file",
             Refusal::Escapes => "resolves outside the artifact folder",
             Refusal::NoIndex => "folder has no index.html",
+            Refusal::SourceMissing => "the linked source is missing",
         }
     }
 }
@@ -239,8 +296,18 @@ impl Refusal {
 /// The file `rel` names inside `folder`, confined to it: no `..` or `.`
 /// segment, and the fully resolved path (symlinks followed) must still sit
 /// under the resolved folder. An empty `rel` is the artifact's entry page; a
-/// folder is its `index.html`.
+/// folder is its `index.html`. When `folder` is a linked HTML file, that file
+/// is the whole artifact: only an empty `rel` reaches it.
 pub fn resolve_file(folder: &Path, rel: &str) -> Result<PathBuf, Refusal> {
+    if !folder.exists() {
+        return Err(Refusal::SourceMissing);
+    }
+    if folder.is_file() {
+        if !rel.split('/').all(str::is_empty) {
+            return Err(Refusal::Missing);
+        }
+        return folder.canonicalize().map_err(|_| Refusal::Missing);
+    }
     let mut path = folder.to_path_buf();
     for segment in rel.split('/').filter(|s| !s.is_empty()) {
         if segment == ".." || segment == "." || segment.contains('\\') {
@@ -346,12 +413,29 @@ fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
 
 /// A hash of every entry under `folder`: its relative path, size, modified
 /// time and inode, walked without following symlinked folders. Any write,
-/// rename, add or removal changes it; reading a file does not.
+/// rename, add or removal changes it; reading a file does not. A linked HTML
+/// file hashes as its own one entry, and a missing root hashes differently
+/// from an empty folder, so a linked path disappearing counts as a change.
 pub fn fingerprint(folder: &Path) -> u64 {
     use std::hash::{Hash, Hasher};
     use std::os::unix::fs::MetadataExt;
     let mut entries = Vec::new();
-    let mut stack = vec![folder.to_path_buf()];
+    let root = std::fs::metadata(folder).ok();
+    if let Some(meta) = root.as_ref().filter(|m| !m.is_dir()) {
+        entries.push((
+            PathBuf::new(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ino(),
+        ));
+    }
+    let mut stack: Vec<PathBuf> = root
+        .as_ref()
+        .filter(|m| m.is_dir())
+        .map(|_| folder.to_path_buf())
+        .into_iter()
+        .collect();
     while let Some(dir) = stack.pop() {
         let Ok(read) = std::fs::read_dir(&dir) else {
             continue;
@@ -370,6 +454,7 @@ pub fn fingerprint(folder: &Path) -> u64 {
     }
     entries.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root.is_some().hash(&mut hasher);
     entries.hash(&mut hasher);
     hasher.finish()
 }

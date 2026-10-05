@@ -377,3 +377,179 @@ fn focus_on_an_artifact_fails_with_no_viewer_or_an_unknown_id() {
         "canvasd returned HTTP 404 (no artifact with that id)"
     );
 }
+
+fn stderr(output: &std::process::Output) -> String {
+    assert_eq!(output.status.code(), Some(1), "expected failure");
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+#[test]
+fn a_linked_folder_serves_goes_missing_and_relinks_with_its_id() {
+    let daemon = start_daemon(&temp_dir("link"));
+    let repo = temp_dir("repo");
+    let web = repo.join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(web.join("index.html"), "<p>linked</p>").unwrap();
+    std::fs::write(repo.join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(repo.join("secret.txt"), web.join("out.txt")).unwrap();
+
+    let created = json(&run(
+        &daemon,
+        &[
+            "artifact",
+            "new",
+            "--link",
+            web.to_str().unwrap(),
+            "--title",
+            "Dash",
+        ],
+    ));
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["kind"], "linked");
+    assert_eq!(created["link"], web.to_str().unwrap());
+    assert_eq!(created["path"], web.to_str().unwrap());
+    assert_eq!(created["entry"], "index.html");
+    assert_eq!(created.get("sourceMissing"), None);
+    assert!(!daemon.data_dir.join("artifacts").join(&id).exists());
+    assert_eq!(
+        get(&daemon, &format!("/artifacts/{id}/")).body,
+        b"<p>linked</p>"
+    );
+    for path in [
+        format!("/artifacts/{id}/out.txt"),
+        format!("/artifacts/{id}/../secret.txt"),
+    ] {
+        assert_eq!(get(&daemon, &path).status, 404, "{path}");
+    }
+
+    let moved = repo.join("web-moved");
+    std::fs::rename(&web, &moved).unwrap();
+    let missing = json(&run(&daemon, &["artifact", "show", &id]));
+    assert_eq!(missing["sourceMissing"], true);
+    assert_eq!(missing["path"], web.to_str().unwrap());
+    let gone = get(&daemon, &format!("/artifacts/{id}/"));
+    assert_eq!(gone.status, 404);
+    assert_eq!(gone.body, b"the linked source is missing");
+
+    let relinked = json(&run(
+        &daemon,
+        &["artifact", "relink", &id, moved.to_str().unwrap()],
+    ));
+    assert_eq!(relinked["id"], id.as_str());
+    assert_eq!(relinked["createdAt"], created["createdAt"]);
+    assert_eq!(relinked["link"], moved.to_str().unwrap());
+    assert_eq!(relinked.get("sourceMissing"), None);
+    assert_eq!(
+        get(&daemon, &format!("/artifacts/{id}/")).body,
+        b"<p>linked</p>"
+    );
+
+    json(&run(&daemon, &["artifact", "delete", &id]));
+    assert!(
+        moved.join("index.html").is_file(),
+        "delete keeps linked files"
+    );
+}
+
+#[test]
+fn a_linked_html_file_is_the_whole_artifact() {
+    let daemon = start_daemon(&temp_dir("linkfile"));
+    let dir = temp_dir("page");
+    std::fs::write(
+        dir.join("report.html"),
+        r#"<meta name="canvas-size" content="400x300"><p>one</p>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("style.css"), "p{}").unwrap();
+    let page = dir.join("report.html");
+    let created = json(&run(
+        &daemon,
+        &["artifact", "new", "--link", page.to_str().unwrap()],
+    ));
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["entry"], "report.html");
+    assert_eq!(
+        created["size"],
+        serde_json::json!({"width": 400, "height": 300})
+    );
+    let served = get(&daemon, &format!("/artifacts/{id}/"));
+    assert_eq!(served.status, 200);
+    assert!(served.body.ends_with(b"<p>one</p>"));
+    for rel in ["style.css", "report.html"] {
+        assert_eq!(
+            get(&daemon, &format!("/artifacts/{id}/{rel}")).status,
+            404,
+            "{rel}"
+        );
+    }
+}
+
+#[test]
+fn link_and_relink_refuse_what_they_cannot_serve() {
+    let daemon = start_daemon(&temp_dir("linkbad"));
+    let dir = temp_dir("notes");
+    std::fs::write(dir.join("notes.txt"), "x").unwrap();
+    assert_eq!(
+        stderr(&run(
+            &daemon,
+            &["artifact", "new", "--link", "/no/such/dir"]
+        )),
+        "canvasd returned HTTP 400 (no folder or HTML file at /no/such/dir)"
+    );
+    let txt = dir.join("notes.txt");
+    assert_eq!(
+        stderr(&run(
+            &daemon,
+            &["artifact", "new", "--link", txt.to_str().unwrap()]
+        )),
+        format!(
+            "canvasd returned HTTP 400 ({} is not a folder or an .html file)",
+            txt.display()
+        )
+    );
+    assert!(json(&run(&daemon, &["artifact", "list"]))
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let owned = json(&run(&daemon, &["artifact", "new"]))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        stderr(&run(&daemon, &["artifact", "relink", &owned, dir.to_str().unwrap()])),
+        format!("canvasd returned HTTP 400 ({owned} is an owned artifact; only a linked artifact can be relinked)")
+    );
+    let linked = json(&run(
+        &daemon,
+        &["artifact", "new", "--link", dir.to_str().unwrap()],
+    ))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        stderr(&run(
+            &daemon,
+            &["artifact", "put", &linked, txt.to_str().unwrap()]
+        )),
+        format!(
+            "canvasd returned HTTP 400 ({linked} is linked to {}; save its files there instead)",
+            dir.display()
+        )
+    );
+    assert_eq!(
+        stderr(&run(
+            &daemon,
+            &["artifact", "relink", &linked, "/no/such/dir"]
+        )),
+        "canvasd returned HTTP 400 (no folder or HTML file at /no/such/dir)"
+    );
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "show", &linked]))["link"],
+        dir.to_str().unwrap()
+    );
+    assert_eq!(
+        run(&daemon, &["artifact", "new", "--link"]).status.code(),
+        Some(2)
+    );
+}

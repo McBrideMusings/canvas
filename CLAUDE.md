@@ -237,16 +237,29 @@ beside the terminal all day.
   pruned by age, but counts toward the 500. The window's always-on-top toggle is
   "keep on top" (`get_keep_on_top`/`set_keep_on_top`), not a pin.
 - Artifacts (ADR-0002, `canvasd/src/artifacts.rs`, `artifact_routes.rs`): a web
-  page an agent keeps until someone deletes it. Each is a folder canvasd owns at
-  `artifacts/<id>/` in `CANVAS_DATA_DIR`, its id `art-` plus 10 hex digits; the
-  records (id, title, kind `owned`, created/updated times) persist in
-  `artifacts.json` beside `profiles.json`, loaded by `AppState::open`, never
-  evicted or pruned by age. `canvas artifact new [--title t]` prints the record
-  with its folder `path`; `put <id> <file|dir>` sends canvasd the absolute path
+  page an agent keeps until someone deletes it. An owned one is a folder canvasd
+  owns at `artifacts/<id>/` in `CANVAS_DATA_DIR`, its id `art-` plus 10 hex
+  digits; the records (id, title, kind `owned` or `linked` with its `link`,
+  created/updated times) persist in `artifacts.json` beside `profiles.json`,
+  loaded by `AppState::open`, never evicted or pruned by age. `canvas artifact
+  new [--title t]` prints the record with its folder `path`; `new --link <path>`
+  instead records an existing absolute folder or `.html` file the person owns
+  (refused when it doesn't exist): canvasd serves and watches it but never
+  writes to it, so `put` refuses a linked artifact and `delete` leaves its
+  files, and a linked HTML file is the whole artifact (only `/artifacts/<id>/`
+  reaches it). A linked path that no longer exists is a state, never an error:
+  the view carries `"sourceMissing": true`, the list row a warning mark, and the
+  pane "Source missing" with the path and the relink command; `relink <id>
+  <path>` repoints a linked artifact, keeping its id, and watches the new path.
+  A link that moves away and back while canvasd runs recovers by itself; one
+  missing when canvasd starts isn't watched until a relink. `put <id>
+  <file|dir>` sends canvasd the absolute path
   and canvasd copies the file, or the folder's contents, in (a symlinked folder is
   skipped, a symlinked destination replaced) and stamps `updatedAt`. Saving a
   file into the folder does the same with no command: `canvasd/src/watcher.rs`
-  watches each artifact's path recursively (notify, FSEvents), ends a burst
+  watches each artifact's path (owned folder or link) recursively (notify,
+  FSEvents), and a write belongs to every artifact whose path holds it, so
+  nested links all reload; it ends a burst
   after 200ms without a write (2s at most), and stamps `updatedAt` and
   publishes `artifact-upserted` once, unless the folder's fingerprint (paths,
   sizes, mtimes, inodes, in memory) still matches its last stamp; a `put` holds

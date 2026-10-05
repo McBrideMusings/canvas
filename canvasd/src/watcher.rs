@@ -1,6 +1,8 @@
 //! Watches artifact folders and reloads an artifact when its files change.
 //!
-//! Each watched path belongs to one artifact id. Writes under it are gathered
+//! Each artifact id has one watched path: its owned folder, or the folder or
+//! HTML file it links. Paths can nest or repeat (two links into one repo), so
+//! a write belongs to every artifact whose path holds it. Writes are gathered
 //! per artifact until [`QUIET`] passes with no write (or [`MAX_WAIT`] since the
 //! burst's first write), then the artifact's `updatedAt` is stamped and
 //! `artifact-upserted` goes out once; the viewer reloads the open pane when
@@ -34,11 +36,24 @@ pub struct Watcher {
 #[derive(Default)]
 struct Inner {
     os: Option<notify::RecommendedWatcher>,
-    /// Canonical paths, since the OS reports events under those.
+    /// Canonical paths, since the OS reports events under those. Two ids may
+    /// hold the same path; the OS watch stays until neither does.
     paths: HashMap<String, PathBuf>,
     /// Artifacts a `put` is copying into, with how many puts: their bursts
     /// wait until the last put has stamped, however long the copy takes.
     held: HashMap<String, usize>,
+}
+
+impl Inner {
+    /// Stops the OS watch on `path` unless another artifact still holds it.
+    fn release(&mut self, path: &Path) {
+        if self.paths.values().any(|p| p == path) {
+            return;
+        }
+        if let Some(os) = self.os.as_mut() {
+            let _ = os.unwatch(path);
+        }
+    }
 }
 
 /// While alive, the artifact's bursts don't end; see [`Watcher::hold`].
@@ -70,9 +85,7 @@ impl Watcher {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut inner = self.lock();
         if let Some(old) = inner.paths.insert(id.to_string(), path.clone()) {
-            if let Some(os) = inner.os.as_mut() {
-                let _ = os.unwatch(&old);
-            }
+            inner.release(&old);
         }
         if let Some(os) = inner.os.as_mut() {
             if let Err(e) = os.watch(&path, RecursiveMode::Recursive) {
@@ -88,9 +101,7 @@ impl Watcher {
     pub fn unwatch(&self, id: &str) {
         let mut inner = self.lock();
         if let Some(path) = inner.paths.remove(id) {
-            if let Some(os) = inner.os.as_mut() {
-                let _ = os.unwatch(&path);
-            }
+            inner.release(&path);
         }
     }
 
@@ -109,13 +120,16 @@ impl Watcher {
         self.lock().held.contains_key(id)
     }
 
-    /// The artifact whose watched path holds `path`.
-    fn owner(&self, path: &Path) -> Option<String> {
+    /// Every artifact whose watched path holds `path`. Each checks its own
+    /// fingerprint, so an outer artifact reloads for a write inside a nested
+    /// one only when its own files changed too, which they did.
+    fn owners(&self, path: &Path) -> Vec<String> {
         self.lock()
             .paths
             .iter()
-            .find(|(_, root)| path.starts_with(root))
+            .filter(|(_, root)| path.starts_with(root))
             .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Hands the watcher the OS watcher and watches every path recorded so far.
@@ -157,9 +171,9 @@ pub fn spawn_artifact_watcher(state: AppState) {
     tokio::spawn(async move {
         {
             let artifacts = state.artifacts.read().await;
-            for id in artifacts.records.keys() {
-                if let Some(folder) = artifacts.folder(id) {
-                    state.watcher.watch(id, &folder);
+            for (id, record) in &artifacts.records {
+                if let Some(root) = artifacts.source_path(record) {
+                    state.watcher.watch(id, &root);
                 }
             }
         }
@@ -182,8 +196,8 @@ pub fn spawn_artifact_watcher(state: AppState) {
             tokio::select! {
                 path = rx.recv() => {
                     let Some(path) = path else { break };
-                    if let Some(id) = state.watcher.owner(&path) {
-                        let now = Instant::now();
+                    let now = Instant::now();
+                    for id in state.watcher.owners(&path) {
                         let burst = pending.entry(id).or_insert((now, now, 0));
                         burst.1 = now;
                         burst.2 += 1;
@@ -214,16 +228,10 @@ pub fn spawn_artifact_watcher(state: AppState) {
 }
 
 /// One burst ended: stamps `updatedAt` and tells every viewer, unless the
-/// folder still matches the fingerprint of its last stamp.
+/// files still match the fingerprint of their last stamp. A linked path that
+/// disappeared is a change too: the view it publishes says `sourceMissing`.
 async fn files_changed(state: &AppState, id: &str, writes: usize) {
-    let Some(folder) = ({
-        let artifacts = state.artifacts.read().await;
-        artifacts
-            .records
-            .contains_key(id)
-            .then(|| artifacts.folder(id))
-            .flatten()
-    }) else {
+    let Some(folder) = state.artifacts.read().await.source_path_of(id) else {
         return;
     };
     let Ok(print) =
@@ -251,6 +259,7 @@ async fn files_changed(state: &AppState, id: &str, writes: usize) {
                 ("id", &id),
                 ("writes", &writes),
                 ("updated_at", &view.artifact.updated_at),
+                ("source_missing", &view.source_missing),
             ],
         );
     }

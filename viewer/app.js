@@ -84,6 +84,13 @@
         svg.appendChild(svgEl("path", { d: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" }));
         svg.appendChild(svgEl("path", { d: "M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" }));
         break;
+      case "warning":
+        svg.appendChild(svgEl("path", { d: "M12 3.5L2.5 20h19z" }));
+        svg.appendChild(svgEl("path", { d: "M12 10v4.5" }));
+        svg.appendChild(
+          svgEl("circle", { cx: "12", cy: "17.2", r: "0.9", fill: "currentColor", stroke: "none" })
+        );
+        break;
       case "check":
         svg.appendChild(svgEl("path", { d: "M5 13l4 4L19 7" }));
         break;
@@ -2964,7 +2971,12 @@
   const artifactSizeEl = document.getElementById("artifact-size");
   const artifactMoreEl = document.getElementById("artifact-more");
   const artifactNoEntryEl = document.getElementById("artifact-no-entry");
+  const artifactNoEntryTextEl = document.getElementById("artifact-no-entry-text");
   const artifactNoEntryCmdEl = document.getElementById("artifact-no-entry-cmd");
+  const artifactMissingEl = document.getElementById("artifact-missing");
+  const artifactMissingTextEl = document.getElementById("artifact-missing-text");
+  const artifactMissingPathEl = document.getElementById("artifact-missing-path");
+  const artifactMissingCmdEl = document.getElementById("artifact-missing-cmd");
   const artifactsEmptyEl = document.getElementById("artifacts-empty");
   artifactMoreEl.appendChild(buildIcon("more"));
 
@@ -3026,10 +3038,17 @@
     row.dataset.artifactId = artifact.id;
     const title = document.createElement("span");
     title.className = "artifact-row-title";
-    title.textContent = artifactTitle(artifact);
+    if (artifact.sourceMissing) {
+      const warn = buildIcon("warning");
+      warn.classList.add("artifact-row-warn");
+      title.appendChild(warn);
+      row.title = "Source missing";
+    }
+    title.appendChild(document.createTextNode(artifactTitle(artifact)));
     const time = document.createElement("span");
     time.className = "artifact-row-time";
-    time.textContent = `updated ${relativeTime(artifact.updatedAt)}`;
+    const kind = artifact.kind === "linked" ? "linked ·" : "updated";
+    time.textContent = `${kind} ${relativeTime(artifact.updatedAt)}`;
     time.title = new Date(artifact.updatedAt).toLocaleString();
     row.append(title, time);
     if (artifact.id === openArtifactId) row.setAttribute("aria-current", "true");
@@ -3065,9 +3084,22 @@
     artifactSizeEl.hidden = !size;
     artifactSizeEl.textContent = size ? `${size.width} × ${size.height}` : "";
     artifactStageEl.classList.toggle("fill", !size);
-    artifactNoEntryEl.hidden = Boolean(artifact.entry);
-    artifactNoEntryCmdEl.textContent = `canvas artifact put ${artifact.id} <file|dir>`;
-    if (!artifact.entry) {
+    const linked = artifact.kind === "linked";
+    const missing = Boolean(artifact.sourceMissing);
+    artifactMissingEl.hidden = !missing;
+    artifactMissingTextEl.textContent = `This artifact is linked to ${
+      /\.html?$/i.test(artifact.path) ? "a file" : "a folder"
+    } that no longer exists:`;
+    artifactMissingPathEl.textContent = artifact.path;
+    artifactMissingCmdEl.textContent = `canvas artifact relink ${artifact.id} <path>`;
+    artifactNoEntryEl.hidden = missing || Boolean(artifact.entry);
+    artifactNoEntryTextEl.textContent = linked
+      ? "The linked folder has no index.html and not exactly one other HTML page. Add one to:"
+      : "The folder has no index.html and not exactly one other HTML page. Copy one in:";
+    artifactNoEntryCmdEl.textContent = linked
+      ? artifact.path
+      : `canvas artifact put ${artifact.id} <file|dir>`;
+    if (missing || !artifact.entry) {
       artifactFrame?.remove();
       artifactFrame = null;
       artifactFrameSrc = null;
@@ -3144,6 +3176,7 @@
     const wasOpenHere = openMenu && openMenu.button === artifactMoreEl;
     closeMenu();
     if (wasOpenHere || !artifact) return;
+    const what = artifact.kind === "linked" && /\.html?$/i.test(artifact.path) ? "file" : "folder";
 
     const menu = document.createElement("div");
     menu.className = "card-menu";
@@ -3155,8 +3188,8 @@
       )
     );
     menu.appendChild(
-      buildMenuItem("copy", "Copy folder path", () =>
-        copyText(artifact.path, "Copied folder path", "Couldn't copy folder path")
+      buildMenuItem("copy", `Copy ${what} path`, () =>
+        copyText(artifact.path, `Copied ${what} path`, `Couldn't copy ${what} path`)
       )
     );
     const divider = document.createElement("div");

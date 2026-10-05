@@ -84,6 +84,10 @@ pub fn build_router(state: AppState) -> Router {
             post(artifact_routes::put_artifact),
         )
         .route(
+            "/api/artifacts/:id/relink",
+            post(artifact_routes::relink_artifact),
+        )
+        .route(
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),
         )

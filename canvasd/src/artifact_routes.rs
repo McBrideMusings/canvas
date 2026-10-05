@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use canvas_core::{NewArtifactRequest, PutArtifactRequest};
+use canvas_core::{ArtifactSource, NewArtifactRequest, PutArtifactRequest, RelinkArtifactRequest};
 
 use crate::artifacts::{self, Artifacts};
 use crate::state::{AppState, CanvasEvent};
@@ -21,6 +21,10 @@ fn no_data_dir() -> Response {
 
 fn not_found() -> Response {
     (StatusCode::NOT_FOUND, NO_ARTIFACT).into_response()
+}
+
+fn bad_request(message: String) -> Response {
+    (StatusCode::BAD_REQUEST, message).into_response()
 }
 
 fn failed(what: &str, id: &str, e: &dyn std::fmt::Display) -> Response {
@@ -51,20 +55,34 @@ pub async fn list_artifacts(State(state): State<AppState>) -> Response {
     Json(state.artifacts.read().await.views()).into_response()
 }
 
-/// `canvas artifact new`: mints an `art-` id, makes its empty folder and
-/// answers the record with the folder's path.
+/// `canvas artifact new`: mints an `art-` id and answers the record with
+/// its path. With `link`, the artifact points at that existing folder or
+/// HTML file; otherwise canvasd makes it an empty folder of its own.
 pub async fn new_artifact(
     State(state): State<AppState>,
     body: Option<Json<NewArtifactRequest>>,
 ) -> Response {
-    let title = body.and_then(|Json(b)| b.title);
+    let NewArtifactRequest { title, link } = body.map(|Json(b)| b).unwrap_or_default();
+    let source = match link {
+        Some(link) => match artifacts::check_link(&link) {
+            Ok(_) => ArtifactSource::Linked { link },
+            Err(message) => return bad_request(message),
+        },
+        None => ArtifactSource::Owned,
+    };
+    let owned = source == ArtifactSource::Owned;
     let mut artifacts = state.artifacts.write().await;
-    let record = artifacts.new_record(title);
-    let Some(folder) = artifacts.folder(&record.id) else {
+    if !artifacts.has_data_dir() {
+        return no_data_dir();
+    }
+    let record = artifacts.new_record(title, source);
+    let Some(root) = artifacts.source_path(&record) else {
         return no_data_dir();
     };
-    if let Err(e) = tokio::fs::create_dir_all(&folder).await {
-        return failed("creating the artifact folder failed", &record.id, &e);
+    if owned {
+        if let Err(e) = tokio::fs::create_dir_all(&root).await {
+            return failed("creating the artifact folder failed", &record.id, &e);
+        }
     }
     let id = record.id.clone();
     artifacts.records.insert(id.clone(), record);
@@ -72,14 +90,72 @@ pub async fn new_artifact(
         Ok(view) => {
             artifacts
                 .fingerprints
-                .insert(id.clone(), artifacts::fingerprint(&folder));
-            state.watcher.watch(&id, &folder);
-            canvas_core::log::info("artifact created", &[("id", &id), ("path", &view.path)]);
+                .insert(id.clone(), artifacts::fingerprint(&root));
+            state.watcher.watch(&id, &root);
+            canvas_core::log::info(
+                "artifact created",
+                &[
+                    ("id", &id),
+                    ("kind", &if owned { "owned" } else { "linked" }),
+                    ("path", &view.path),
+                ],
+            );
             Json(view).into_response()
         }
         Err(response) => {
             artifacts.records.remove(&id);
-            let _ = tokio::fs::remove_dir_all(&folder).await;
+            if owned {
+                let _ = tokio::fs::remove_dir_all(&root).await;
+            }
+            response
+        }
+    }
+}
+
+/// `canvas artifact relink`: points a linked artifact at a new folder or
+/// HTML file, keeping its id and record, and watches the new path.
+pub async fn relink_artifact(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RelinkArtifactRequest>,
+) -> Response {
+    let root = match artifacts::check_link(&req.link) {
+        Ok(root) => root,
+        Err(message) => return bad_request(message),
+    };
+    let mut artifacts = state.artifacts.write().await;
+    let Some(record) = artifacts.records.get_mut(&id) else {
+        return not_found();
+    };
+    let ArtifactSource::Linked { link } = &mut record.source else {
+        return bad_request(format!(
+            "{id} is an owned artifact; only a linked artifact can be relinked"
+        ));
+    };
+    let from = std::mem::replace(link, req.link.clone());
+    let was_updated = std::mem::replace(&mut record.updated_at, chrono::Utc::now().to_rfc3339());
+    let print = artifacts::fingerprint(&root);
+    let was_print = artifacts.fingerprints.insert(id.clone(), print);
+    match save_and_publish(&state, &artifacts, &id).await {
+        Ok(view) => {
+            state.watcher.watch(&id, &root);
+            canvas_core::log::info(
+                "artifact relinked",
+                &[("id", &id), ("from", &from), ("to", &view.path)],
+            );
+            Json(view).into_response()
+        }
+        Err(response) => {
+            // Back to the old path, its stamp and its fingerprint, so the
+            // watcher keeps comparing that path against its own baseline.
+            if let Some(record) = artifacts.records.get_mut(&id) {
+                record.source = ArtifactSource::Linked { link: from };
+                record.updated_at = was_updated;
+            }
+            match was_print {
+                Some(print) => artifacts.fingerprints.insert(id.clone(), print),
+                None => artifacts.fingerprints.remove(&id),
+            };
             response
         }
     }
@@ -108,8 +184,13 @@ pub async fn put_artifact(
     }
     let folder = {
         let artifacts = state.artifacts.read().await;
-        if !artifacts.records.contains_key(&id) {
+        let Some(record) = artifacts.records.get(&id) else {
             return not_found();
+        };
+        if let ArtifactSource::Linked { link } = &record.source {
+            return bad_request(format!(
+                "{id} is linked to {link}; save its files there instead"
+            ));
         }
         match artifacts.folder(&id) {
             Some(folder) => folder,
@@ -174,7 +255,8 @@ pub async fn put_artifact(
     }
 }
 
-/// `canvas artifact delete`: removes the record and the folder.
+/// `canvas artifact delete`: removes the record, and an owned artifact's
+/// folder. A linked artifact's files belong to the person and stay.
 pub async fn delete_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let mut artifacts = state.artifacts.write().await;
     let Some(record) = artifacts.records.remove(&id) else {
@@ -186,7 +268,11 @@ pub async fn delete_artifact(State(state): State<AppState>, Path(id): Path<Strin
     }
     state.watcher.unwatch(&id);
     artifacts.fingerprints.remove(&id);
-    if let Some(folder) = artifacts.folder(&id) {
+    let owned_folder = match record.source {
+        ArtifactSource::Owned => artifacts.folder(&id),
+        ArtifactSource::Linked { .. } => None,
+    };
+    if let Some(folder) = owned_folder {
         if let Err(e) = tokio::fs::remove_dir_all(&folder).await {
             if e.kind() != std::io::ErrorKind::NotFound {
                 canvas_core::log::warn(
@@ -218,7 +304,8 @@ pub async fn artifact_entry(state: State<AppState>, Path(id): Path<String>) -> R
     serve_file(state, id, String::new()).await
 }
 
-/// `/artifacts/:id/*path` — one file of the artifact, confined to its folder.
+/// `/artifacts/:id/*path` — one file of the artifact, confined to its folder
+/// (or, for a linked HTML file, to that file).
 pub async fn artifact_file(
     state: State<AppState>,
     Path((id, path)): Path<(String, String)>,
@@ -229,10 +316,10 @@ pub async fn artifact_file(
 async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> Response {
     let folder = {
         let artifacts = state.artifacts.read().await;
-        if !artifacts.records.contains_key(&id) {
+        let Some(record) = artifacts.records.get(&id) else {
             return not_found();
-        }
-        match artifacts.folder(&id) {
+        };
+        match artifacts.source_path(record) {
             Some(folder) => folder,
             None => return no_data_dir(),
         }

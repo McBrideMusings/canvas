@@ -111,8 +111,14 @@
         <div class="artifact-stage" id="artifact-stage">
           <div class="artifact-no-entry" id="artifact-no-entry" hidden>
             <p class="artifact-no-entry-title">Nothing to show yet</p>
-            <p>The folder has no index.html and not exactly one other HTML page. Copy one in:</p>
+            <p id="artifact-no-entry-text"></p>
             <code id="artifact-no-entry-cmd"></code>
+          </div>
+          <div class="artifact-no-entry" id="artifact-missing" hidden>
+            <p class="artifact-no-entry-title">Source missing</p>
+            <p id="artifact-missing-text"></p>
+            <code id="artifact-missing-path"></code>
+            <p class="artifact-missing-relink">Relink it: <span id="artifact-missing-cmd"></span></p>
           </div>
         </div>
       </section>

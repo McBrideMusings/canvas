@@ -222,7 +222,15 @@ canvas artifact list | show <id> | delete <id>
 - Declare the viewport the page is designed for with
   `<meta name="canvas-size" content="390x844">`; the pane opens at that size,
   clamped to the window. Without it the page fills the pane.
-- Every open viewer reloads the pane after a `put`.
+- Every open viewer reloads the pane after a `put`, or when a file in the
+  folder is saved.
+- When the person wants the files in their own repo, under git, link instead:
+  `canvas artifact new --link ./web --title "Tower dash"` records that folder
+  (or one `.html` file, served alone) rather than making one. Edit the files
+  in place, never with `put`; a save reloads the pane. Delete keeps the files.
+  If the folder moves, the pane says "Source missing" and `show` reports
+  `"sourceMissing": true`; `canvas artifact relink <id> <new path>` repoints it
+  and keeps the id.
 - The page runs in `<iframe sandbox="allow-scripts">` with no
   `allow-same-origin`: scripts, styles and fonts load from its own folder,
   inline, or the three CDNs below; `connect-src` is closed and forms can't

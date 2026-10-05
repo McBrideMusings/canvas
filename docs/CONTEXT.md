@@ -43,7 +43,7 @@ The window's first page: every card that matches the selected chip and the searc
 _Avoid_: stream, feed
 
 **Artifact**:
-A web page an agent keeps in Canvas until someone deletes it: a folder of files canvasd owns under `artifacts/<id>/`, with an id starting `art-`. It belongs to no session, runs in its own viewport, and Canvas never themes it. Every interactive page is an artifact; a post never is.
+A web page an agent keeps in Canvas until someone deletes it, with an id starting `art-`: a folder of files canvasd owns under `artifacts/<id>/`, or a folder or HTML file the person owns that it links to. It belongs to no session, runs in its own viewport, and Canvas never themes it. Every interactive page is an artifact; a post never is.
 _Avoid_: app post, pinned card
 
 **Artifacts page**:
