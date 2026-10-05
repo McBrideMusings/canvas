@@ -106,6 +106,63 @@ pub struct Card {
     pub targets: Vec<String>,
 }
 
+/// Body of `GET /api/cards/:id/export`: one post as a standalone HTML page,
+/// plus everything that couldn't be baked into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportResult {
+    pub html: String,
+    pub warnings: Vec<ExportWarning>,
+}
+
+/// Something an export left out. It never fails the export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportWarning {
+    pub kind: ExportWarningKind,
+    /// The image path or URL the warning is about.
+    pub target: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportWarningKind {
+    /// An image or video file the card names is gone or unreadable.
+    MissingImage,
+    /// A CDN asset that couldn't be downloaded.
+    FetchFailed,
+}
+
+/// The extensions `/api/cards/:id/images/:n` serves and an export inlines;
+/// no other file is read for a card.
+pub const MEDIA_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", // images
+    "mp4", "m4v", "mov", "webm", // video
+];
+
+/// Standard base64 with padding, for `data:` URIs.
+pub fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Request bodies use snake_case, matching Claude Code hook JSON.
 /// `images`/`targets` are empty until a later slice fills them in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +440,7 @@ pub struct PutArtifactRequest {
     pub extras: ArtifactExtras,
 }
 
+pub mod html;
 pub mod log;
 pub mod paths;
 pub mod unix_http;

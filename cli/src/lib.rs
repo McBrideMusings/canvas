@@ -3,6 +3,7 @@ pub mod artifact;
 pub mod client;
 pub mod daemon;
 pub mod data;
+pub mod export;
 pub mod focus;
 pub mod format;
 pub mod guidance;

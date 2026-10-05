@@ -1,5 +1,6 @@
 pub mod artifact_routes;
 pub mod artifacts;
+pub mod export;
 pub mod profiles;
 pub mod provenance;
 pub mod refresh;
@@ -48,6 +49,7 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(routes::delete_card)
                 .put(routes::update_card),
         )
+        .route("/api/cards/:id/export", get(routes::export_card))
         .route("/api/cards/:id/focus", post(routes::focus_card))
         .route("/api/cards/:id/snapshot", post(routes::snapshot_card))
         .route(

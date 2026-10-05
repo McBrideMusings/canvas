@@ -509,6 +509,64 @@ async fn card_image_serves_the_cards_images_and_rejects_others() {
 }
 
 #[tokio::test]
+async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
+    let app = app();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let tray = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({
+                "session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code",
+                "html": "<img src=\"canvas-image:0\"><img src=\"canvas-image:1\">",
+                "images": [tray, "/nonexistent/gone.png"],
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Card = json_body(response).await;
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}/data", card.id),
+            json!({"n": 7}),
+        ))
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/export", card.id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let export: canvas_core::ExportResult = json_body(response).await;
+    let png = canvas_core::base64(&std::fs::read(&tray).unwrap());
+    assert!(export
+        .html
+        .contains(&format!("<img src=\"data:image/png;base64,{png}\">")));
+    assert!(export.html.contains("image missing: gone.png"));
+    assert!(!export.html.contains("/api/cards/"));
+    assert!(export.html.contains(r#"var v={"n":7}"#));
+    assert_eq!(
+        export.warnings,
+        vec![canvas_core::ExportWarning {
+            kind: canvas_core::ExportWarningKind::MissingImage,
+            target: "/nonexistent/gone.png".into(),
+            reason: "No such file or directory (os error 2)".into(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn export_unknown_card_is_404() {
+    let response = app().oneshot(get("/api/cards/nope/export")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn card_video_serves_whole_and_by_byte_range() {
     let app = app();
     let dir = std::env::temp_dir().join(format!("canvasd-video-{}", std::process::id()));

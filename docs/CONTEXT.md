@@ -50,6 +50,10 @@ _Avoid_: app post, pinned card
 The window's second page: every artifact, most recently changed first, in a list beside the open artifact's pane. The pane gives the page its declared `canvas-size`, clamped to the window, else the whole pane.
 _Avoid_: gallery, library
 
+**Export**:
+A post saved as one standalone HTML page with its images, scripts, styles and fonts inlined, so it opens without Canvas or the network. Exporting every post or one session produces a zip of such pages plus an index.
+_Avoid_: download, save, backup
+
 ### Architecture
 
 {Seeded on first run of `improve`. Don't seed up front.}

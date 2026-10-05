@@ -406,6 +406,21 @@ pub fn get_card(card_id: &str) -> Result<Card, String> {
     handle_card_response(call("GET", &format!("/api/cards/{card_id}"), None))
 }
 
+/// Reading and encoding a card's images can outlast the 1s default.
+const EXPORT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `canvas export`: the card as a standalone page, plus its warnings.
+pub fn export_card(card_id: &str) -> Result<canvas_core::ExportResult, String> {
+    let path = format!("/api/cards/{}/export", percent_encode(card_id));
+    let response =
+        call_any_status("GET", &path, None, EXPORT_TIMEOUT).map_err(|e| e.to_string())?;
+    match response.status {
+        200..=299 => into_json(response),
+        404 => Err("canvasd returned HTTP 404 (no card with that id)".to_string()),
+        status => Err(Failure::Status(status).to_string()),
+    }
+}
+
 fn handle_card_response(result: Result<Response, Failure>) -> Result<Card, String> {
     match result {
         Ok(response) => into_json(response),

@@ -191,6 +191,34 @@ pub async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+/// One card as a standalone HTML page (`crate::export`), with its latest
+/// `canvas data` value baked in. A missing image is a warning, never an error.
+pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let (card, data) = {
+        let inner = state.inner.read().await;
+        let Some(card) = inner.cards.iter().find(|c| c.id == id).cloned() else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        (card, inner.data.get(&id).cloned())
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        crate::export::export_card(&card, data.as_ref(), |p| std::fs::read(p))
+    })
+    .await;
+    let Ok(result) = result else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    canvas_core::log::info(
+        "card exported",
+        &[
+            ("card", &id),
+            ("bytes", &result.html.len()),
+            ("warnings", &result.warnings.len()),
+        ],
+    );
+    Json(result).into_response()
+}
+
 /// Replaces an existing card's content in place — same id, session and `at`,
 /// with `updated_at` set to now, which moves it to the top of the Timeline.
 /// 404s rather than creating one: an id an agent doesn't already hold is
@@ -642,11 +670,6 @@ pub async fn events(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
-const ALLOWED_MEDIA_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "svg", // images
-    "mp4", "m4v", "mov", "webm", // video
-];
-
 /// Longest slice served for one request. A player asking for `bytes=0-` gets
 /// this much and asks again for the rest, so a large clip is never read whole.
 const MAX_RANGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -731,7 +754,7 @@ pub async fn get_card_image(
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    if !ALLOWED_MEDIA_EXTS.contains(&ext.as_str()) {
+    if !canvas_core::MEDIA_EXTS.contains(&ext.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
 

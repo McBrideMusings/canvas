@@ -157,6 +157,19 @@ beside the terminal all day.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
   can be read by an agent.
+  `canvas export <card_id> [-o file]` (`GET /api/cards/:id/export`,
+  `canvasd/src/export.rs`) writes one post as a standalone page, to
+  `<card_id>.html` by default, and prints `{"path", "cards": 1, "warnings"}`.
+  Each `/api/cards/:id/images/:n` src becomes a base64 `data:` URI read from
+  the card's stored path (a missing file is a `missing-image` warning and an
+  "image missing" placeholder), each `#canvas-open-<n>` anchor becomes a real
+  `target="_blank"` link (http/https) or plain text (a local path), and a shim
+  delivers the card's latest `canvas data` value as `canvas-data` and swallows
+  `canvas-reply`. None of `buildIframeDoc`'s theming, sizing or sandbox is
+  carried; `prefers-color-scheme` rules stay, so the reader's system picks.
+  The route answers `{html, warnings}` (`ExportResult` in `canvas-core`,
+  which also holds the shared `base64` and the `html` tag scanner); canvasd
+  logs `card exported`.
   `canvas focus <card_id>` (`POST /api/cards/:id/focus`, 404 for an unknown
   id) publishes a `card-focus` SSE event, never persisted; each viewer runs
   the same `openCardLink` a `canvas-post://` link does — clear search and
