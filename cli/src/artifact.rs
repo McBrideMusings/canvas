@@ -1,8 +1,13 @@
-//! `canvas artifact new|put|relink|list|show|delete|log`: artifacts are folders
-//! of files canvasd keeps until someone deletes them, or a folder or HTML file
-//! of the person's that an artifact links to, shown on the Artifacts page as
-//! real web pages. Every verb prints canvasd's JSON on one line and, like
-//! `canvas post`, fails loudly: one stderr line, non-zero exit.
+//! `canvas artifact new|put|relink|list|show|delete|log|pane`: artifacts are
+//! folders of files canvasd keeps until someone deletes them, or a folder or
+//! HTML file of the person's that an artifact links to, shown on the Artifacts
+//! page as real web pages. Every verb prints canvasd's JSON on one line and,
+//! like `canvas post`, fails loudly: one stderr line, non-zero exit.
+//!
+//! `pane <id> --size WxH|--reset|--full|--exit` changes the open viewers' pane
+//! for that artifact as the person would by hand, printing `{"viewers": N}`
+//! and failing when N is 0; bare `pane` prints the pane a viewer last reported
+//! showing, failing when no open viewer has reported one.
 
 use crate::client::{self, percent_encode};
 
@@ -31,7 +36,18 @@ pub enum Command {
     Log {
         id: String,
     },
+    Pane {
+        id: String,
+        action: serde_json::Value,
+    },
+    PaneShown,
 }
+
+/// The stderr line when no viewer was connected to receive a pane change.
+pub const NO_VIEWER: &str = "no Canvas viewer is open to change the pane";
+
+/// The stderr line when no open viewer has reported its pane.
+pub const NOT_REPORTED: &str = "no open Canvas viewer has reported an artifact pane";
 
 pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -59,6 +75,29 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         ["show", id] => Ok(Command::Show { id: id.to_string() }),
         ["delete", id] => Ok(Command::Delete { id: id.to_string() }),
         ["log", id] => Ok(Command::Log { id: id.to_string() }),
+        ["pane"] => Ok(Command::PaneShown),
+        ["pane", id, flag @ ..] => Ok(Command::Pane {
+            id: id.to_string(),
+            action: parse_pane_action(flag)?,
+        }),
+        _ => Err(UsageError),
+    }
+}
+
+fn parse_pane_action(flag: &[&str]) -> Result<serde_json::Value, UsageError> {
+    match flag {
+        ["--size", size] => {
+            let (w, h) = size.split_once(['x', 'X', '×']).ok_or(UsageError)?;
+            let width: u32 = w.parse().map_err(|_| UsageError)?;
+            let height: u32 = h.parse().map_err(|_| UsageError)?;
+            if width == 0 || height == 0 {
+                return Err(UsageError);
+            }
+            Ok(serde_json::json!({ "action": "resize", "width": width, "height": height }))
+        }
+        ["--reset"] => Ok(serde_json::json!({ "action": "reset" })),
+        ["--full"] => Ok(serde_json::json!({ "action": "full" })),
+        ["--exit"] => Ok(serde_json::json!({ "action": "exit" })),
         _ => Err(UsageError),
     }
 }
@@ -102,6 +141,24 @@ pub fn run(command: Command) -> Result<(), String> {
             &format!("/api/artifacts/{}/log", percent_encode(&id)),
             None,
         )?,
+        Command::Pane { id, action } => {
+            let value = client::artifact_call(
+                "POST",
+                &format!("/api/artifacts/{}/pane", percent_encode(&id)),
+                Some(&action),
+            )?;
+            if value["viewers"].as_u64() == Some(0) {
+                return Err(NO_VIEWER.to_string());
+            }
+            value
+        }
+        Command::PaneShown => {
+            let value = client::artifact_call("GET", "/api/artifact-pane", None)?;
+            if value["pane"].is_null() {
+                return Err(NOT_REPORTED.to_string());
+            }
+            value
+        }
     };
     println!("{value}");
     Ok(())
@@ -113,4 +170,49 @@ fn absolute(path: &str) -> Result<String, String> {
     std::path::absolute(path)
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|e| format!("cannot resolve {path}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn pane_parses_each_action() {
+        let Ok(Command::Pane { id, action }) =
+            parse_args(&args(&["pane", "art-1", "--size", "960x600"]))
+        else {
+            panic!("--size did not parse");
+        };
+        assert_eq!(id, "art-1");
+        assert_eq!(
+            action,
+            serde_json::json!({ "action": "resize", "width": 960, "height": 600 })
+        );
+        for (flag, name) in [("--reset", "reset"), ("--full", "full"), ("--exit", "exit")] {
+            let Ok(Command::Pane { action, .. }) = parse_args(&args(&["pane", "art-1", flag]))
+            else {
+                panic!("{flag} did not parse");
+            };
+            assert_eq!(action["action"], name);
+        }
+        assert!(matches!(
+            parse_args(&args(&["pane"])),
+            Ok(Command::PaneShown)
+        ));
+    }
+
+    #[test]
+    fn pane_refuses_a_bad_size() {
+        for bad in ["960", "0x600", "960x", "wide x tall"] {
+            assert!(
+                parse_args(&args(&["pane", "art-1", "--size", bad])).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse_args(&args(&["pane", "art-1"])).is_err());
+    }
 }

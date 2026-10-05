@@ -47,6 +47,43 @@ pub enum CanvasEvent {
     /// Asks every open viewer to switch to the Artifacts page and open this
     /// artifact (`canvas focus art-…`). Sent to viewers only.
     ArtifactFocus(String),
+    /// Asks every open viewer to change an artifact's pane the way the
+    /// person would by hand (`canvas artifact pane`). Sent to viewers only.
+    ArtifactPane {
+        id: String,
+        action: PaneAction,
+    },
+}
+
+/// One change to an artifact's pane: a size for its frame (clamped to the
+/// window by the viewer), back to its declared size, or in and out of full
+/// window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum PaneAction {
+    Resize { width: u32, height: u32 },
+    Reset,
+    Full,
+    Exit,
+}
+
+/// What a viewer reports its artifact pane showing (`PUT /api/artifact-pane`):
+/// the open artifact, the frame's size in CSS pixels, whether it fills the
+/// window, and the size the person chose for it, if any.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneReport {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub full: bool,
+    pub chosen: Option<PaneSize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSize {
+    pub width: u32,
+    pub height: u32,
 }
 
 /// The viewer's light or dark palette.
@@ -110,6 +147,9 @@ pub struct AppState {
     /// The theme a viewer last reported showing (`PUT /api/theme`), in
     /// memory only; `None` until a viewer reports one.
     pub(crate) viewer_theme: Arc<std::sync::Mutex<Option<Theme>>>,
+    /// The artifact pane a viewer last reported showing, in memory only;
+    /// `None` until a viewer reports one.
+    pub(crate) viewer_pane: Arc<std::sync::Mutex<Option<PaneReport>>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -138,6 +178,7 @@ impl AppState {
             generation: Arc::default(),
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
+            viewer_pane: Arc::default(),
             store: None,
             data_dir: None,
         }
@@ -160,6 +201,7 @@ impl AppState {
             generation: Arc::default(),
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
+            viewer_pane: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
@@ -236,6 +278,7 @@ impl AppState {
                     | CanvasEvent::ArtifactUpserted(_)
                     | CanvasEvent::ArtifactRemoved(_)
                     | CanvasEvent::ArtifactFocus(_)
+                    | CanvasEvent::ArtifactPane { .. }
             ) {
                 store.append(&event);
             }
@@ -307,7 +350,8 @@ impl Inner {
             | CanvasEvent::ThemeSet(_)
             | CanvasEvent::ArtifactUpserted(_)
             | CanvasEvent::ArtifactRemoved(_)
-            | CanvasEvent::ArtifactFocus(_) => {}
+            | CanvasEvent::ArtifactFocus(_)
+            | CanvasEvent::ArtifactPane { .. } => {}
         }
     }
 

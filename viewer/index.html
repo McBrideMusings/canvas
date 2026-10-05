@@ -17,6 +17,10 @@
       <button type="button" class="page-switch-btn" data-page="timeline" aria-pressed="true">Timeline</button>
       <button type="button" class="page-switch-btn" data-page="artifacts" aria-pressed="false">Artifacts</button>
     </div>
+    <span class="titlebar-artifact" id="titlebar-artifact" hidden></span>
+    <button type="button" class="exit-full-btn" id="artifact-exit-full" hidden>
+      Exit full window <kbd>esc</kbd>
+    </button>
     <button
       type="button"
       id="keep-on-top-toggle"
@@ -99,6 +103,13 @@
           <h2 class="artifact-title" id="artifact-title"></h2>
           <span class="artifact-size" id="artifact-size" hidden></span>
           <span class="artifact-pane-spacer"></span>
+          <button
+            type="button"
+            id="artifact-full"
+            class="icon-btn"
+            aria-label="Full window"
+            title="Full window"
+          ></button>
           <button
             type="button"
             id="artifact-more"

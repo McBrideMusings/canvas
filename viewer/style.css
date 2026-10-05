@@ -1522,12 +1522,130 @@ body[data-page="artifacts"] .main-col {
   padding: 0;
 }
 
+.artifact-frame-box {
+  position: relative;
+  flex: none;
+  width: 100%;
+  height: 100%;
+}
+
 .artifact-frame {
   display: block;
   border: none;
   background: #fff;
   width: 100%;
   height: 100%;
+}
+
+/* A drag's pointer is captured by the grip; this keeps the page from
+   flickering its own hover states underneath. */
+.artifact-stage.resizing .artifact-frame {
+  pointer-events: none;
+}
+
+.artifact-stage.resizing {
+  cursor: nwse-resize;
+}
+
+/* Three diagonal strokes just outside the frame's bottom-right corner, in
+   the stage's inset, so they never sit on the page's own colours. A filling
+   frame has no inset: there the grip sits inside the corner on a chip. */
+.artifact-grip {
+  position: absolute;
+  right: -14px;
+  bottom: -14px;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    currentColor 45% 52%,
+    transparent 52% 63%,
+    currentColor 63% 70%,
+    transparent 70% 81%,
+    currentColor 81% 88%,
+    transparent 88%
+  );
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.artifact-grip:hover {
+  color: var(--fg2);
+}
+
+.artifact-stage.fill .artifact-grip {
+  right: 2px;
+  bottom: 2px;
+  border-radius: 3px 0 3px 0;
+  background-color: var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* Full window: the pane covers everything below the title bar, with no list
+   column, header or grip. */
+body[data-artifact-full] .artifact-list,
+body[data-artifact-full] .artifact-pane-header,
+body[data-artifact-full] .artifact-grip {
+  display: none;
+}
+
+.titlebar-artifact {
+  min-width: 0;
+  max-width: 28vw;
+  margin-top: 7px;
+  margin-right: -6px;
+  font-size: 13px;
+  line-height: 28px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exit-full-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  margin-top: 7px;
+  padding: 0 6px 0 11px;
+  box-sizing: border-box;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.exit-full-btn:hover {
+  background: var(--hover);
+}
+
+.exit-full-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.exit-full-btn kbd {
+  padding: 0 5px;
+  border: 1px solid var(--faint);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--fg3);
+}
+
+.titlebar-artifact[hidden],
+.exit-full-btn[hidden] {
+  display: none;
 }
 
 .artifact-stage:not(.fill) .artifact-frame {

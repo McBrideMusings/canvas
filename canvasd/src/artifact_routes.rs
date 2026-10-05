@@ -11,7 +11,7 @@ use canvas_core::{ArtifactSource, NewArtifactRequest, PutArtifactRequest, Relink
 
 use crate::artifacts::{self, Artifacts};
 use crate::provenance::{Action, Actor};
-use crate::state::{AppState, CanvasEvent};
+use crate::state::{AppState, CanvasEvent, PaneAction, PaneReport};
 
 const NO_DATA_DIR: &str = "canvasd has no data directory to keep artifacts in";
 const NO_ARTIFACT: &str = "no artifact with that id";
@@ -322,6 +322,77 @@ pub async fn focus_artifact(State(state): State<AppState>, Path(id): Path<String
     let viewers = state.publish(CanvasEvent::ArtifactFocus(id.clone()));
     canvas_core::log::info("artifact focus", &[("id", &id), ("viewers", &viewers)]);
     Json(serde_json::json!({ "viewers": viewers })).into_response()
+}
+
+/// `canvas artifact pane <id> --size|--reset|--full|--exit`: asks every open
+/// viewer to open the artifact and change its pane as a drag of the grip, a
+/// double-click on it, or the full-window control would. Answers how many
+/// viewers the event reached.
+pub async fn pane_artifact(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(action): Json<PaneAction>,
+) -> Response {
+    if let PaneAction::Resize { width, height } = action {
+        if width == 0 || height == 0 {
+            return bad_request("a pane size needs a width and height above 0".to_string());
+        }
+    }
+    if !state.artifacts.read().await.records.contains_key(&id) {
+        return not_found();
+    }
+    let viewers = state.publish(CanvasEvent::ArtifactPane {
+        id: id.clone(),
+        action,
+    });
+    canvas_core::log::info(
+        "artifact pane",
+        &[
+            ("id", &id),
+            ("action", &format!("{action:?}")),
+            ("viewers", &viewers),
+        ],
+    );
+    Json(serde_json::json!({ "viewers": viewers })).into_response()
+}
+
+/// The viewer reports the pane it shows after every change to it.
+pub async fn report_pane(
+    State(state): State<AppState>,
+    Json(report): Json<PaneReport>,
+) -> Response {
+    canvas_core::log::info(
+        "viewer pane",
+        &[
+            ("id", &report.id),
+            ("width", &report.width),
+            ("height", &report.height),
+            ("full", &report.full),
+            ("chosen", &format!("{:?}", report.chosen)),
+        ],
+    );
+    *state.viewer_pane.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// The viewer stopped showing an artifact pane (the Timeline, or no
+/// artifact left to show).
+pub async fn clear_pane(State(state): State<AppState>) -> Response {
+    canvas_core::log::info("viewer pane cleared", &[]);
+    *state.viewer_pane.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Bare `canvas artifact pane`: the pane a viewer last reported, `null`
+/// before any has or while no viewer is open.
+pub async fn get_pane(State(state): State<AppState>) -> Response {
+    let reported = state
+        .viewer_pane
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let pane = reported.filter(|_| state.events.receiver_count() > 0);
+    Json(serde_json::json!({ "pane": pane })).into_response()
 }
 
 /// `/artifacts/:id/` — the artifact's entry page.

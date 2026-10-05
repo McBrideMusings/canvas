@@ -93,6 +93,16 @@ pub fn build_router(state: AppState) -> Router {
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),
         )
+        .route(
+            "/api/artifacts/:id/pane",
+            post(artifact_routes::pane_artifact),
+        )
+        .route(
+            "/api/artifact-pane",
+            get(artifact_routes::get_pane)
+                .put(artifact_routes::report_pane)
+                .delete(artifact_routes::clear_pane),
+        )
         .route("/artifacts/:id/", get(artifact_routes::artifact_entry))
         .route("/artifacts/:id/*path", get(artifact_routes::artifact_file))
         .route("/api/open", post(routes::open_path))

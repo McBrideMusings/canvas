@@ -221,7 +221,11 @@ canvas artifact list | show <id> | delete <id>
   Relative links, several pages, module scripts and the History API work.
 - Declare the viewport the page is designed for with
   `<meta name="canvas-size" content="390x844">`; the pane opens at that size,
-  clamped to the window. Without it the page fills the pane.
+  clamped to the window. Without it the page fills the pane. The person can
+  drag the pane to another size, kept per artifact, or fill the window with
+  it. `canvas artifact pane <id> --size WxH|--reset|--full|--exit` does the
+  same in every open viewer, and bare `canvas artifact pane` prints the frame
+  size the viewer shows, so a page can be checked at a given width.
 - Every open viewer reloads the pane after a `put`, or when a file in the
   folder is saved.
 - When the person wants the files in their own repo, under git, link instead:

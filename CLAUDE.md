@@ -291,7 +291,21 @@ beside the terminal all day.
   page lists every artifact, most recently changed first, beside the open one's
   pane: an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
   at its `canvas-size` clamped to the pane or else filling it, reloaded after a
-  `put`. Its menu copies the id or folder path and deletes it.
+  `put`. Its menu copies the id or folder path and deletes it. A grip at the
+  frame's bottom-right corner drags it to another size (clamped to the pane,
+  160×120 at least; a double-click goes back to the declared size), kept per
+  artifact in the viewer's localStorage (`canvas.artifact-sizes`); the header's
+  full-window button hides the list and header so the frame fills the window
+  below the title bar, which then carries the title and an "Exit full window"
+  button; Escape or that button returns. `canvas artifact pane <id>
+  --size WxH|--reset|--full|--exit` (`POST /api/artifacts/:id/pane`, the
+  viewer-only `artifact-pane` event) does the same in every viewer; the viewer
+  reports the frame's size, `full` and `chosen` with `PUT /api/artifact-pane`
+  after every change and state load, held in memory, and `DELETE`s it when no
+  pane is showing; bare `canvas artifact pane` (`GET`) prints it, exiting 1
+  when no open viewer reports one. A chosen size is kept as asked and clamped
+  to the window only on screen. Escape reaches the viewer only while focus is
+  outside the page's iframe; entering full window focuses the exit button.
 - Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
   key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
   `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and

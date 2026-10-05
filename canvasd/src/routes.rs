@@ -669,6 +669,13 @@ pub async fn events(
         Ok(CanvasEvent::ArtifactFocus(id)) => Some(Ok(SseEvent::default()
             .event("artifact-focus")
             .data(serde_json::json!({ "id": id }).to_string()))),
+        Ok(CanvasEvent::ArtifactPane { id, action }) => {
+            let mut data = serde_json::to_value(action).unwrap_or_default();
+            data["id"] = serde_json::Value::String(id);
+            Some(Ok(SseEvent::default()
+                .event("artifact-pane")
+                .data(data.to_string())))
+        }
         Err(_) => None,
     });
 

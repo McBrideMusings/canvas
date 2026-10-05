@@ -1831,6 +1831,105 @@ async fn theme_reads_back_what_the_viewer_last_reported() {
     assert_eq!(value, json!({"theme": null}));
 }
 
+#[tokio::test]
+async fn artifact_pane_reads_back_what_the_viewer_last_reported() {
+    let app = app();
+    let viewer = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let value: serde_json::Value = json_body(
+        app.clone()
+            .oneshot(get("/api/artifact-pane"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(value, json!({"pane": null}));
+
+    let report = json!({
+        "id": "art-0123456789",
+        "width": 960,
+        "height": 600,
+        "full": false,
+        "chosen": {"width": 960, "height": 600},
+    });
+    let response = app
+        .clone()
+        .oneshot(put("/api/artifact-pane", report.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let value: serde_json::Value = json_body(
+        app.clone()
+            .oneshot(get("/api/artifact-pane"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(value, json!({"pane": report}));
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::delete("/api/artifact-pane")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let value: serde_json::Value = json_body(
+        app.clone()
+            .oneshot(get("/api/artifact-pane"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(value, json!({"pane": null}));
+
+    app.clone()
+        .oneshot(put("/api/artifact-pane", report.clone()))
+        .await
+        .unwrap();
+    drop(viewer);
+    let value: serde_json::Value = json_body(
+        app.clone()
+            .oneshot(get("/api/artifact-pane"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(value, json!({"pane": null}));
+}
+
+#[tokio::test]
+async fn artifact_pane_refuses_an_empty_size_and_an_unknown_artifact() {
+    let app = app();
+    let zero = json!({"action": "resize", "width": 0, "height": 600});
+    let response = app
+        .clone()
+        .oneshot(post("/api/artifacts/art-0123456789/pane", zero))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/artifacts/art-0123456789/pane",
+            json!({"action": "full"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/artifacts/art-0123456789/pane",
+            json!({"action": "spin"}),
+        ))
+        .await
+        .unwrap();
+    assert!(response.status().is_client_error(), "{}", response.status());
+}
+
 /// Plays the viewer's half of a snapshot: reads the `card-snapshot` event off
 /// an open `/api/events` body and answers its request with `content_type` and
 /// `body`. Returns the event's data.

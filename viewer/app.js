@@ -101,6 +101,12 @@
           );
         }
         break;
+      case "expand":
+        svg.appendChild(svgEl("path", { d: "M14 4h6v6" }));
+        svg.appendChild(svgEl("path", { d: "M20 4l-6.5 6.5" }));
+        svg.appendChild(svgEl("path", { d: "M10 20H4v-6" }));
+        svg.appendChild(svgEl("path", { d: "M4 20l6.5-6.5" }));
+        break;
       case "filter":
         svg.appendChild(svgEl("path", { d: "M4 5h16l-6 7.5V19l-4 2v-8.5z" }));
         break;
@@ -2978,7 +2984,11 @@
   const artifactMissingPathEl = document.getElementById("artifact-missing-path");
   const artifactMissingCmdEl = document.getElementById("artifact-missing-cmd");
   const artifactsEmptyEl = document.getElementById("artifacts-empty");
+  const artifactFullEl = document.getElementById("artifact-full");
+  const titlebarArtifactEl = document.getElementById("titlebar-artifact");
+  const exitFullEl = document.getElementById("artifact-exit-full");
   artifactMoreEl.appendChild(buildIcon("more"));
+  artifactFullEl.appendChild(buildIcon("expand"));
 
   const artifacts = new Map(); // id -> artifact view, as canvasd sends it
   let openArtifactId = null;
@@ -3005,7 +3015,9 @@
 
   function showPage(next) {
     if (next !== "timeline" && next !== "artifacts") return;
+    if (next !== "artifacts") setArtifactFull(false);
     page = next;
+    schedulePaneReport();
     document.body.dataset.page = next;
     artifactsPageEl.hidden = next !== "artifacts";
     for (const btn of pageSwitchEl.querySelectorAll(".page-switch-btn")) {
@@ -3067,23 +3079,35 @@
   // closes connect-src. Nothing here themes it, caps its width or sizes it
   // to its content: it gets its declared canvas-size, clamped to the pane,
   // else the whole pane.
+  // The person can drag the frame's corner grip to another size, which wins
+  // over the declared one, or fill the window with it. The frame sits in a
+  // box with the grip, so the grip follows the frame's corner.
   let artifactFrame = null;
   let artifactFrameSrc = null;
+  let artifactBox = null;
+  let artifactFull = false;
+
+  function dropArtifactFrame() {
+    artifactBox?.remove();
+    artifactBox = null;
+    artifactFrame = null;
+    artifactFrameSrc = null;
+  }
 
   function paintArtifactPane() {
     const artifact = openArtifactId && artifacts.get(openArtifactId);
     if (!artifact) {
-      artifactFrame?.remove();
-      artifactFrame = null;
-      artifactFrameSrc = null;
+      dropArtifactFrame();
       return;
     }
     artifactTitleEl.textContent = artifactTitle(artifact);
     artifactTitleEl.title = artifact.id;
+    titlebarArtifactEl.textContent = artifactTitle(artifact);
     const size = artifact.size;
     artifactSizeEl.hidden = !size;
     artifactSizeEl.textContent = size ? `${size.width} × ${size.height}` : "";
-    artifactStageEl.classList.toggle("fill", !size);
+    const shown = artifactFull ? null : chosenSizes[artifact.id] || size;
+    artifactStageEl.classList.toggle("fill", !shown);
     const linked = artifact.kind === "linked";
     const missing = Boolean(artifact.sourceMissing);
     artifactMissingEl.hidden = !missing;
@@ -3100,22 +3124,24 @@
       ? artifact.path
       : `canvas artifact put ${artifact.id} <file|dir>`;
     if (missing || !artifact.entry) {
-      artifactFrame?.remove();
-      artifactFrame = null;
-      artifactFrameSrc = null;
+      dropArtifactFrame();
       return;
     }
     const src = `/artifacts/${encodeURIComponent(artifact.id)}/`;
     const loaded = `${src}@${artifact.updatedAt}`;
     if (!artifactFrame) {
+      artifactBox = document.createElement("div");
+      artifactBox.className = "artifact-frame-box";
       artifactFrame = document.createElement("iframe");
       artifactFrame.className = "artifact-frame";
       artifactFrame.setAttribute("sandbox", "allow-scripts");
-      artifactStageEl.appendChild(artifactFrame);
+      artifactBox.append(artifactFrame, buildPaneGrip());
+      artifactStageEl.appendChild(artifactBox);
+      paneObserver.observe(artifactBox);
     }
     artifactFrame.title = artifactTitle(artifact);
-    artifactFrame.style.width = size ? `min(${size.width}px, 100%)` : "";
-    artifactFrame.style.height = size ? `min(${size.height}px, 100%)` : "";
+    artifactBox.style.width = shown ? `min(${shown.width}px, 100%)` : "";
+    artifactBox.style.height = shown ? `min(${shown.height}px, 100%)` : "";
     // Keyed on updatedAt too, so a `put` or a file saved into the folder
     // (canvasd's watcher stamps updatedAt) reloads the page whether it landed
     // while the pane was showing, hidden on the Timeline, or disconnected.
@@ -3129,6 +3155,7 @@
 
   function renderArtifacts() {
     const empty = artifacts.size === 0;
+    if (empty) setArtifactFull(false);
     artifactsEmptyEl.hidden = !empty || !artifactsLoaded;
     artifactListEl.hidden = empty;
     artifactPaneEl.hidden = empty;
@@ -3156,8 +3183,13 @@
 
   function removeArtifact(id) {
     artifacts.delete(id);
+    if (id in chosenSizes) {
+      delete chosenSizes[id];
+      saveChosenSizes();
+    }
     if (openArtifactId === id) {
       if (openMenu && openMenu.button === artifactMoreEl) closeMenu();
+      setArtifactFull(false);
       openArtifactId = null;
     }
     if (page === "artifacts") renderArtifacts();
@@ -3232,6 +3264,198 @@
       ?.scrollIntoView({ block: "nearest" });
   }
 
+  // ---- Artifact pane: resize grip and full window -------------------------
+  // The size the person chose for each artifact's frame, by id, kept in
+  // localStorage so it outlives a relaunch. Like the open page, it is a
+  // per-viewer convenience; without storage the pane still resizes.
+  const SIZES_KEY = "canvas.artifact-sizes";
+  const chosenSizes = (() => {
+    try {
+      const value = JSON.parse(readStored(SIZES_KEY) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  })();
+
+  function saveChosenSizes() {
+    writeStored(SIZES_KEY, JSON.stringify(chosenSizes));
+  }
+
+  // .artifact-stage's padding around a sized frame, and the smallest frame a
+  // drag can leave.
+  const STAGE_INSET = 16;
+  const MIN_PANE = { width: 160, height: 120 };
+
+  // A size is clamped to the room the stage has in this window.
+  function clampPaneSize({ width, height }) {
+    const room = {
+      width: Math.max(1, artifactStageEl.clientWidth - 2 * STAGE_INSET),
+      height: Math.max(1, artifactStageEl.clientHeight - 2 * STAGE_INSET),
+    };
+    const clamp = (value, min, max) => Math.round(Math.min(max, Math.max(Math.min(min, max), value)));
+    return {
+      width: clamp(width, MIN_PANE.width, room.width),
+      height: clamp(height, MIN_PANE.height, room.height),
+    };
+  }
+
+  // `null` goes back to the declared size, else the whole stage. The size is
+  // kept as asked, above the minimum; the frame's CSS clamps it to the room
+  // this window has, so a larger window later shows more of it.
+  function setChosenSize(id, size) {
+    if (size) {
+      chosenSizes[id] = {
+        width: Math.max(MIN_PANE.width, Math.round(size.width)),
+        height: Math.max(MIN_PANE.height, Math.round(size.height)),
+      };
+    } else {
+      delete chosenSizes[id];
+    }
+    saveChosenSizes();
+    paintArtifactPane();
+  }
+
+  function buildPaneGrip() {
+    const grip = document.createElement("div");
+    grip.className = "artifact-grip";
+    grip.title = "Drag to resize · double-click for the declared size";
+    grip.addEventListener("pointerdown", startPaneDrag);
+    grip.addEventListener("dblclick", () => {
+      if (openArtifactId) setChosenSize(openArtifactId, null);
+    });
+    return grip;
+  }
+
+  function startPaneDrag(e) {
+    if (e.button !== 0 || !openArtifactId || !artifactBox) return;
+    e.preventDefault();
+    const grip = e.currentTarget;
+    grip.setPointerCapture(e.pointerId);
+    const id = openArtifactId;
+    // A filling frame has no inset; start from the size it will have once
+    // it gets one, so the first move doesn't jump.
+    const rect = clampPaneSize(artifactBox.getBoundingClientRect());
+    const start = { x: e.clientX, y: e.clientY, width: rect.width, height: rect.height };
+    artifactStageEl.classList.add("resizing");
+    // The frame sits centred in the stage, so its corner stays under the
+    // pointer when the size grows by twice the pointer's travel.
+    const move = (ev) => {
+      chosenSizes[id] = clampPaneSize({
+        width: start.width + 2 * (ev.clientX - start.x),
+        height: start.height + 2 * (ev.clientY - start.y),
+      });
+      paintArtifactPane();
+    };
+    const end = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", end);
+      grip.removeEventListener("pointercancel", end);
+      artifactStageEl.classList.remove("resizing");
+      saveChosenSizes();
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  }
+
+  // Full window: the pane covers everything below the title bar, which
+  // carries the artifact's title and the way back. Never stored: a relaunch
+  // opens the pane at its chosen size.
+  function setArtifactFull(full) {
+    if (full && (page !== "artifacts" || !openArtifactId)) return;
+    if (artifactFull === full) return;
+    artifactFull = full;
+    // Leaving by the title-bar button hides it; focus goes to the control
+    // that entered, back in the pane header.
+    const refocus = !full && exitFullEl.contains(document.activeElement);
+    if (full) {
+      closeMenu();
+      document.body.dataset.artifactFull = "";
+    } else {
+      delete document.body.dataset.artifactFull;
+    }
+    titlebarArtifactEl.hidden = !full;
+    exitFullEl.hidden = !full;
+    paintArtifactPane();
+    schedulePaneReport();
+    // Escape reaches this window only while focus is outside the page's
+    // iframe, so entering puts it on the way back.
+    if (full) exitFullEl.focus({ preventScroll: true });
+    if (refocus) artifactFullEl.focus({ preventScroll: true });
+  }
+
+  artifactFullEl.addEventListener("click", () => setArtifactFull(true));
+  exitFullEl.addEventListener("click", () => setArtifactFull(false));
+
+  // The menu, lightbox, sheet and drawer each take Escape first.
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !artifactFull) return;
+    if (openMenu || lightbox || sheet || drawerIsOpen()) return;
+    e.preventDefault();
+    setArtifactFull(false);
+  });
+
+  // `canvas artifact pane`: the same changes a drag, a double-click or the
+  // full-window control make, on the artifact named, opened first.
+  function paneCommand({ id, action, width, height }) {
+    if (!artifacts.has(id)) {
+      toast("That artifact is gone — it was deleted");
+      return;
+    }
+    const showing = page === "artifacts" && openArtifactId === id;
+    if (action === "exit") {
+      if (showing) setArtifactFull(false);
+    } else if (action === "reset") {
+      setChosenSize(id, null);
+    } else {
+      if (!showing) focusArtifact(id);
+      if (action === "full") {
+        setArtifactFull(true);
+      } else {
+        setArtifactFull(false);
+        setChosenSize(id, { width, height });
+      }
+    }
+  }
+
+  // Tells canvasd what the pane shows — the frame's size in CSS pixels,
+  // whether it fills the window, and the chosen size — so bare `canvas
+  // artifact pane` can read it back. Sent after every change to the frame's
+  // size (a drag sends one when it settles) and after every state load.
+  let paneReported = "";
+  let paneReportTimer = null;
+
+  function schedulePaneReport() {
+    clearTimeout(paneReportTimer);
+    paneReportTimer = setTimeout(reportPane, 150);
+  }
+
+  function reportPane() {
+    if (page !== "artifacts" || !artifactFrame || !openArtifactId) {
+      if (paneReported === "none") return;
+      paneReported = "none";
+      fetch("/api/artifact-pane", { method: "DELETE" }).catch(() => {});
+      return;
+    }
+    const body = JSON.stringify({
+      id: openArtifactId,
+      width: artifactFrame.clientWidth,
+      height: artifactFrame.clientHeight,
+      full: artifactFull,
+      chosen: chosenSizes[openArtifactId] || null,
+    });
+    if (body === paneReported) return;
+    paneReported = body;
+    fetch("/api/artifact-pane", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+    }).catch(() => {});
+  }
+
+  const paneObserver = new ResizeObserver(schedulePaneReport);
+
   showPage(readStored(PAGE_KEY) || "timeline");
 
   async function loadState() {
@@ -3251,7 +3475,17 @@
     artifacts.clear();
     for (const a of data.artifacts || []) artifacts.set(a.id, a);
     artifactsLoaded = true;
+    let pruned = false;
+    for (const id of Object.keys(chosenSizes)) {
+      if (!artifacts.has(id)) {
+        delete chosenSizes[id];
+        pruned = true;
+      }
+    }
+    if (pruned) saveChosenSizes();
     if (page === "artifacts") renderArtifacts();
+    paneReported = "";
+    schedulePaneReport();
     // A card that aged out of the server's window (or was deleted) while
     // this browser was disconnected never passes through removeCard, so
     // drop it here instead of leaving its id in unseen.cardIds forever.
@@ -3338,6 +3572,8 @@
 
     // `canvas focus art-…`: switch to the Artifacts page and open it.
     handlers["artifact-focus"] = ({ id }) => focusArtifact(id);
+
+    handlers["artifact-pane"] = (request) => paneCommand(request);
 
     return Promise.all(registered);
   }
