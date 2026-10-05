@@ -10,6 +10,14 @@
 //! `trusted_hash` in `config.toml`. Only Codex computes that hash (its TUI
 //! shows "Hooks need review" at the next launch), so install cannot grant
 //! trust; `status` reports `NeedsReview` until those tables exist.
+//!
+//! Codex's sandbox (`read-only` and `workspace-write` alike) refuses the
+//! connect to canvasd's Unix socket, so install also writes
+//! `rules/canvas.rules`, a file Canvas owns whole: a `prefix_rule` that lets
+//! the `canvas` subcommands which only talk to canvasd run outside the
+//! sandbox. Codex matches a rule only against a plain command, so a post
+//! through a pipe or heredoc, or by the binary's full path, stays sandboxed.
+//! `export` and `snapshot` are left out because they write to any path.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +33,18 @@ const EVENTS: [(&str, &str, &str); 3] = [
 ];
 
 const MARKER: &str = "canvas-hooks-version";
+const RULES: &str = "rules/canvas.rules";
+const RULES_TEXT: &str = r#"# Written by `canvas integrations install codex`; it replaces this file.
+# Codex's sandbox blocks canvasd's Unix socket, so these subcommands, which
+# only talk to canvasd, run outside it.
+prefix_rule(
+    pattern = ["canvas", ["post", "data", "focus", "wait", "replies", "card", "theme", "artifact", "profile", "guidance"]],
+    decision = "allow",
+    justification = "Canvas reaches canvasd over a Unix socket the sandbox blocks",
+    match = ["canvas post plan.html", "canvas artifact put art-0123456789 dir"],
+    not_match = ["canvas export --all", "canvas snapshot c1 out.png", "canvas integrations install codex"],
+)
+"#;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn status() -> Result<Status, String> {
@@ -110,6 +130,12 @@ fn install_in(home: &Path) -> Result<(), String> {
         text.push('\n');
         write_atomic(&path, &text)?;
     }
+    let rules = home.join(RULES);
+    if std::fs::read_to_string(&rules).ok().as_deref() != Some(RULES_TEXT) {
+        std::fs::create_dir_all(home.join("rules"))
+            .map_err(|e| format!("could not create {}: {e}", home.join("rules").display()))?;
+        write_atomic(&rules, RULES_TEXT)?;
+    }
     let marker = home.join(MARKER);
     if std::fs::read_to_string(&marker).ok().as_deref() != Some(VERSION) {
         write_atomic(&marker, VERSION)?;
@@ -150,7 +176,8 @@ fn status_in(home: &Path) -> Result<Status, String> {
         return Ok(Status::NotInstalled);
     }
     let marker = std::fs::read_to_string(home.join(MARKER)).ok();
-    if !exact || marker.as_deref() != Some(VERSION) {
+    let rules = std::fs::read_to_string(home.join(RULES)).ok();
+    if !exact || marker.as_deref() != Some(VERSION) || rules.as_deref() != Some(RULES_TEXT) {
         return Ok(Status::OutOfDate);
     }
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
@@ -234,6 +261,15 @@ mod tests {
         std::fs::write(home.join(MARKER), "0.0.0").unwrap();
         assert_eq!(status_in(&home).unwrap(), Status::OutOfDate);
         install_in(&home).unwrap();
+        assert_eq!(status_in(&home).unwrap(), Status::Current);
+
+        std::fs::remove_file(home.join(RULES)).unwrap();
+        assert_eq!(status_in(&home).unwrap(), Status::OutOfDate);
+        install_in(&home).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join(RULES)).unwrap(),
+            RULES_TEXT
+        );
         assert_eq!(status_in(&home).unwrap(), Status::Current);
     }
 }

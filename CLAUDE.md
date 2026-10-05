@@ -392,7 +392,15 @@ beside the terminal all day.
   SessionStart, UserPromptSubmit and SessionEnd groups into
   `~/.codex/hooks.json` (`$CODEX_HOME`), replacing only its own groups and
   appending new ones so other tools' entries keep their positions, and writes
-  `canvas-hooks-version` beside it. Codex runs a hook only after the user
+  `canvas-hooks-version` beside it. Codex's sandbox (`read-only` and
+  `workspace-write`) refuses the socket connect, so install also writes
+  `rules/canvas.rules` there, a file Canvas owns whole: a `prefix_rule` that
+  runs the subcommands which only talk to canvasd (`post`, `data`, `focus`,
+  `wait`, `replies`, `card`, `theme`, `artifact`, `profile`, `guidance`; not
+  `export` or `snapshot`, which write anywhere) outside the sandbox. Codex
+  matches it only for a plain `canvas …` command with no pipe or heredoc, which
+  the guidance tells agents to use; a missing or changed file reads as
+  `out of date`. Codex runs a hook only after the user
   trusts it (the TUI's "Hooks need review"; `trusted_hash` tables in
   `config.toml`, computed by Codex), so status is `needs review` until those
   tables exist for Canvas's groups.

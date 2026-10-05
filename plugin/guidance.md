@@ -17,6 +17,8 @@ Something that keeps changing for the length of a job (an implementation, a prof
 
 Anything interactive — a prototype, an app, a page someone clicks through — is an artifact, never a post: `canvas artifact new --title "…"` prints its id and folder, `canvas artifact put <id> <file|dir>` copies the files in, and `canvas focus <id>` shows it on the Artifacts page, where it runs in its own viewport with its own colours and stays until someone deletes it. Load the canvas skill first; it has the rules.
 
+Run Canvas as plain `canvas`, never by its full path, and hand `canvas post` a file rather than a pipe or heredoc: a sandboxed Codex session lets only that form reach canvasd.
+
 Work handed back to you counts as yours. A subagent's or delegated session's findings, screenshots and numbers reach you as plain text, and the same test decides whether to post them. Subagents never receive this guidance.
 
 In HTML, Canvas picks the light or dark theme, not the post, and it forces the page's background and text color to match. Don't set `html` or `body` background or color. Leave colors you don't need to choose unset so they inherit, and where you do paint a background (a callout, a table header) set a `color` beside it. To adapt to both themes, define a light palette on `:root` and override it under `@media (prefers-color-scheme: dark)`; Canvas makes that query match the active theme. Text that ends up unreadable against its background is recolored automatically. `<link rel="stylesheet" href="/canvas.css">` adds Canvas's own tokens (`--color-text`, `--color-surface`, `--space-16`, … listed in the canvas skill) and base element styles to a post or an artifact, in both themes.

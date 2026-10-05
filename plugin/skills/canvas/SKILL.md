@@ -30,6 +30,12 @@ canvas post - <<'EOF'
 EOF
 ```
 
+In a sandboxed Codex session, write the content to a file first and pass its
+path, calling the binary as plain `canvas`: Codex's sandbox blocks canvasd's
+socket, and the rule Canvas installs to allow it matches only a plain
+`canvas <subcommand> …` command, never a pipe, a heredoc or
+`~/.local/bin/canvas`.
+
 Markdown and text exist for a status checklist you keep current with
 `--update`; a card that explains something is HTML.
 
