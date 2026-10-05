@@ -130,6 +130,12 @@ pub enum ExportWarningKind {
     MissingImage,
     /// A CDN asset that couldn't be downloaded.
     FetchFailed,
+    /// `export --all`: the card left canvasd between the listing and its
+    /// export (evicted or deleted), so the zip has no page for it.
+    CardGone,
+    /// `export --all`: canvasd answered the card's export with an error, so
+    /// the zip has no page for it.
+    ExportFailed,
 }
 
 /// Largest single asset embedded as a `data:` URI or inline block: a local

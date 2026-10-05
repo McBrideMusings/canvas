@@ -7,7 +7,7 @@ use std::time::Duration;
 use canvas_core::unix_http::{self, Response};
 use canvas_core::{
     AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, PostRequest,
-    ProfilesState, SetProfileTextRequest, UpdateCardRequest,
+    ProfilesState, Session, SetProfileTextRequest, UpdateCardRequest,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -410,14 +410,47 @@ pub fn get_card(card_id: &str) -> Result<Card, String> {
 /// encoding a card's images.
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(canvas_core::EXPORT_DOWNLOAD_SECS + 15);
 
-/// `canvas export`: the card as a standalone page, plus its warnings.
-pub fn export_card(card_id: &str) -> Result<canvas_core::ExportResult, String> {
+/// What canvasd answered for one card's export.
+pub enum Exported {
+    Page(canvas_core::ExportResult),
+    /// canvasd holds no card with that id.
+    Gone,
+    /// canvasd answered with this error.
+    Failed(String),
+}
+
+/// `canvas export`: the card as a standalone page, plus its warnings. `Err`
+/// only when canvasd can't be reached or its answer can't be read.
+pub fn export_card(card_id: &str) -> Result<Exported, String> {
     let path = format!("/api/cards/{}/export", percent_encode(card_id));
     let response =
         call_any_status("GET", &path, None, EXPORT_TIMEOUT).map_err(|e| e.to_string())?;
     match response.status {
+        200..=299 => into_json(response).map(Exported::Page),
+        404 => Ok(Exported::Gone),
+        status => Ok(Exported::Failed(
+            canvas_core::log::error_text(&response.body)
+                .unwrap_or_else(|| Failure::Status(status).to_string()),
+        )),
+    }
+}
+
+/// Every session and card canvasd holds, cards oldest first.
+#[derive(Debug, serde::Deserialize)]
+pub struct Stream {
+    pub sessions: Vec<Session>,
+    pub cards: Vec<Card>,
+}
+
+/// Reading up to 500 cards' HTML, more than a hook-sized call carries.
+const STATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `canvas export --all`: the daemon's whole stream from `/api/state`.
+pub fn get_stream() -> Result<Stream, String> {
+    let response =
+        call_any_status("GET", "/api/state", None, STATE_TIMEOUT).map_err(|e| e.to_string())?;
+    match response.status {
         200..=299 => into_json(response),
-        404 => Err("canvasd returned HTTP 404 (no card with that id)".to_string()),
         status => Err(Failure::Status(status).to_string()),
     }
 }

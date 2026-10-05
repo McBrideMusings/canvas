@@ -15,7 +15,9 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use canvas_core::html::{find_attr_value_range, next_tag, tag_name};
+use canvas_core::html::{
+    escape_attr, escape_text, find_attr_value_range, first_heading, next_tag, tag_name,
+};
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
     MAX_ASSET_BYTES, MEDIA_EXTS,
@@ -553,50 +555,6 @@ fn closing_name(tag: &str) -> String {
         .trim_end_matches('>')
         .trim()
         .to_ascii_lowercase()
-}
-
-/// The text of the first `<h1>`–`<h3>`, tags stripped, for the page title.
-fn first_heading(html: &str) -> Option<String> {
-    let mut pos = 0;
-    while let Some((start, end)) = next_tag(html, pos) {
-        pos = end;
-        let name = tag_name(&html[start..end]);
-        if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
-            let close = format!("</{level}");
-            let rest = &html[end..];
-            let stop = rest.to_ascii_lowercase().find(&close)?;
-            let text = strip_tags(&rest[..stop]);
-            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            return (!text.is_empty()).then_some(text);
-        }
-    }
-    None
-}
-
-fn strip_tags(html: &str) -> String {
-    let mut out = String::new();
-    let mut pos = 0;
-    while let Some((start, end)) = next_tag(html, pos) {
-        out.push_str(&html[pos..start]);
-        pos = end;
-    }
-    out.push_str(&html[pos..]);
-    // `&amp;` last, so `&amp;lt;` decodes to `&lt;`, not `<`.
-    out.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
-}
-
-fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn escape_attr(s: &str) -> String {
-    escape_text(s).replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 #[cfg(test)]
