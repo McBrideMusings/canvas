@@ -85,6 +85,8 @@ pub fn tags(html: &str) -> Tags<'_> {
         html,
         pos: 0,
         open: Vec::new(),
+        formatting: Vec::new(),
+        next_id: 0,
         mode: Mode::Body,
     }
 }
@@ -118,12 +120,16 @@ pub struct Tags<'a> {
     /// tag can close the SVG opened inside its element. An HTML start tag
     /// first closes what the tree builder closes for it (a `<p>` before a
     /// block, a sibling list item or cell), and a formatting end tag runs the
-    /// adoption agency's rounds. The list of active formatting elements is
-    /// not kept, so its marker is read off the open cells and captions, and
-    /// the elements the browser reopens from it before text are not reopened.
-    /// Like WebKit's, the stack holds at most [`MAX_OPEN`] elements: see
-    /// [`Tags::insert`].
+    /// adoption agency's rounds. Like WebKit's, the stack holds at most
+    /// [`MAX_OPEN`] elements: see [`Tags::insert`].
     open: Vec<Element>,
+    /// The tree builder's list of active formatting elements, oldest first,
+    /// `None` for a marker. An entry outlives its element's place on the
+    /// stack: text, and most start tags, first reopen every entry since the
+    /// last marker whose element was closed, as the browser does.
+    formatting: Vec<Option<Formatting>>,
+    /// The id the next opened element gets.
+    next_id: usize,
     /// The tree builder's insertion mode. Like WebKit's it is kept, not read
     /// off the open elements each time: the depth cap can close the table,
     /// section, row or cell that set it, and the mode stays.
@@ -136,11 +142,25 @@ pub struct Tags<'a> {
 /// around a card.
 const MAX_OPEN: usize = 512 - 3;
 
-/// One open element.
+/// One open element. `id` tells it from a copy the adoption agency or a
+/// reopening made of it. `special` is whether the tree builder counts it as
+/// special: an end tag for another element never closes past it. It is read
+/// on every walk down the stack, so it is worked out once.
 struct Element {
+    id: usize,
     name: String,
     ns: Ns,
     point: Point,
+    special: bool,
+}
+
+/// An entry in the list of active formatting elements: the open or closed
+/// element `id`, and what tells it from another of its name, its attributes
+/// (lowercased names, decoded values, sorted).
+struct Formatting {
+    id: usize,
+    name: String,
+    attrs: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,13 +175,8 @@ impl Element {
         self.ns != Ns::Html
     }
 
-    /// Whether the tree builder counts this element as special: an end tag
-    /// for another element never closes past it.
     fn is_special(&self) -> bool {
-        match self.ns {
-            Ns::Html => SPECIAL_TAGS.contains(&self.name.as_str()),
-            _ => self.ends_foreign_scope(),
-        }
+        self.special
     }
 
     /// The SVG and MathML elements that bound every scope but table scope.
@@ -295,16 +310,15 @@ impl Tags<'_> {
         };
         // An `<svg>` or `<math>` read as HTML meets the table modes first,
         // which can close a `<colgroup>`.
-        if as_html && !self.table_start_tag(name) {
-            return (None, false);
+        if as_html {
+            if !self.table_start_tag(name) {
+                return (None, false);
+            }
+            self.reconstruct();
         }
         self.insert(tag, name);
         if !self_closing {
-            self.open.push(Element {
-                name: name.to_string(),
-                ns,
-                point: integration_point(tag, name, ns == Ns::Math),
-            });
+            self.open_element(name, ns, integration_point(tag, name, ns == Ns::Math));
         }
         (None, true)
     }
@@ -319,12 +333,18 @@ impl Tags<'_> {
             return None;
         }
         self.body_start_tag(name);
+        if self.reconstructs(tag, name) {
+            self.reconstruct();
+        }
         // A `<frame>` in a body is dropped, so nothing is inserted.
         if name != "frame" {
             self.insert(tag, name);
         }
         if !VOID_TAGS.contains(&name) {
-            self.push_html(name);
+            let id = self.push_html(name);
+            if FORMATTING_TAGS.contains(&name) {
+                self.push_formatting(id, name, tag);
+            }
         }
         match name {
             // In HTML `<style/>` still opens its text.
@@ -335,17 +355,120 @@ impl Tags<'_> {
         }
     }
 
-    /// Opens the HTML element `<name>`, switching to the insertion mode a
-    /// table, one of its parts or a `<template>` starts.
-    fn push_html(&mut self, name: &str) {
-        self.open.push(Element {
+    /// Whether the "in body" rules reopen the formatting elements before
+    /// inserting the start tag `tag` named `name`. A block, a heading, a list
+    /// item, a table part and what the "in head" rules insert do not, nor
+    /// does a hidden `<input>` while a table's rules read it.
+    fn reconstructs(&self, tag: &str, name: &str) -> bool {
+        let table = matches!(self.mode, Mode::Table | Mode::TableBody | Mode::Row);
+        !((CLOSES_P.contains(&name) && name != "xmp")
+            || is_heading(name)
+            || TABLE_PARTS.contains(&name)
+            || KEEPS_FORMATTING_CLOSED.contains(&name)
+            || (table && hidden_input(tag, name)))
+    }
+
+    /// Reopens the formatting elements since the last marker whose elements
+    /// are closed, in order, each a copy of the one closed, as the tree
+    /// builder's "reconstruct the active formatting elements" step does.
+    fn reconstruct(&mut self) {
+        let mut first = self.formatting.len();
+        while let Some(Some(entry)) = first.checked_sub(1).map(|i| &self.formatting[i]) {
+            if self.open_index(entry.id).is_some() {
+                break;
+            }
+            first -= 1;
+        }
+        for i in first..self.formatting.len() {
+            let Some(entry) = &self.formatting[i] else {
+                continue;
+            };
+            let name = entry.name.clone();
+            self.insert("", &name);
+            let id = self.push_html(&name);
+            if let Some(entry) = &mut self.formatting[i] {
+                entry.id = id;
+            }
+        }
+    }
+
+    /// Adds the formatting element `id`, opened by `tag`, to the list. As
+    /// in the browser, a fourth entry since the last marker with the same
+    /// name and attributes removes the oldest of those.
+    fn push_formatting(&mut self, id: usize, name: &str, tag: &str) {
+        let attrs = attr_key(tag);
+        let since = self
+            .formatting
+            .iter()
+            .rposition(Option::is_none)
+            .map_or(0, |i| i + 1);
+        let same: Vec<usize> = (since..self.formatting.len())
+            .filter(|&i| {
+                self.formatting[i]
+                    .as_ref()
+                    .is_some_and(|f| f.name == name && f.attrs == attrs)
+            })
+            .collect();
+        if same.len() >= 3 {
+            self.formatting.remove(same[0]);
+        }
+        self.formatting.push(Some(Formatting {
+            id,
             name: name.to_string(),
-            ns: Ns::Html,
-            point: Point::None,
-        });
+            attrs,
+        }));
+    }
+
+    /// Removes the list's entries back to and including the last marker,
+    /// as closing a cell, caption, `<applet>`, `<marquee>`, `<object>` or
+    /// `<template>` does.
+    fn clear_to_marker(&mut self) {
+        let marker = self.formatting.iter().rposition(Option::is_none);
+        self.formatting.truncate(marker.unwrap_or(0));
+    }
+
+    /// The index on the stack of the open element `id`.
+    fn open_index(&self, id: usize) -> Option<usize> {
+        self.open.iter().rposition(|e| e.id == id)
+    }
+
+    /// Whether the element `id` has an entry in the list.
+    fn listed(&self, id: usize) -> bool {
+        self.formatting.iter().flatten().any(|f| f.id == id)
+    }
+
+    /// Opens an element and returns its id.
+    fn open_element(&mut self, name: &str, ns: Ns, point: Point) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut element = Element {
+            id,
+            name: name.to_string(),
+            ns,
+            point,
+            special: false,
+        };
+        element.special = match ns {
+            Ns::Html => SPECIAL_TAGS.contains(&name),
+            _ => element.ends_foreign_scope(),
+        };
+        self.open.push(element);
+        id
+    }
+
+    /// Opens the HTML element `<name>`, switching to the insertion mode a
+    /// table, one of its parts or a `<template>` starts, and adding the
+    /// marker a cell, caption, `<applet>`, `<marquee>`, `<object>` or
+    /// `<template>` puts in the list. Returns its id.
+    fn push_html(&mut self, name: &str) -> usize {
+        let id = self.open_element(name, Ns::Html, Point::None);
         if let Some(mode) = mode_of(name) {
             self.mode = mode;
         }
+        if MARKERS.contains(&name) {
+            self.formatting.push(None);
+        }
+        id
     }
 
     /// Inserts and opens the element `<name>` a table mode implies, such as
@@ -382,10 +505,59 @@ impl Tags<'_> {
         let held = name.is_empty()
             || TABLE_PARTS.contains(&name)
             || matches!(name, "table" | "style" | "script" | "template" | "form")
-            || (name == "input"
-                && find_attr_value(tag, "type")
-                    .is_some_and(|v| tag[v.range()].eq_ignore_ascii_case("hidden")));
+            || hidden_input(tag, name);
         in_table && !held
+    }
+
+    /// Whether the open element at the top of the stack is a table or one of
+    /// the parts that holds rows, where text that is only whitespace goes in
+    /// place and any other is foster-parented.
+    fn at_table(&self) -> bool {
+        self.open.last().is_some_and(|e| {
+            !e.is_foreign()
+                && matches!(
+                    e.name.as_str(),
+                    "table" | "tbody" | "template" | "tfoot" | "thead" | "tr"
+                )
+        })
+    }
+
+    /// Applies the text from the scan's position up to `to`: in an HTML
+    /// context, the tree builder reopens the closed formatting elements
+    /// before inserting it. A table, section or row takes text that is only
+    /// whitespace without reopening them, and a column group closes for any
+    /// other text. A NUL is dropped, and in SVG or MathML text goes in as is.
+    fn text(&mut self, to: usize) {
+        let text = &self.html[self.pos.min(to)..to];
+        let chars = text.trim_matches('\0');
+        if chars.is_empty()
+            || self
+                .open
+                .last()
+                .is_some_and(|e| e.is_foreign() && e.point == Point::None)
+        {
+            return;
+        }
+        let space = chars
+            .bytes()
+            .all(|b| matches!(b, b'\t' | b'\n' | 0x0c | b'\r' | b' ' | 0));
+        match self.mode {
+            Mode::Table | Mode::TableBody | Mode::Row if space && self.at_table() => return,
+            Mode::ColumnGroup if space => return,
+            Mode::ColumnGroup => {
+                if !self
+                    .open
+                    .last()
+                    .is_some_and(|e| !e.is_foreign() && e.name == "colgroup")
+                {
+                    return;
+                }
+                self.open.pop();
+                self.mode = Mode::Table;
+            }
+            _ => {}
+        }
+        self.reconstruct();
     }
 
     /// Sets the insertion mode from the open elements, as the tree builder's
@@ -447,6 +619,7 @@ impl Tags<'_> {
                         return false;
                     };
                     self.open.truncate(i);
+                    self.clear_to_marker();
                     self.mode = next;
                 }
                 Mode::Row if matches!(name, "td" | "th") => {
@@ -577,6 +750,7 @@ impl Tags<'_> {
                 (Mode::Cell, "td" | "th") => {
                     if let Some(i) = self.in_table_scope(&[name]) {
                         self.open.truncate(i);
+                        self.clear_to_marker();
                         self.mode = Mode::Row;
                     }
                     return true;
@@ -587,6 +761,7 @@ impl Tags<'_> {
                     }
                     if let Some(i) = self.in_table_scope(&["td", "th"]) {
                         self.open.truncate(i);
+                        self.clear_to_marker();
                     }
                     self.mode = Mode::Row;
                 }
@@ -595,6 +770,7 @@ impl Tags<'_> {
                         return true;
                     };
                     self.open.truncate(i);
+                    self.clear_to_marker();
                     self.mode = Mode::Table;
                     if name == "caption" {
                         return true;
@@ -667,16 +843,23 @@ impl Tags<'_> {
                     self.open.pop();
                 }
             }
-            "a" if self.formatting_element(name).is_some() => {
-                // A second `<a>` ends the first, which leaves the stack even
-                // when the adoption agency keeps it.
-                self.adopt(name);
+            "a" => {
+                // A second `<a>` ends the first, which leaves the list and
+                // the stack even when the adoption agency keeps it.
                 if let Some(i) = self.formatting_element(name) {
-                    self.open.remove(i);
+                    let id = self.formatting[i].as_ref().map(|f| f.id);
+                    self.adopt(name);
+                    self.formatting.retain(|f| f.as_ref().map(|f| f.id) != id);
+                    self.open.retain(|e| Some(e.id) != id);
                 }
             }
-            "nobr" if self.in_scope(name, Scope::Default).is_some() => {
-                self.adopt(name);
+            "nobr" => {
+                // Reopening can open a `<nobr>`; the start tag reopens again
+                // after the agency closes it.
+                self.reconstruct();
+                if self.in_scope(name, Scope::Default).is_some() {
+                    self.adopt(name);
+                }
             }
             _ => {}
         }
@@ -689,33 +872,45 @@ impl Tags<'_> {
         }
     }
 
-    /// The innermost open formatting element `name` since the last marker
-    /// (a cell, caption, `<applet>`, `<marquee>`, `<object>` or
-    /// `<template>`), where the adoption agency looks for it.
+    /// The index in the list of the newest entry for the formatting element
+    /// `name` since the last marker, where the adoption agency looks for it.
     fn formatting_element(&self, name: &str) -> Option<usize> {
-        for (i, e) in self.open.iter().enumerate().rev() {
-            if e.is_foreign() {
-                continue;
-            }
-            if e.name == name {
-                return Some(i);
-            }
-            if MARKERS.contains(&e.name.as_str()) {
-                return None;
+        for (i, entry) in self.formatting.iter().enumerate().rev() {
+            match entry {
+                None => return None,
+                Some(f) if f.name == name => return Some(i),
+                Some(_) => {}
             }
         }
         None
     }
 
-    /// Applies the adoption agency's rounds to the open elements for the
-    /// formatting element `name`, which callers have found open since the
-    /// last marker. Each round moves the formatting element above the first
-    /// special element open inside it, keeping between them only the
-    /// formatting elements within three of that one; a round that finds no
-    /// special element closes everything from the formatting element up.
+    /// Runs the adoption agency for the formatting end tag `</name>`. Each
+    /// round takes the list's entry for `name`: one whose element is closed
+    /// leaves the list, and one with no special element open inside it
+    /// closes everything from it up. Otherwise the formatting element moves
+    /// above the first special element inside it, a copy of it replacing it
+    /// in the list; of the elements between them, only those listed within
+    /// three of that special element stay open, each replaced by a copy.
+    /// With no entry for `name` the tag closes as any other end tag does.
     fn adopt(&mut self, name: &str) {
+        if self
+            .open
+            .last()
+            .is_some_and(|e| !e.is_foreign() && e.name == name && !self.listed(e.id))
+        {
+            self.open.pop();
+            return;
+        }
         for _ in 0..8 {
-            let Some(fe) = self.formatting_element(name) else {
+            let Some(i) = self.formatting_element(name) else {
+                return self.other_end_tag(name);
+            };
+            let Some(fe_id) = self.formatting[i].as_ref().map(|f| f.id) else {
+                return;
+            };
+            let Some(fe) = self.open_index(fe_id) else {
+                self.formatting.remove(i);
                 return;
             };
             if self.open[fe + 1..]
@@ -730,20 +925,61 @@ impl Tags<'_> {
                 .map(|j| fe + 1 + j)
             else {
                 self.open.truncate(fe);
+                self.formatting.remove(i);
                 return;
             };
+            // The copy of the formatting element goes into the list after
+            // the copy of the element nearest the block, else in its place.
+            let mut after = None;
             let mut removed = 0;
-            for j in (fe + 1..block).rev() {
-                let e = &self.open[j];
-                let formatting = !e.is_foreign() && FORMATTING_TAGS.contains(&e.name.as_str());
-                if !(formatting && block - j <= 3) {
-                    self.open.remove(j);
-                    removed += 1;
+            for (inner, node) in (fe + 1..block).rev().enumerate() {
+                let id = self.open[node].id;
+                let mut entry = self
+                    .formatting
+                    .iter()
+                    .position(|f| f.as_ref().is_some_and(|f| f.id == id));
+                if inner >= 3 {
+                    if let Some(j) = entry.take() {
+                        self.formatting.remove(j);
+                    }
                 }
+                let Some(j) = entry else {
+                    self.open.remove(node);
+                    removed += 1;
+                    continue;
+                };
+                let copy = self.next_id;
+                self.next_id += 1;
+                self.open[node].id = copy;
+                if let Some(f) = &mut self.formatting[j] {
+                    f.id = copy;
+                }
+                after.get_or_insert(copy);
+            }
+            let copy = self.next_id;
+            self.next_id += 1;
+            let Some(i) = self
+                .formatting
+                .iter()
+                .position(|f| f.as_ref().is_some_and(|f| f.id == fe_id))
+            else {
+                return;
+            };
+            if let Some(mut entry) = self.formatting.remove(i) {
+                entry.id = copy;
+                let at = after
+                    .and_then(|a| {
+                        self.formatting
+                            .iter()
+                            .position(|f| f.as_ref().is_some_and(|f| f.id == a))
+                    })
+                    .map_or(i, |j| j + 1);
+                self.formatting.insert(at, Some(entry));
             }
             // Removing the formatting element shifts the block down one
-            // more; it goes back in just above the block.
-            let element = self.open.remove(fe);
+            // more; its copy goes back in just above the block.
+            let mut element = self.open.remove(fe);
+            element.id = copy;
             self.open.insert(block - removed, element);
         }
     }
@@ -789,13 +1025,15 @@ impl Tags<'_> {
             if matches!(name, "p" | "br") {
                 self.pop_foreign_to_point();
             } else {
-                let html = self.open.iter().rposition(|e| !e.is_foreign());
-                let from = html.map_or(0, |i| i + 1);
+                // With no HTML element open here, the card's wrapper `<div>`
+                // is the nearest, and the tag still reads as HTML.
+                let from = self
+                    .open
+                    .iter()
+                    .rposition(|e| !e.is_foreign())
+                    .map_or(0, |i| i + 1);
                 if let Some(i) = self.open[from..].iter().rposition(|e| e.name == name) {
                     self.open.truncate(from + i);
-                    return;
-                }
-                if html.is_none() {
                     return;
                 }
             }
@@ -812,6 +1050,7 @@ impl Tags<'_> {
         if name == "template" {
             if let Some(i) = self.template_index() {
                 self.open.truncate(i);
+                self.clear_to_marker();
                 self.reset_mode();
             }
             return;
@@ -822,8 +1061,12 @@ impl Tags<'_> {
         let scope = match name {
             "body" | "html" => return,
             // `</br>` inserts a `<br>`, and a `</p>` with no `<p>` to close
-            // an empty `<p>`, which can close the innermost element.
-            "br" => return self.insert("", name),
+            // an empty `<p>`, which can close the innermost element. Only the
+            // `<br>` reopens the formatting elements first.
+            "br" => {
+                self.reconstruct();
+                return self.insert("", name);
+            }
             "p" if self.in_scope(name, Scope::Button).is_none() => {
                 return self.insert("", name);
             }
@@ -838,26 +1081,30 @@ impl Tags<'_> {
                 return;
             }
             _ if SCOPED_END_TAGS.contains(&name) || is_heading(name) => Scope::Default,
-            _ if FORMATTING_TAGS.contains(&name) && self.formatting_element(name).is_some() => {
-                self.adopt(name);
-                return;
-            }
-            _ => {
-                for i in (0..self.open.len()).rev() {
-                    let e = &self.open[i];
-                    if !e.is_foreign() && e.name == name {
-                        self.open.truncate(i);
-                        return;
-                    }
-                    if e.is_special() {
-                        return;
-                    }
-                }
-                return;
-            }
+            _ if FORMATTING_TAGS.contains(&name) => return self.adopt(name),
+            _ => return self.other_end_tag(name),
         };
         if let Some(i) = self.in_scope(name, scope) {
             self.open.truncate(i);
+            if matches!(name, "applet" | "marquee" | "object") {
+                self.clear_to_marker();
+            }
+        }
+    }
+
+    /// Closes elements for an end tag the "in body" rules name no step for:
+    /// the innermost open HTML element `name` and everything inside it,
+    /// unless a special element is open inside it.
+    fn other_end_tag(&mut self, name: &str) {
+        for i in (0..self.open.len()).rev() {
+            let e = &self.open[i];
+            if !e.is_foreign() && e.name == name {
+                self.open.truncate(i);
+                return;
+            }
+            if e.is_special() {
+                return;
+            }
         }
     }
 
@@ -978,7 +1225,17 @@ const MARKERS: &[&str] = &[
     "applet", "caption", "marquee", "object", "td", "template", "th",
 ];
 
-/// HTML formatting elements, whose end tags run the adoption agency.
+/// HTML start tags, besides blocks, headings and table parts, before which
+/// the tree builder leaves the closed formatting elements closed: what the
+/// "in head" rules insert, list items, raw text and ruby text.
+const KEEPS_FORMATTING_CLOSED: &[&str] = &[
+    "base", "basefont", "bgsound", "dd", "dt", "frame", "frameset", "iframe", "li", "link", "meta",
+    "noembed", "noframes", "noscript", "param", "rb", "rp", "rt", "rtc", "script", "source",
+    "style", "template", "textarea", "title", "track",
+];
+
+/// HTML formatting elements, whose end tags run the adoption agency and
+/// which the tree builder lists as active formatting elements.
 const FORMATTING_TAGS: &[&str] = &[
     "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u",
 ];
@@ -1089,6 +1346,13 @@ fn integration_point(tag: &str, name: &str, math: bool) -> Point {
     }
 }
 
+/// Whether the start tag `tag` named `name` is an `<input type=hidden>`.
+fn hidden_input(tag: &str, name: &str) -> bool {
+    name == "input"
+        && find_attr_value(tag, "type")
+            .is_some_and(|v| tag[v.range()].eq_ignore_ascii_case("hidden"))
+}
+
 /// Whether the start tag `tag` named `name` ends foreign content: the HTML
 /// tags the tree builder never nests inside SVG or MathML.
 fn breaks_out(tag: &str, name: &str) -> bool {
@@ -1159,12 +1423,17 @@ impl Iterator for Tags<'_> {
 
     fn next(&mut self) -> Option<Tag> {
         let (start, mut end) = next_tag(self.html, self.pos)?;
+        self.text(start);
         let cdata = self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed();
         if cdata {
+            // The section's text is text like any other.
             let body = start + "<![CDATA[".len();
-            end = self.html[body..]
+            let text_end = self.html[body..]
                 .find("]]>")
-                .map_or(self.html.len(), |e| body + e + "]]>".len());
+                .map_or(self.html.len(), |e| body + e);
+            end = (text_end + "]]>".len()).min(self.html.len());
+            self.pos = body;
+            self.text(text_end);
         }
         let tag = &self.html[start..end];
         let (text_end, foreign) = if tag.as_bytes()[1].is_ascii_alphabetic() {
@@ -1273,15 +1542,24 @@ pub fn find_attr_value(tag: &str, attr: &str) -> Option<AttrValue> {
 /// [`find_attr_value`]'s lookup, telling a missing attribute (`None`) from one
 /// written without `=` (`Some(None)`).
 fn find_attr(tag: &str, attr: &str) -> Option<Option<AttrValue>> {
+    attrs(tag)
+        .find(|(name, _)| tag[name.clone()].eq_ignore_ascii_case(attr))
+        .map(|(_, value)| value)
+}
+
+/// The attributes of the opening tag `tag` in order, as [`find_attr_value`]
+/// reads them: each name's byte range and its value (`None` for one written
+/// without `=`). An unterminated quoted value ends the list.
+fn attrs(tag: &str) -> impl Iterator<Item = (Range<usize>, Option<AttrValue>)> + '_ {
     let b = tag.as_bytes();
-    let space = |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
-    let name_ends = |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
+    let space = move |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
+    let name_ends = move |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
     // Past `<` and the tag name.
     let mut i = 1;
     while !name_ends(i) {
         i += 1;
     }
-    loop {
+    std::iter::from_fn(move || {
         while space(i) || b.get(i) == Some(&b'/') {
             i += 1;
         }
@@ -1294,15 +1572,12 @@ fn find_attr(tag: &str, attr: &str) -> Option<Option<AttrValue>> {
         while !name_ends(i) {
             i += 1;
         }
-        let is_attr = tag[name_start..i].eq_ignore_ascii_case(attr);
+        let name = name_start..i;
         while space(i) {
             i += 1;
         }
         if b.get(i) != Some(&b'=') {
-            if is_attr {
-                return Some(None);
-            }
-            continue;
+            return Some((name, None));
         }
         i += 1;
         while space(i) {
@@ -1332,10 +1607,25 @@ fn find_attr(tag: &str, attr: &str) -> Option<Option<AttrValue>> {
                 }
             }
         };
-        if is_attr {
-            return Some(Some(value));
+        Some((name, Some(value)))
+    })
+}
+
+/// The attributes of the opening tag `tag` as the browser compares two
+/// elements' attributes: lowercased names, the first of a name kept, values
+/// with character references decoded, sorted.
+fn attr_key(tag: &str) -> Vec<(String, String)> {
+    let mut key: Vec<(String, String)> = Vec::new();
+    for (name, value) in attrs(tag) {
+        let name = tag[name].to_ascii_lowercase();
+        if key.iter().any(|(n, _)| *n == name) {
+            continue;
         }
+        let value = value.map_or_else(String::new, |v| decode_entities(&tag[v.range()]));
+        key.push((name, value));
     }
+    key.sort();
+    key
 }
 
 /// `tag` with the attribute value `old` (a [`find_attr_value`] result for
@@ -1538,9 +1828,10 @@ mod tests {
 
     #[test]
     fn deep_nesting_scans_in_one_pass() {
-        // Each stray end tag walks the open `<g>`s, which WebKit's depth cap
-        // holds to 509 inside a card: 20,000 of them cost about 10 million
-        // steps, not the 400 million an uncapped stack would.
+        // Each stray end tag walks the open `<g>`s twice, as foreign content
+        // and then by the "in body" rules, and WebKit's depth cap holds them
+        // to 509 inside a card: 20,000 of them cost about 20 million steps,
+        // not the 800 million an uncapped stack would.
         let html = format!(
             "<svg>{}{}<h2>end</h2>",
             "<g>".repeat(20_000),
@@ -1921,6 +2212,114 @@ mod tests {
             assert_eq!(
                 names.iter().filter(|n| **n == "<p>").count(),
                 ps,
+                "{html}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn closed_formatting_elements_reopen_before_text() {
+        // WebKit reopens the `<em>` before `t`, so the CDATA section is a
+        // bogus comment and its `<b>` a tag.
+        let html = "<svg><foreignObject><p><em></p>t<![CDATA[x>y<b>z</b>]]></foreignObject></svg>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert!(names.contains(&"<b>"), "{names:?}");
+        // Each runs inside `<svg><foreignObject>`, then `</foreignObject>`:
+        // it closes the island only while the island is the current node, so
+        // with an `<em>` reopened inside it, the svg stays open and
+        // `<style/>` opens HTML raw text. The count is the `<b>` elements
+        // WebKit, Chromium and Canvas.app build alike.
+        for (inner, bs) in [
+            ("<p><em></p>t", 0),
+            ("<p><em></p> ", 0),
+            ("<p><em></p>\0", 1),
+            ("<p><em></p>", 1),
+            // A start tag reopens them too, unless it is a block, a heading,
+            // a list item, a table part or what the "in head" rules insert.
+            ("<p><em></p><span></span>", 0),
+            ("<p><em></p><a></a>", 0),
+            ("<p><em></p><img>", 0),
+            ("<p><em></p></br>", 0),
+            ("<p><em></p><div></div>", 1),
+            ("<p><em></p><textarea></textarea>", 1),
+            ("<p><em></p></p>", 1),
+            // A marker: closing the cell or caption drops what was listed
+            // inside it, and nothing before it reopens inside it.
+            ("<table><tr><td><p><em></p></td></tr></table>t", 1),
+            ("<table><tr><td><p><em></p></tr></table>t", 1),
+            ("<table><caption><p><em></p></caption></table>t", 1),
+            ("<p><em></p><template>t</template>", 1),
+            ("<p><em></p><object></object>t", 0),
+            ("<p><em></p><object>t</object>", 0),
+            // A fourth identical entry drops the oldest, so three reopen.
+            ("<p><em><em><em><em></p>t</em></em></em>", 1),
+            ("<p><em id=1><em><em><em></p>t</em></em></em>", 0),
+            (
+                "<p><em a='&amp;'><em a='&'><em a=&amp;><em a=\"&\"></p>t</em></em></em>",
+                1,
+            ),
+            ("<p><nobr></p><nobr>t</nobr>", 1),
+            // The adoption agency's copies.
+            ("<strong><p><em></strong>t", 0),
+            ("<strong><p><em></strong>t</em>", 0),
+            ("<strong><p><em></strong>t</em></p>", 1),
+            ("<strong><i><s><u><p></strong>t</u></s></i></p>", 1),
+            (
+                "<strong><i><s><u><code><p></strong>t</code></u></s></i></p>",
+                1,
+            ),
+            (
+                "<strong><i><s><u><code><p></strong></p>t</code></u></s></i>",
+                1,
+            ),
+            (
+                "<strong><i><s><u><code><p></strong></p>t</code></u></s></i></strong>",
+                1,
+            ),
+            // Of the elements between, only three keep their place.
+            ("<strong><i><s><u><p></strong></p></u></s>", 0),
+            ("<strong><i><s><u><code><p></strong></p></code></u></s>", 1),
+            ("<a><p>x<a>y</a>t</p>", 1),
+            ("<em><p></em></p>t", 1),
+            ("<em></em>t", 1),
+            ("<p><em></p></em>t", 1),
+        ] {
+            let html =
+                format!("<svg><foreignObject>{inner}</foreignObject><style/><b>x</b></style>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+        for (html, bs) in [
+            ("<math><mi><p><em></p>t</mi><style/><b>x</b></style>", 0),
+            ("<math><mi><p><em></p></mi><style/><b>x</b></style>", 1),
+            // Text inside SVG reopens nothing; the `<svg>` already did.
+            (
+                "<svg><p><em></p><svg>t</svg></em><style/><b>x</b></style>",
+                0,
+            ),
+            // An `<svg>` start tag reopens the `<em>` it then sits in, so
+            // `</em>` closes it, and `<style/>` opens raw text.
+            (
+                "<p><em></p><table><svg></em><style/><b>x</b></style></table>",
+                0,
+            ),
+            (
+                "<p><em></p><table><tr><td><svg></em><style/><b>x</b></style></table>",
+                1,
+            ),
+            (
+                "<p><em></p><table><colgroup>t<svg></em><style/><b>x</b></style></table>",
+                0,
+            ),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
                 "{html}: {names:?}"
             );
         }
