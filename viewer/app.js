@@ -2200,6 +2200,24 @@
       return;
     }
 
+    if (data.type === "canvas-artifact-open") {
+      // A click on an http(s) link inside the artifact pane. Only the pane's
+      // own frame counts, the artifact is the one that frame was built for,
+      // and canvasd refuses anything but http(s).
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      if (typeof data.url !== "string") return;
+      fetch(`/api/artifacts/${encodeURIComponent(artifactFrameId)}/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: data.url }),
+      })
+        .then((r) => {
+          if (!r.ok) toast("Couldn't open link");
+        })
+        .catch(() => toast("Couldn't open link"));
+      return;
+    }
+
     if (data.type === "canvas-open" || data.type === "canvas-copy-target") {
       // Only a real card iframe's contentWindow may name a target — never
       // the top window itself, and never an index a card iframe cannot

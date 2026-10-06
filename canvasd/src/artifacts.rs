@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use canvas_core::{
-    Artifact, ArtifactExtras, ArtifactRefresh, ArtifactScriptError, ArtifactSize, ArtifactSource,
-    ArtifactView, RefreshError, ScriptErrorReport,
+    Artifact, ArtifactExtras, ArtifactOpenedLink, ArtifactRefresh, ArtifactScriptError,
+    ArtifactSize, ArtifactSource, ArtifactView, RefreshError, ScriptErrorReport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,10 @@ const MAX_WIDGET_BYTES: usize = 64 * 1024;
 const SCRIPT_ERRORS_KEPT: usize = 50;
 /// The longest message or source a script error keeps, in bytes.
 const SCRIPT_ERROR_TEXT_MAX: usize = 2048;
+/// How many opened links canvasd keeps per artifact; older ones drop off.
+const OPENED_LINKS_KEPT: usize = 50;
+/// The least time between two links one artifact's page opens.
+const OPEN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Default, Serialize, Deserialize)]
 struct ArtifactsFile {
@@ -51,6 +55,10 @@ pub struct Artifacts {
     /// The newest [`SCRIPT_ERRORS_KEPT`] errors each artifact's page threw
     /// in a viewer's pane, oldest first, in memory only.
     script_errors: HashMap<String, VecDeque<ArtifactScriptError>>,
+    /// The newest [`OPENED_LINKS_KEPT`] links each artifact's page had opened
+    /// in the default browser, oldest first, in memory only.
+    opened_links: HashMap<String, VecDeque<ArtifactOpenedLink>>,
+    opened_at: HashMap<String, std::time::Instant>,
     /// Each artifact's latest failed refresh run, until the next success; in
     /// memory only.
     pub refresh_errors: HashMap<String, RefreshError>,
@@ -86,6 +94,8 @@ impl Artifacts {
             records,
             fingerprints: HashMap::new(),
             script_errors: HashMap::new(),
+            opened_links: HashMap::new(),
+            opened_at: HashMap::new(),
             refresh_errors: HashMap::new(),
             data: HashMap::new(),
             data_dir: Some(dir.to_path_buf()),
@@ -126,11 +136,38 @@ impl Artifacts {
         });
     }
 
-    /// [`Self::view`] plus the errors its page threw, for `artifact show`.
+    /// Keeps one link `id`'s page had opened, dropping the oldest past
+    /// [`OPENED_LINKS_KEPT`]. False, keeping nothing, when `id` opened one
+    /// less than [`OPEN_INTERVAL`] ago: a page script can post the open
+    /// message with no click, so this bounds how fast it can launch tabs.
+    pub fn record_opened_link(&mut self, id: &str, url: String) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.opened_at.get(id) {
+            if now.duration_since(*last) < OPEN_INTERVAL {
+                return false;
+            }
+        }
+        self.opened_at.insert(id.to_string(), now);
+        let kept = self.opened_links.entry(id.to_string()).or_default();
+        if kept.len() == OPENED_LINKS_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back(ArtifactOpenedLink {
+            at: chrono::Utc::now().to_rfc3339(),
+            url,
+        });
+        true
+    }
+
+    /// [`Self::view`] plus the errors its page threw and the links it had
+    /// opened, for `artifact show`.
     pub fn view_with_errors(&self, artifact: &Artifact) -> ArtifactView {
         let mut view = self.view(artifact);
         if let Some(kept) = self.script_errors.get(&artifact.id) {
             view.script_errors = kept.iter().cloned().collect();
+        }
+        if let Some(kept) = self.opened_links.get(&artifact.id) {
+            view.opened_links = kept.iter().cloned().collect();
         }
         view
     }
@@ -139,6 +176,8 @@ impl Artifacts {
     pub fn forget(&mut self, id: &str) {
         self.fingerprints.remove(id);
         self.script_errors.remove(id);
+        self.opened_links.remove(id);
+        self.opened_at.remove(id);
         self.refresh_errors.remove(id);
         self.data.remove(id);
     }
@@ -218,6 +257,7 @@ impl Artifacts {
             entry,
             size,
             script_errors: Vec::new(),
+            opened_links: Vec::new(),
             refresh_error: self.refresh_errors.get(&artifact.id).cloned(),
             data: self.data.get(&artifact.id).cloned(),
         }

@@ -372,6 +372,10 @@ pub struct ArtifactView {
     /// /api/artifacts/:id` (`canvas artifact show`) fills it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub script_errors: Vec<ArtifactScriptError>,
+    /// The newest links its page asked canvasd to open in the default
+    /// browser, oldest first, in memory only; filled like `script_errors`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opened_links: Vec<ArtifactOpenedLink>,
     /// The latest failed refresh run, until the next success; in memory only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_error: Option<RefreshError>,
@@ -413,6 +417,21 @@ pub struct ArtifactScriptError {
     pub at: String,
     #[serde(flatten)]
     pub report: ScriptErrorReport,
+}
+
+/// Body for `POST /api/artifacts/:id/open`: an `http(s)` link the viewer
+/// relays from a click inside the artifact's pane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenLinkRequest {
+    pub url: String,
+}
+
+/// One link an artifact's page asked canvasd to open in the default browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactOpenedLink {
+    /// When canvasd received it (RFC 3339).
+    pub at: String,
+    pub url: String,
 }
 
 /// Body for `POST /api/artifacts`.

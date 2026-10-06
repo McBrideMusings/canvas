@@ -100,6 +100,10 @@ pub fn build_router(state: AppState) -> Router {
             post(artifact_routes::report_script_error),
         )
         .route(
+            "/api/artifacts/:id/open",
+            post(artifact_routes::open_artifact_link),
+        )
+        .route(
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),
         )

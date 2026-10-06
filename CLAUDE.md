@@ -346,6 +346,16 @@ beside the terminal all day.
   builds a new frame, so an unloading page can't report onto the next). canvasd keeps the newest 50 per artifact
   in memory (dropped on delete), logs `artifact script error`, and `show`
   lists them as `scriptErrors`.
+  Links: the same relay catches a click on an `<a>` whose resolved `href` is
+  `http(s)` (relative links resolve to `canvas:` and navigate inside the pane),
+  prevents the navigation and posts `canvas-artifact-open` `{url}`; the viewer
+  relays it, for the pane's frame only, to `POST /api/artifacts/:id/open`.
+  canvasd refuses anything but `http(s)` of at most 2KB (400) and a second
+  open from one artifact within a second (429, since a page script can post the
+  message with no click), runs macOS
+  `open` on it (`routes::open_target`; a debug build runs `CANVAS_OPEN_BIN`
+  instead when set), logs `artifact link opened`, and keeps the newest 50 in
+  memory (dropped on delete); `show` lists them as `openedLinks`.
   Widgets and refresh: `canvas artifact new|put --widget <file> --refresh '<cmd>'
   [--every <secs>]` (5s minimum, default 30s; a flag left off keeps what the
   record has) stores `widgetHtml` and `refresh: {command, everySecs, cwd, pid}`
