@@ -4,7 +4,9 @@
 //! daemon and viewer resolve. No I/O of its own — callers inject an
 //! `exists` predicate, which is the test seam.
 
-use canvas_core::html::{find_attr_value_range, next_tag, tag_name, tags, Tag};
+use canvas_core::html::{
+    attr_value_is_quoted, find_attr_value_range, next_tag, replace_attr_value, tag_name, tags, Tag,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scanned {
@@ -70,18 +72,21 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                                 let idx = images.len();
                                 images.push(value.to_string());
                                 // Written as exactly `src="canvas-image:<n>"`, with no
-                                // whitespace around `=`: canvasd matches that one shape.
-                                let quote = &tag[vs - 1..vs];
-                                let before_quote = tag[..vs - 1].trim_end();
-                                let name_end = before_quote
+                                // whitespace around `=` and an unquoted value given
+                                // double quotes: canvasd matches that one shape.
+                                let quoted = attr_value_is_quoted(tag, vs);
+                                let quote = if quoted { &tag[vs - 1..vs] } else { "\"" };
+                                let before_value = tag[..vs - usize::from(quoted)].trim_end();
+                                let name_end = before_value
                                     .strip_suffix('=')
-                                    .unwrap_or(before_quote)
+                                    .unwrap_or(before_value)
                                     .trim_end();
                                 out.push_str(name_end);
                                 out.push('=');
                                 out.push_str(quote);
                                 out.push_str(&format!("canvas-image:{idx}"));
-                                out.push_str(&tag[ve..]);
+                                out.push_str(quote);
+                                out.push_str(&tag[ve + usize::from(quoted)..]);
                             } else {
                                 let what = if tag_kind == "img" { "image" } else { "video" };
                                 warnings.push(format!(
@@ -104,9 +109,11 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                     if is_url || (is_abs_path && exists(value)) {
                         let idx = targets.len();
                         targets.push(value.to_string());
-                        out.push_str(&tag[..vs]);
-                        out.push_str(&format!("#canvas-open-{idx}"));
-                        out.push_str(&tag[ve..]);
+                        out.push_str(&replace_attr_value(
+                            tag,
+                            (vs, ve),
+                            &format!("#canvas-open-{idx}"),
+                        ));
                     } else if is_abs_path {
                         warnings.push(format!("canvas post: path not found, left as-is: {value}"));
                         out.push_str(tag);
@@ -255,6 +262,18 @@ mod tests {
         let html = r#"<img src = '/abs/x.png'>"#;
         let s = scan(html, exists_in(&["/abs/x.png"]));
         assert_eq!(s.html, "<img src='canvas-image:0'>");
+    }
+
+    #[test]
+    fn unquoted_local_image_and_link_are_rewritten_in_double_quotes() {
+        let html = "<img src=/abs/x.png alt=x><img src = /abs/x.png/><a href=/abs/file>f</a>";
+        let s = scan(html, exists_in(&["/abs/x.png", "/abs/x.png/", "/abs/file"]));
+        assert_eq!(s.images, vec!["/abs/x.png", "/abs/x.png/"]);
+        assert_eq!(s.targets, vec!["/abs/file"]);
+        assert_eq!(
+            s.html,
+            r##"<img src="canvas-image:0" alt=x><img src="canvas-image:1"><a href="#canvas-open-0">f</a>"##
+        );
     }
 
     #[test]

@@ -16,7 +16,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    escape_attr, escape_text, find_attr_value_range, first_heading, tag_name, tags, Tag,
+    attr_value_is_quoted, escape_attr, escape_text, find_attr_value_range, first_heading,
+    replace_attr_value, tag_name, tags, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -135,11 +136,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 let path = card.images.get(index).map(String::as_str).unwrap_or("");
                 match media_data_uri(path, read) {
-                    Ok(uri) => {
-                        out.push_str(&tag[..vs]);
-                        out.push_str(&uri);
-                        out.push_str(&tag[ve..]);
-                    }
+                    Ok(uri) => out.push_str(&replace_attr_value(tag, (vs, ve), &uri)),
                     Err(reason) => {
                         warnings.push(ExportWarning {
                             kind: ExportWarningKind::MissingImage,
@@ -181,9 +178,8 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     {
                         anchors.push(false);
                         let close = if tag.ends_with("/>") { "/>" } else { ">" };
-                        out.push_str(&tag[..vs]);
-                        out.push_str(&escape_attr(url));
-                        out.push_str(tag[ve..].strip_suffix(close).unwrap_or(&tag[ve..]));
+                        let tag = replace_attr_value(tag, (vs, ve), &escape_attr(url));
+                        out.push_str(tag.strip_suffix(close).unwrap_or(&tag));
                         out.push_str(" target=\"_blank\" rel=\"noopener\"");
                         out.push_str(close);
                     }
@@ -712,7 +708,8 @@ fn attr_url(value: &str) -> String {
     value.trim().replace("&amp;", "&")
 }
 
-/// `tag` with its `name="…"` attribute, whose value spans `value`, removed.
+/// `tag` with its `name="…"` (or unquoted `name=…`) attribute, whose value
+/// spans `value`, removed.
 fn without_attr(tag: &str, name: &str, (vs, ve): (usize, usize)) -> String {
     let attr_start = tag[..vs]
         .trim_end_matches(['"', '\''])
@@ -721,7 +718,8 @@ fn without_attr(tag: &str, name: &str, (vs, ve): (usize, usize)) -> String {
         .trim_end()
         .len()
         - name.len();
-    format!("{}{}", tag[..attr_start].trim_end(), &tag[ve + 1..])
+    let attr_end = ve + usize::from(attr_value_is_quoted(tag, vs));
+    format!("{}{}", tag[..attr_start].trim_end(), &tag[attr_end..])
 }
 
 /// `text` with every `</name` written `<\/name`, so it can't close the
@@ -915,6 +913,26 @@ mod tests {
             "{}",
             r.html
         );
+    }
+
+    #[test]
+    fn unquoted_values_are_rewritten_in_double_quotes() {
+        let c = card(
+            "<img src=/api/cards/c1/images/0 alt=a><video src=/api/cards/c1/images/1></video><a href=#canvas-open-0>site</a>",
+            &["/x/a.png", "/x/gone.webm"],
+            &["https://example.com/?a=1&b=2"],
+        );
+        let r = export_card(&c, None, files, offline);
+        assert!(
+            r.html
+                .contains(r#"<img src="data:image/png;base64,YWJj" alt=a>"#),
+            "{}",
+            r.html
+        );
+        assert!(r.html.contains("<video></video>"), "{}", r.html);
+        assert!(r.html.contains(
+            r#"<a href="https://example.com/?a=1&amp;b=2" target="_blank" rel="noopener">site</a>"#
+        ));
     }
 
     #[test]

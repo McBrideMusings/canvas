@@ -180,43 +180,88 @@ pub fn tag_name(tag: &str) -> Option<String> {
     Some(inner[..end].to_ascii_lowercase())
 }
 
-/// Finds `name="value"` or `name='value'` (case-insensitive attribute name,
-/// whitespace-tolerant around `=`) inside `tag`, and returns the byte range
-/// of `value` (excluding the quotes), both relative to `tag`. The attribute
-/// name must be preceded by whitespace, so `xsrc="..."` never matches `src`.
+/// Finds the attribute `attr` (case-insensitive name) in the opening tag
+/// `tag`, reading its attributes as the browser's tokenizer does, and returns
+/// the byte range of its value relative to `tag`: between the quotes of
+/// `name="v"` or `name='v'`, or for an unquoted `name=v` up to whitespace or
+/// `>`. Spaces around `=` are allowed. Text inside another attribute's value
+/// is never read as an attribute, so `alt="a src=x"` holds no `src`. The
+/// first attribute of a name wins, as in the browser, and one written without
+/// `=` has no value: `None`.
 pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
-    let lower = tag.to_ascii_lowercase();
-    let bytes = tag.as_bytes();
-    let mut search_from = 0usize;
-
-    while let Some(rel) = lower[search_from..].find(attr) {
-        let abs = search_from + rel;
-        let preceded_by_boundary = abs > 0 && bytes[abs - 1].is_ascii_whitespace();
-        if preceded_by_boundary {
-            let mut i = abs + attr.len();
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
+    let b = tag.as_bytes();
+    let space = |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
+    let name_ends = |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
+    // Past `<` and the tag name.
+    let mut i = 1;
+    while !name_ends(i) {
+        i += 1;
+    }
+    loop {
+        while space(i) || b.get(i) == Some(&b'/') {
+            i += 1;
+        }
+        if i >= b.len() || b[i] == b'>' {
+            return None;
+        }
+        let name_start = i;
+        // A leading `=` is part of the name.
+        i += 1;
+        while !name_ends(i) {
+            i += 1;
+        }
+        let is_attr = tag[name_start..i].eq_ignore_ascii_case(attr);
+        while space(i) {
+            i += 1;
+        }
+        if b.get(i) != Some(&b'=') {
+            if is_attr {
+                return None;
             }
-            if i < bytes.len() && bytes[i] == b'=' {
-                i += 1;
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            continue;
+        }
+        i += 1;
+        while space(i) {
+            i += 1;
+        }
+        let (vs, ve) = match b.get(i) {
+            Some(&q @ (b'"' | b'\'')) => {
+                let vs = i + 1;
+                let ve = vs + tag[vs..].find(q as char)?;
+                i = ve + 1;
+                (vs, ve)
+            }
+            _ => {
+                let vs = i;
+                while i < b.len() && !space(i) && b[i] != b'>' {
                     i += 1;
                 }
-                if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
-                    let quote = bytes[i];
-                    let val_start = i + 1;
-                    if let Some(rel_end) = tag[val_start..].find(quote as char) {
-                        return Some((val_start, val_start + rel_end));
-                    }
-                }
+                (vs, i)
             }
-        }
-        search_from = abs + attr.len();
-        if search_from >= lower.len() {
-            break;
+        };
+        if is_attr {
+            return Some((vs, ve));
         }
     }
-    None
+}
+
+/// `tag` with the attribute value at `[vs, ve)` (a [`find_attr_value_range`]
+/// range) replaced by `value`, which must already be safe inside a quoted
+/// value ([`escape_attr`]). An unquoted value is written in double quotes, so
+/// the new one stays one value whatever it holds.
+pub fn replace_attr_value(tag: &str, (vs, ve): (usize, usize), value: &str) -> String {
+    let quote = if attr_value_is_quoted(tag, vs) {
+        ""
+    } else {
+        "\""
+    };
+    format!("{}{quote}{value}{quote}{}", &tag[..vs], &tag[ve..])
+}
+
+/// Whether the [`find_attr_value_range`] value starting at `vs` is quoted.
+/// The byte before an unquoted value is `=` or whitespace, never a quote.
+pub fn attr_value_is_quoted(tag: &str, vs: usize) -> bool {
+    tag[..vs].ends_with(['"', '\''])
 }
 
 /// What names a card in a list or a page title: the text of its first
@@ -478,6 +523,37 @@ mod tests {
                 "<!doctype a=\"b>"
             ]
         );
+    }
+
+    #[test]
+    fn attr_values_are_read_as_the_tokenizer_reads_them() {
+        fn value<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
+            find_attr_value_range(tag, attr).map(|(s, e)| &tag[s..e])
+        }
+        assert_eq!(value("<img src=/a.png>", "src"), Some("/a.png"));
+        assert_eq!(value("<img src = /a.png/>", "src"), Some("/a.png/"));
+        assert_eq!(value("<img SRC=/a\talt=x>", "src"), Some("/a"));
+        assert_eq!(value("<img src=>", "src"), Some(""));
+        assert_eq!(value("<img/src='/a b'>", "src"), Some("/a b"));
+        assert_eq!(value("<img alt=\"a src=x\" src=\"/y\">", "src"), Some("/y"));
+        assert_eq!(value("<img alt=a src=x>", "src"), Some("x"));
+        assert_eq!(value("<img xsrc=x data-src=y>", "src"), None);
+        assert_eq!(value("<img src=x src=y>", "src"), Some("x"));
+        assert_eq!(value("<img src src=y>", "src"), None);
+        assert_eq!(value("<img =src=x>", "src"), None);
+    }
+
+    #[test]
+    fn replace_attr_value_quotes_an_unquoted_value() {
+        let tag = "<img src=/a.png alt=x>";
+        let range = find_attr_value_range(tag, "src").unwrap();
+        assert_eq!(
+            replace_attr_value(tag, range, "a b"),
+            "<img src=\"a b\" alt=x>"
+        );
+        let tag = "<img src='/a.png'>";
+        let range = find_attr_value_range(tag, "src").unwrap();
+        assert_eq!(replace_attr_value(tag, range, "x"), "<img src='x'>");
     }
 
     #[test]
