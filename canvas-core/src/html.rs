@@ -1330,32 +1330,22 @@ pub fn card_label(html: &str) -> Option<String> {
     })
 }
 
-/// The text of the first `<h1>`–`<h3>`, tags stripped.
+/// The visible text of the first `<h1>`–`<h3>` outside a `<template>`,
+/// whitespace collapsed. `None` when it is empty or never closed.
 pub fn first_heading(html: &str) -> Option<String> {
-    for Tag { start, end, .. } in tags(html) {
+    let mut scan = tags(html);
+    while let Some(Tag { start, end, .. }) = scan.next() {
+        if scan.in_template() {
+            continue;
+        }
         let name = tag_name(&html[start..end]);
         if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
-            let close = format!("</{level}");
-            let rest = &html[end..];
-            let stop = rest.to_ascii_lowercase().find(&close)?;
-            let text = collapse_whitespace(&strip_tags(&rest[..stop]));
+            let text = read_visible(html, &mut scan, end, Some(level))?;
+            let text = collapse_whitespace(&text);
             return (!text.is_empty()).then_some(text);
         }
     }
     None
-}
-
-/// `html` with every tag removed and the escapes [`escape_attr`] writes
-/// decoded once.
-pub fn strip_tags(html: &str) -> String {
-    let mut out = String::new();
-    let mut pos = 0;
-    for Tag { start, end, .. } in tags(html) {
-        out.push_str(&html[pos..start]);
-        pos = end;
-    }
-    out.push_str(&html[pos..]);
-    decode_entities(&out)
 }
 
 /// Tags that start a new line of text, opening or closing.
@@ -1394,14 +1384,25 @@ const BLOCK_TAGS: &[&str] = &[
     "ul",
 ];
 
-/// Like [`strip_tags`], but the contents of `<script>`, `<style>` and
-/// `<template>` are dropped and each block tag starts a new line.
+/// `html` with every tag removed, the contents of `<script>`, `<style>` and
+/// `<template>` dropped, each block tag starting a new line, and the escapes
+/// [`escape_attr`] writes decoded once.
 fn visible_text(html: &str) -> String {
+    read_visible(html, &mut tags(html), 0, None).unwrap_or_default()
+}
+
+/// [`visible_text`] of what `scan` passes over from `pos`: up to the end tag
+/// `</close>` outside a `<template>` (`None` when it never comes), or to the
+/// end of `html` when `close` is `None`.
+fn read_visible(
+    html: &str,
+    scan: &mut Tags,
+    mut pos: usize,
+    close: Option<&str>,
+) -> Option<String> {
     let mut out = String::new();
-    let mut pos = 0;
     // Whether the text after the last tag is inside a `<template>`.
-    let mut hidden = false;
-    let mut scan = tags(html);
+    let mut hidden = scan.in_template();
     while let Some(Tag {
         start,
         end,
@@ -1414,6 +1415,9 @@ fn visible_text(html: &str) -> String {
         pos = end;
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
+        if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
+            return Some(decode_entities(&out));
+        }
         match name.as_deref() {
             Some("script" | "style") => pos = text_end,
             Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
@@ -1421,10 +1425,13 @@ fn visible_text(html: &str) -> String {
         }
         hidden = scan.in_template();
     }
+    if close.is_some() {
+        return None;
+    }
     if pos < html.len() && !hidden {
         out.push_str(&html[pos..]);
     }
-    decode_entities(&out)
+    Some(decode_entities(&out))
 }
 
 /// `s` with the five entities [`escape_attr`] writes decoded.
@@ -2070,6 +2077,37 @@ mod tests {
     }
 
     #[test]
+    fn card_label_skips_a_heading_inside_a_template() {
+        let label = |html| card_label(html).unwrap_or_default();
+        assert_eq!(
+            label("<template><h1>hid</h1></template>Shown line"),
+            "Shown line"
+        );
+        assert_eq!(
+            label("<template><div><h2>hid</h2></template><h3>shown</h3>"),
+            "shown"
+        );
+        assert_eq!(card_label("<template><h1>x</h1>"), None);
+    }
+
+    #[test]
+    fn first_heading_drops_a_template_inside_the_heading() {
+        assert_eq!(
+            first_heading("<h1>Title<template>hid</template></h1>").as_deref(),
+            Some("Title")
+        );
+        // A `</h1>` inside the template ends nothing.
+        assert_eq!(
+            first_heading("<h1>A<template></h1></template>B</h1>").as_deref(),
+            Some("AB")
+        );
+        assert_eq!(
+            first_heading("<h1>A<script>'</h1>'</script>B</h1>").as_deref(),
+            Some("AB")
+        );
+    }
+
+    #[test]
     fn visible_text_drops_a_template_and_keeps_what_follows() {
         // A block tag inside the template starts no line of its own.
         assert_eq!(visible_text("a<template><div>x</div></template>b"), "ab");
@@ -2084,11 +2122,6 @@ mod tests {
             visible_text("<table><tr><template><table><td>x</template><td>y</table>"),
             "\n\n\ny\n"
         );
-    }
-
-    #[test]
-    fn strip_tags_keeps_literal_tags_in_title_text() {
-        assert_eq!(strip_tags("<title>a<b>c</title>"), "a<b>c");
     }
 
     #[test]
