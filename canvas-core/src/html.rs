@@ -149,13 +149,23 @@ impl Iterator for Tags<'_> {
 }
 
 /// The offset of the first `</name` at or after `from`, any case, or the end
-/// of the HTML.
+/// of the HTML. It reads only as far as the match, so a page of many raw-text
+/// elements costs its length once, not once per element.
 fn closing_tag_start(html: &str, from: usize, name: &str) -> usize {
-    html[from..]
-        .to_ascii_lowercase()
-        .find(&format!("</{name}"))
-        .map(|i| from + i)
-        .unwrap_or(html.len())
+    let bytes = html.as_bytes();
+    let mut pos = from;
+    while let Some(rel) = bytes[pos..].iter().position(|&b| b == b'<') {
+        let lt = pos + rel;
+        let closes = bytes[lt + 1..]
+            .strip_prefix(b"/")
+            .and_then(|rest| rest.get(..name.len()))
+            .is_some_and(|n| n.eq_ignore_ascii_case(name.as_bytes()));
+        if closes {
+            return lt;
+        }
+        pos = lt + 1;
+    }
+    html.len()
 }
 
 /// The lowercased tag name of an opening tag, e.g. `"img"` or `"a"`.
@@ -363,6 +373,27 @@ mod tests {
                 "<img src=x>"
             ]
         );
+    }
+
+    #[test]
+    fn closing_tag_start_finds_the_name_in_any_case_as_a_prefix() {
+        let html = "é<script>a</b>< /script></ScRiPtx>z";
+        assert_eq!(
+            closing_tag_start(html, 10, "script"),
+            html.find("</Sc").unwrap()
+        );
+        assert_eq!(closing_tag_start(html, 0, "style"), html.len());
+        assert_eq!(closing_tag_start("x</scrip", 0, "script"), 8);
+        assert_eq!(closing_tag_start("x<", 1, "script"), 2);
+    }
+
+    #[test]
+    fn many_script_blocks_scan_in_one_pass() {
+        // 20,000 blocks in 780 KB: the scan reads the page once. A search that
+        // reread the rest of the page per block would be about 8 GB of work.
+        let html = "<script>let a = 1;</script><p>text</p>".repeat(20_000) + "<h2>end</h2>";
+        assert_eq!(tags(&html).count(), 20_000 * 4 + 2);
+        assert_eq!(card_label(&html).as_deref(), Some("end"));
     }
 
     #[test]
