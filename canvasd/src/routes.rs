@@ -964,20 +964,34 @@ fn is_openable(path: &str) -> bool {
     path.starts_with('/') || path.starts_with("http://") || path.starts_with("https://")
 }
 
+/// Hands `target` to macOS `open`. A debug build runs `CANVAS_OPEN_BIN`
+/// instead when it is set (tests' and verification's stand-in, so no browser
+/// opens); a release build ignores it.
+pub async fn open_target(target: &str) -> bool {
+    let bin = if cfg!(debug_assertions) {
+        std::env::var("CANVAS_OPEN_BIN").unwrap_or_else(|_| "open".to_string())
+    } else {
+        "open".to_string()
+    };
+    matches!(
+        tokio::process::Command::new(bin)
+            .arg(target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await,
+        Ok(status) if status.success()
+    )
+}
+
 pub async fn open_path(Json(req): Json<OpenRequest>) -> Response {
     if !is_openable(&req.path) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-
-    match tokio::process::Command::new("open")
-        .arg(&req.path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-    {
-        Ok(status) if status.success() => StatusCode::OK.into_response(),
-        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    if open_target(&req.path).await {
+        StatusCode::OK.into_response()
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }

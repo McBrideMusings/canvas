@@ -12,7 +12,10 @@ pub fn run(id: &str, arg: Option<&str>) -> Result<(), String> {
     if id.starts_with(canvasd::artifacts::ID_PREFIX) {
         client::artifact_call(
             "PUT",
-            &format!("/api/artifacts/{}/data", client::percent_encode(id)),
+            &format!(
+                "/api/artifacts/{}/data",
+                canvas_core::unix_http::percent_encode(id)
+            ),
             Some(&value),
         )
         .map(|_| ())

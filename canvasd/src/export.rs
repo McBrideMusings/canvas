@@ -16,8 +16,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    attr_value_is_quoted, decode_entities, escape_attr, escape_text, find_attr_value_range,
-    first_heading, replace_attr_value, tag_name, tags, Tag,
+    card_label, decode_entities, escape_attr, escape_text, find_attr_value, replace_attr_value,
+    tag_name, tags, AttrValue, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -44,7 +44,11 @@ pub fn export_card(
     let mut warnings = Vec::new();
     let mut cdn = Cdn::new(fetch, Duration::from_secs(EXPORT_DOWNLOAD_SECS));
     let body = rewrite(card, &read, &mut cdn, &mut warnings);
-    let title = escape_text(&first_heading(&body).unwrap_or_else(|| "Canvas post".into()));
+    // A file one reference left as a link while another put it in the page
+    // isn't missing from the page.
+    warnings
+        .retain(|w| w.kind != ExportWarningKind::FetchFailed || !cdn.present.contains(&w.target));
+    let title = escape_text(&card_label(&card.html).unwrap_or_else(|| "Canvas post".into()));
     let mut html = String::with_capacity(body.len() + 1024);
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
@@ -110,11 +114,12 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         start,
         end,
         text_end,
+        foreign,
     } in tags(html)
     {
         let text = &html[pos..start];
         if markup_style {
-            out.push_str(&cdn.css(text, None, 0, true, warnings));
+            out.push_str(&cdn.markup_css(text, warnings));
         } else {
             out.push_str(text);
         }
@@ -127,7 +132,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     Some(body) => (body, "]]>"),
                     None => (body, ""),
                 };
-                let css = cdn.css(body, None, 0, false, warnings);
+                let css = cdn.css(body, None, 0, warnings);
                 out.push_str("<![CDATA[");
                 // A `]]>` would end the section; split it across two.
                 out.push_str(&css.replace("]]>", "]]]]><![CDATA[>"));
@@ -151,11 +156,11 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
 
         match tag_name(tag).as_deref() {
             Some(kind @ ("img" | "video" | "source")) => {
-                let Some((vs, ve)) = find_attr_value_range(tag, "src") else {
+                let Some(src) = find_attr_value(tag, "src") else {
                     out.push_str(tag);
                     continue;
                 };
-                let Some(index) = tag[vs..ve]
+                let Some(index) = tag[src.range()]
                     .strip_prefix(&image_prefix)
                     .and_then(|n| n.parse::<usize>().ok())
                 else {
@@ -164,7 +169,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 let path = card.images.get(index).map(String::as_str).unwrap_or("");
                 match media_data_uri(path, read) {
-                    Ok(uri) => out.push_str(&replace_attr_value(tag, (vs, ve), &uri)),
+                    Ok(uri) => out.push_str(&replace_attr_value(tag, src, &uri)),
                     Err(reason) => {
                         warnings.push(ExportWarning {
                             kind: ExportWarningKind::MissingImage,
@@ -183,30 +188,30 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                         } else {
                             // Drop ` src="…"` whole: an empty src would make
                             // the browser request the page's own URL.
-                            out.push_str(&without_attr(tag, "src", (vs, ve)));
+                            out.push_str(&without_attr(tag, "src", src));
                         }
                     }
                 }
             }
             Some("a") => {
-                let link = find_attr_value_range(tag, "href").and_then(|(vs, ve)| {
-                    let index = tag[vs..ve]
+                let link = find_attr_value(tag, "href").and_then(|href| {
+                    let index = tag[href.range()]
                         .strip_prefix("#canvas-open-")?
                         .parse::<usize>()
                         .ok()?;
-                    Some((vs, ve, card.targets.get(index).map(String::as_str)))
+                    Some((href, card.targets.get(index).map(String::as_str)))
                 });
                 match link {
                     None => {
                         anchors.push(false);
                         out.push_str(tag);
                     }
-                    Some((vs, ve, Some(url)))
+                    Some((href, Some(url)))
                         if url.starts_with("http://") || url.starts_with("https://") =>
                     {
                         anchors.push(false);
                         let close = if tag.ends_with("/>") { "/>" } else { ">" };
-                        let tag = replace_attr_value(tag, (vs, ve), &escape_attr(url));
+                        let tag = replace_attr_value(tag, href, &escape_attr(url));
                         out.push_str(tag.strip_suffix(close).unwrap_or(&tag));
                         out.push_str(" target=\"_blank\" rel=\"noopener\"");
                         out.push_str(close);
@@ -216,20 +221,24 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     Some(_) => anchors.push(true),
                 }
             }
+            // An SVG or MathML `<script>` or `<link>` fetches nothing, so it
+            // stays as written.
+            Some("script" | "link") if foreign => out.push_str(tag),
             Some("script") => {
-                let src = find_attr_value_range(tag, "src")
-                    .and_then(|(vs, ve)| Some((vs, ve, cdn::join(None, &attr_url(&tag[vs..ve]))?)))
-                    .filter(|(_, _, url)| cdn::allowed(url));
-                let Some((vs, ve, url)) = src else {
+                let src = find_attr_value(tag, "src")
+                    .and_then(|src| Some((src, cdn::join(None, &attr_url(&tag[src.range()]))?)))
+                    .filter(|(_, url)| cdn::allowed(url));
+                let Some((src, url)) = src else {
                     out.push_str(tag);
                     continue;
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
-                        out.push_str(&without_attr(tag, "src", (vs, ve)));
+                        cdn.present.push(url.clone());
+                        out.push_str(&without_attr(tag, "src", src));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
-                        pos = text_end;
+                        pos = text_end.unwrap_or(end);
                     }
                     None => out.push_str(tag),
                 }
@@ -241,19 +250,15 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
+                        cdn.present.push(url.clone());
                         cdn.importing.push(url.clone());
-                        let css = cdn.css(
-                            &String::from_utf8_lossy(&bytes),
-                            Some(&url),
-                            0,
-                            false,
-                            warnings,
-                        );
+                        let css =
+                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&url), 0, warnings);
                         cdn.importing.pop();
-                        match find_attr_value_range(tag, "media") {
-                            Some((ms, me)) => out.push_str(&format!(
+                        match find_attr_value(tag, "media") {
+                            Some(media) => out.push_str(&format!(
                                 "<style media=\"{}\">",
-                                tag[ms..me].replace('"', "&quot;")
+                                tag[media.range()].replace('"', "&quot;")
                             )),
                             None => out.push_str("<style>"),
                         }
@@ -265,22 +270,24 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
             }
             // The scan reads an HTML `<style>`'s text as raw text and resumes
             // at its closing tag; an SVG or MathML one's it reads on.
-            Some("style") if text_end == end && !tag.ends_with("/>") => {
-                out.push_str(tag);
-                markup_style = true;
-            }
             Some("style") => {
                 out.push_str(tag);
-                let css = cdn.css(&html[end..text_end], None, 0, false, warnings);
-                out.push_str(&escape_raw(&css, "style"));
-                pos = text_end;
+                match text_end {
+                    Some(text_end) => {
+                        let css = cdn.css(&html[end..text_end], None, 0, warnings);
+                        out.push_str(&escape_raw(&css, "style"));
+                        pos = text_end;
+                    }
+                    // Its CSS follows unless it closed itself.
+                    None => markup_style = !tag.ends_with("/>"),
+                }
             }
             _ => out.push_str(tag),
         }
     }
     let text = &html[pos..];
     if markup_style {
-        out.push_str(&cdn.css(text, None, 0, true, warnings));
+        out.push_str(&cdn.markup_css(text, warnings));
     } else {
         out.push_str(text);
     }
@@ -289,17 +296,24 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
 
 /// Downloads for one export: each URL fetched once, all of them within one
 /// time budget, and at most `MAX_INLINED_BYTES` inlined in total. A URL that
-/// isn't inlined warns once.
+/// isn't inlined warns once; `export_card` drops the warning when another
+/// reference put the URL in the page (`present`).
 struct Cdn<F> {
     fetch: F,
     budget: Duration,
     deadline: Instant,
     cache: HashMap<String, Result<Vec<u8>, String>>,
     warned: HashSet<String>,
+    /// Every URL whose content went into the page, in order, so a
+    /// stylesheet's expansion that is thrown away can drop its own.
+    present: Vec<String>,
     inlined: usize,
     /// The stylesheets being expanded, outermost first, so an `@import`
-    /// cycle stays an import.
+    /// that closes a cycle is dropped.
     importing: Vec<String>,
+    /// Every `@import` written out as a link, in order, so a stylesheet
+    /// about to be wrapped in a block can tell whether it holds one.
+    linked: Vec<String>,
 }
 
 impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
@@ -310,8 +324,10 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             deadline: Instant::now() + budget,
             cache: HashMap::new(),
             warned: HashSet::new(),
+            present: Vec::new(),
             inlined: 0,
             importing: Vec::new(),
+            linked: Vec::new(),
         }
     }
 
@@ -356,7 +372,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
-    /// A `fetch-failed` warning that `url` stays a link, once per URL.
+    /// A `fetch-failed` warning that `url` stays a link, once per URL;
+    /// `export_card` drops it if `url` ends up in `present`.
     fn warn(&mut self, url: &str, reason: String, warnings: &mut Vec<ExportWarning>) {
         if self.warned.insert(url.to_string()) {
             warnings.push(ExportWarning {
@@ -367,23 +384,33 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
+    /// [`Cdn::css`] of `text` in an SVG or MathML `<style>`, outside CDATA,
+    /// where the browser decodes every character reference before it reads
+    /// the CSS: the scan runs on the decoded text and the result is written
+    /// back with entities, or `text` stays as written when nothing changed.
+    fn markup_css(&mut self, text: &str, warnings: &mut Vec<ExportWarning>) -> String {
+        let css = decode_entities(text);
+        let out = self.css(&css, None, 0, warnings);
+        if out == css {
+            text.to_string()
+        } else {
+            escape_text(&out)
+        }
+    }
+
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
     /// each CDN `url()` by a `data:` URI. A reference relative to `base` that
     /// stays a link is made absolute, since the page no longer sits beside it.
     /// The text is read as the browser tokenizes it: strings, comments and
     /// escapes are copied untouched, and only a whole `url(` or `@import`
-    /// token is a reference. With `in_markup`, `css` is text in SVG or MathML,
-    /// where the browser decodes entities: each reference is decoded before
-    /// it is read, and each replacement is written with entities.
+    /// token is a reference.
     fn css(
         &mut self,
         css: &str,
         base: Option<&str>,
         depth: usize,
-        in_markup: bool,
         warnings: &mut Vec<ExportWarning>,
     ) -> String {
-        let markup = |text: String| if in_markup { escape_text(&text) } else { text };
         let b = css.as_bytes();
         let mut out = String::with_capacity(css.len());
         let mut pos = 0usize;
@@ -394,16 +421,13 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 b'"' | b'\'' => i = string_end(b, i).0,
                 b'\\' => i += escape_len(b, i),
                 b'@' if starts_with_word(b, i, b"@import") => {
-                    let Some(mut import) = parse_import(css, i) else {
+                    let Some(import) = parse_import(css, i) else {
                         i += "@import".len();
                         continue;
                     };
-                    if in_markup {
-                        import.reference = decode_entities(&import.reference);
-                    }
                     out.push_str(&css[pos..i]);
                     match self.import(&import, base, depth, warnings) {
-                        Some(text) => out.push_str(&markup(text)),
+                        Some(text) => out.push_str(&text),
                         None => out.push_str(&css[i..import.end]),
                     }
                     pos = import.end;
@@ -414,15 +438,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 {
                     let (reference, end) = url_token(css, i);
                     out.push_str(&css[pos..i]);
-                    let reference = reference.map(|r| {
-                        if in_markup {
-                            decode_entities(r)
-                        } else {
-                            r.to_string()
-                        }
-                    });
-                    match reference.and_then(|r| self.url(&r, base, warnings)) {
-                        Some(text) => out.push_str(&markup(text)),
+                    match reference.and_then(|r| self.url(r, base, warnings)) {
+                        Some(text) => out.push_str(&text),
                         None => out.push_str(&css[i..end]),
                     }
                     pos = end;
@@ -437,8 +454,10 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
 
     /// What replaces one `@import`: the stylesheet it names under its
     /// conditions, or the import itself, made absolute. None keeps it as
-    /// written. An import of a CDN stylesheet that stays a link warns, except
-    /// one that closes a cycle.
+    /// written. An import of a CDN stylesheet that stays a link warns. One
+    /// that closes a cycle is dropped, as the browser ignores it. A
+    /// stylesheet that holds an import staying a link is not inlined under
+    /// conditions, since the browser ignores an `@import` inside a block.
     fn import(
         &mut self,
         import: &Import,
@@ -448,32 +467,52 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
     ) -> Option<String> {
         let absolute = cdn::join(base, &import.reference);
         let inlined = match &absolute {
-            Some(u) if cdn::allowed(u) && !self.importing.contains(u) => {
+            Some(u) if self.importing.contains(u) => return Some(String::new()),
+            Some(u) if cdn::allowed(u) => {
                 if depth >= MAX_IMPORT_DEPTH {
                     let reason =
                         format!("skipped: nested more than {MAX_IMPORT_DEPTH} @imports deep");
                     self.warn(u, reason, warnings);
                     None
                 } else {
-                    self.get(u, warnings).map(|bytes| {
+                    let (bytes_before, links_before, present_before) =
+                        (self.inlined, self.linked.len(), self.present.len());
+                    self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
                         let text = self.css(
                             &String::from_utf8_lossy(&bytes),
                             Some(u),
                             depth + 1,
-                            false,
                             warnings,
                         );
                         self.importing.pop();
-                        text
+                        match (import.block(), self.linked.get(links_before)) {
+                            (Some(block), Some(nested)) => {
+                                let reason = format!(
+                                    "kept as a link: its @import of {nested} would be ignored inside {block}"
+                                );
+                                self.inlined = bytes_before;
+                                self.present.truncate(present_before);
+                                self.warn(u, reason, warnings);
+                                None
+                            }
+                            _ => {
+                                self.present.push(u.clone());
+                                Some(text)
+                            }
+                        }
                     })
                 }
             }
             _ => None,
         };
-        match (inlined, absolute) {
-            (Some(text), _) => Some(import.wrap(text)),
-            (None, Some(u)) if u != import.reference => {
+        if let Some(text) = inlined {
+            return Some(import.wrap(text));
+        }
+        self.linked
+            .push(absolute.clone().unwrap_or_else(|| import.reference.clone()));
+        match absolute {
+            Some(u) if u != import.reference => {
                 let sep = if import.conditions.is_empty() {
                     ""
                 } else {
@@ -485,7 +524,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     import.conditions
                 ))
             }
-            (None, _) => None,
+            _ => None,
         }
     }
 
@@ -512,6 +551,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         };
         if cdn::allowed(target) {
             if let Some(bytes) = self.get(target, warnings) {
+                self.present.push(target.to_string());
                 let path = target.split('?').next().unwrap_or(target);
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
                 return Some(format!(
@@ -539,6 +579,19 @@ struct Import {
 }
 
 impl Import {
+    /// The outermost block `wrap` puts the stylesheet in, if any.
+    fn block(&self) -> Option<&'static str> {
+        if self.layer.is_some() {
+            Some("@layer")
+        } else if self.supports.is_some() {
+            Some("@supports")
+        } else if !self.media.is_empty() {
+            Some("@media")
+        } else {
+            None
+        }
+    }
+
     /// `text` under this import's conditions, as the blocks that apply them
     /// in place: `@layer` outermost, then `@supports`, then `@media`.
     fn wrap(&self, mut text: String) -> String {
@@ -750,16 +803,15 @@ fn starts_with_word(b: &[u8], i: usize, word: &[u8]) -> bool {
 /// The absolute URL a `<link rel="stylesheet">` loads. An alternate
 /// stylesheet is off until chosen, so it is never inlined as a live one.
 fn stylesheet_href(tag: &str) -> Option<String> {
-    let (rs, re) = find_attr_value_range(tag, "rel")?;
-    let rel: Vec<String> = tag[rs..re]
+    let rel: Vec<String> = tag[find_attr_value(tag, "rel")?.range()]
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect();
     if !rel.iter().any(|w| w == "stylesheet") || rel.iter().any(|w| w == "alternate") {
         return None;
     }
-    let (hs, he) = find_attr_value_range(tag, "href")?;
-    cdn::join(None, &attr_url(&tag[hs..he]))
+    let href = find_attr_value(tag, "href")?;
+    cdn::join(None, &attr_url(&tag[href.range()]))
 }
 
 /// A URL attribute's value as the browser reads it: surrounding whitespace
@@ -769,17 +821,16 @@ fn attr_url(value: &str) -> String {
 }
 
 /// `tag` with its `name="…"` (or unquoted `name=…`) attribute, whose value
-/// spans `value`, removed.
-fn without_attr(tag: &str, name: &str, (vs, ve): (usize, usize)) -> String {
-    let attr_start = tag[..vs]
-        .trim_end_matches(['"', '\''])
+/// is `value`, removed.
+fn without_attr(tag: &str, name: &str, value: AttrValue) -> String {
+    let outer = value.outer();
+    let attr_start = tag[..outer.start]
         .trim_end()
         .trim_end_matches('=')
         .trim_end()
         .len()
         - name.len();
-    let attr_end = ve + usize::from(attr_value_is_quoted(tag, vs));
-    format!("{}{}", tag[..attr_start].trim_end(), &tag[attr_end..])
+    format!("{}{}", tag[..attr_start].trim_end(), &tag[outer.end..])
 }
 
 /// `text` with every `</name` written `<\/name`, so it can't close the
@@ -957,6 +1008,7 @@ mod tests {
         assert_eq!(r.warnings[0].target, "/x/gone.png");
         assert!(r.html.contains("image missing: gone.png"));
         assert!(!r.html.contains("<img"));
+        assert!(r.html.contains("<title>Canvas post</title>"), "{}", r.html);
     }
 
     #[test]
@@ -978,7 +1030,7 @@ mod tests {
     #[test]
     fn unquoted_values_are_rewritten_in_double_quotes() {
         let c = card(
-            "<img src=/api/cards/c1/images/0 alt=a><video src=/api/cards/c1/images/1></video><a href=#canvas-open-0>site</a>",
+            "<img src=/api/cards/c1/images/0 alt=a><video src=/api/cards/c1/images/1 muted></video><a href=#canvas-open-0>site</a>",
             &["/x/a.png", "/x/gone.webm"],
             &["https://example.com/?a=1&b=2"],
         );
@@ -989,7 +1041,7 @@ mod tests {
             "{}",
             r.html
         );
-        assert!(r.html.contains("<video></video>"), "{}", r.html);
+        assert!(r.html.contains("<video muted></video>"), "{}", r.html);
         assert!(r.html.contains(
             r#"<a href="https://example.com/?a=1&amp;b=2" target="_blank" rel="noopener">site</a>"#
         ));
@@ -1070,6 +1122,30 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_script_src_and_stylesheet_link_are_inlined() {
+        let c = card(
+            "<script src=https://unpkg.com/lib.js defer></script><script async src=https://unpkg.com/lib.js></script><link rel=stylesheet href=https://cdnjs.cloudflare.com/x/css/b.css media=print><link media=screen href=//cdnjs.cloudflare.com/x/css/b.css rel=stylesheet>",
+            &[],
+            &[],
+        );
+        let r = export_card(&c, None, files, cdn_files);
+        let script = r"var s='<\/script>',t='<!--\x3CSCRIPT>';</script>";
+        assert!(
+            r.html
+                .contains(&format!("<script defer>{script}<script async>{script}")),
+            "{}",
+            r.html
+        );
+        assert!(
+            r.html
+                .contains(r#"<style media="print">.b{}</style><style media="screen">.b{}</style>"#),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
     fn only_a_script_start_inside_an_html_comment_is_escaped() {
         for (text, want) in [
             (
@@ -1134,11 +1210,25 @@ mod tests {
         for (html, want) in [
             (
                 r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&amp;b=2";.c{content:"&#169;";src:url(https://cdnjs.cloudflare.com/x/font/f.woff2?v=1)}</style></svg>"#,
-                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.c{content:"&#169;";src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
+                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.c{content:"©";src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
+            ),
+            (
+                // Quotes and parens written as references delimit the CSS.
+                r#"<svg><style>@import &quot;https://cdnjs.cloudflare.com/x/css/b.css&quot;;.f{src:url&#40;&quot;https://cdnjs.cloudflare.com/x/font/f.woff2?v=1&quot;&rpar;}.s{content:"&#x5C;&quot;url(https://cdnjs.cloudflare.com/x/css/b.css)"}</style></svg>"#,
+                r#"<svg><style>.b{}.f{src:url("data:font/woff2;base64,YWI=")}.s{content:"\"url(https://cdnjs.cloudflare.com/x/css/b.css)"}</style></svg>"#,
+            ),
+            (
+                // Nothing to inline: the text stays as written.
+                r#"<svg><style>.c{content:"&#169;&lt;"}</style></svg>"#,
+                r#"<svg><style>.c{content:"&#169;&lt;"}</style></svg>"#,
             ),
             (
                 r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&b=2";.c{content:"&#169;"}]]></style></svg>"#,
                 r#"<svg><style><![CDATA[.m>b{content:"<b>&amp;"}.c{content:"&#169;"}]]></style></svg>"#,
+            ),
+            (
+                r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&#38;b=2";@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&#x26;b=2";@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&ampb=2";.f{src:url(https://cdnjs.cloudflare.com/x/font/f.woff2&#63;v&#x3D;1)}</style></svg>"#,
+                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.f{src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
             ),
             (
                 r#"<svg><style>/*x*/<!--c-->@import "https://cdnjs.cloudflare.com/x/css/b.css";</style></svg>"#,
@@ -1153,6 +1243,26 @@ mod tests {
             assert!(r.html.contains(want), "{html}\n{}", r.html);
             assert!(r.warnings.is_empty(), "{html}: {:?}", r.warnings);
         }
+    }
+
+    #[test]
+    fn svg_and_math_scripts_and_links_stay_as_written() {
+        // The browser fetches neither an SVG `<script src>` nor an SVG or
+        // MathML `<link>`, so inlining either would add code or CSS the card
+        // never ran. Inside `<foreignObject>` they are HTML again.
+        let kept = r#"<svg><script src="https://unpkg.com/lib.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/m.css?a=1&amp;b=2"/></svg><math><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/b.css"></math>"#;
+        let r = export_card(&card(kept, &[], &[]), None, files, cdn_files);
+        assert!(r.html.contains(kept), "{}", r.html);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+
+        let html = r#"<svg><foreignObject><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/b.css"></foreignObject></svg>"#;
+        let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+        assert!(
+            r.html
+                .contains("<svg><foreignObject><style>.b{}</style></foreignObject></svg>"),
+            "{}",
+            r.html
+        );
     }
 
     #[test]
@@ -1209,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_cycle_stays_an_import() {
+    fn an_import_closing_a_cycle_is_dropped() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
             &[],
@@ -1217,13 +1327,15 @@ mod tests {
         );
         let fetch = |url: &str, _: Duration| match url {
             "https://unpkg.com/a.css" => {
-                Ok(b"@import \"a.css\";/* @import \"x.css\"; */.a{}".to_vec())
+                Ok(b"@import \"b.css\";@import \"a.css\";/* @import \"x.css\"; */.a{}".to_vec())
             }
+            "https://unpkg.com/b.css" => Ok(b"@import url(a.css) screen;.b{}".to_vec()),
             _ => Err("HTTP 404".to_string()),
         };
         let r = export_card(&c, None, files, fetch);
         assert!(
-            r.html.contains(r#"<style>@import url("https://unpkg.com/a.css");/* @import "x.css"; */.a{}</style>"#),
+            r.html
+                .contains(r#"<style>.b{}/* @import "x.css"; */.a{}</style>"#),
             "{}",
             r.html
         );
@@ -1317,6 +1429,56 @@ mod tests {
     }
 
     #[test]
+    fn a_conditional_import_holding_a_link_stays_a_link() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            match url {
+            "https://unpkg.com/a.css" => Ok(
+                b"@import \"b.css\" layer(x);@import \"d.css\" print;@import \"e.css\";@import \"f.css\" screen;".to_vec(),
+            ),
+            "https://unpkg.com/f.css" => Ok(b"@import \"a.css\";.f{}".to_vec()),
+            "https://unpkg.com/b.css" => Ok(b"@import \"https://example.com/c.css\";.b{}".to_vec()),
+            "https://unpkg.com/d.css" => Ok(b"@import \"gone.css\";.d{}".to_vec()),
+            "https://unpkg.com/e.css" => Ok(b"@import \"https://example.com/c.css\";.e{}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        }
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>@import url("https://unpkg.com/b.css") layer(x);@import url("https://unpkg.com/d.css") print;@import "https://example.com/c.css";.e{}@media screen{.f{}}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/b.css",
+                    "kept as a link: its @import of https://example.com/c.css would be ignored inside @layer"
+                ),
+                (ExportWarningKind::FetchFailed, "https://unpkg.com/gone.css", "HTTP 404"),
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/d.css",
+                    "kept as a link: its @import of https://unpkg.com/gone.css would be ignored inside @media"
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn an_import_past_the_depth_limit_warns() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
@@ -1356,7 +1518,78 @@ mod tests {
     }
 
     #[test]
-    fn repeated_imports_stop_at_the_inlining_total() {
+    fn a_sheet_too_deep_to_inline_but_inlined_elsewhere_does_not_warn() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => "@import \"y.css\";@import \"b.css\";@import \"x.css\";.a{}",
+                Some("b.css") => "@import \"c.css\";.b{}",
+                Some("c.css") => "@import \"d.css\";.c{}",
+                Some("d.css") => "@import \"e.css\";.d{}",
+                Some("e.css") => "@import \"x.css\";@import \"y.css\";.e{}",
+                Some("x.css") => ".x{}",
+                Some("y.css") => ".y{}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>.y{}@import url("https://unpkg.com/x.css");@import url("https://unpkg.com/y.css");.e{}.d{}.c{}.b{}.x{}.a{}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_sheet_kept_as_a_link_but_inlined_elsewhere_does_not_warn() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => {
+                    "@import \"e.css\" print;@import \"b.css\" layer(l);@import \"f.css\" layer(l);@import \"f.css\";"
+                }
+                Some("b.css") => "@import \"https://example.com/c.css\";@import \"e.css\";.b{}",
+                Some("e.css") => "@import \"gone.css\";.e{}",
+                Some("f.css") => "@import \"https://example.com/c.css\";.f{}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>@import url("https://unpkg.com/e.css") print;@import url("https://unpkg.com/b.css") layer(l);@import url("https://unpkg.com/f.css") layer(l);@import "https://example.com/c.css";.f{}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        // e.css went into b.css's expansion, which b.css staying a link threw
+        // away, so e.css is still missing; f.css is in the page.
+        let got: Vec<_> = r.warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(
+            got,
+            [
+                "https://unpkg.com/gone.css",
+                "https://unpkg.com/e.css",
+                "https://unpkg.com/b.css"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sheet_repeated_past_the_inlining_total_does_not_warn() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
             &[],
@@ -1375,9 +1608,43 @@ mod tests {
             "{}",
             r.html.len()
         );
-        assert_eq!(r.warnings.len(), 1);
-        assert_eq!(r.warnings[0].target, "https://unpkg.com/b.css");
-        assert!(r.warnings[0].reason.contains("already inlined 8 MB"));
+        assert!(r
+            .html
+            .contains(r#"@import url("https://unpkg.com/b.css");"#));
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn repeated_imports_stop_at_the_inlining_total() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let a: String = (0..40).map(|n| format!("@import \"b{n}.css\";")).collect();
+        // a.css counts toward the total too.
+        let fit = (MAX_INLINED_BYTES - a.len()) / MAX_ASSET_BYTES;
+        let b = vec![b'x'; MAX_ASSET_BYTES];
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/a.css" => Ok(a.clone().into_bytes()),
+            u if u.starts_with("https://unpkg.com/b") => Ok(b.clone()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+            "{}",
+            r.html.len()
+        );
+        assert_eq!(r.warnings.len(), 40 - fit);
+        assert_eq!(
+            r.warnings[0].target,
+            format!("https://unpkg.com/b{fit}.css")
+        );
+        assert!(r
+            .warnings
+            .iter()
+            .all(|w| w.reason.contains("already inlined 8 MB")));
     }
 
     #[test]
@@ -1412,6 +1679,17 @@ mod tests {
     fn no_data_no_shim() {
         let r = export_card(&card("<p>hi</p>", &[], &[]), None, files, offline);
         assert!(!r.html.contains("canvas-data"));
-        assert!(r.html.contains("<title>Canvas post</title>"));
+        assert!(r.html.contains("<title>hi</title>"), "{}", r.html);
+    }
+
+    #[test]
+    fn a_card_with_no_text_is_titled_canvas_post() {
+        let r = export_card(
+            &card("<hr><script>x</script>", &[], &[]),
+            None,
+            files,
+            offline,
+        );
+        assert!(r.html.contains("<title>Canvas post</title>"), "{}", r.html);
     }
 }

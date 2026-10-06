@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "export",
+  "description": "Grants canvasd's viewer page in the main window export_card, which writes a file wherever the save dialog points. Only the main window's card menu calls it, so the settings window does not get it.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["allow-export-card"]
+}

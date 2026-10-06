@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use canvas_core::html::{find_attr_value_range, tag_name, tags, Tag};
+use canvas_core::html::{find_attr_value, tag_name, tags, Tag};
 use canvas_core::{base64, MAX_ASSET_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,15 +61,14 @@ fn local_stylesheet_href(tag: &str) -> Option<String> {
     if tag_name(tag).as_deref() != Some("link") {
         return None;
     }
-    let (rs, re) = find_attr_value_range(tag, "rel")?;
-    if !tag[rs..re]
+    let rel = find_attr_value(tag, "rel")?;
+    if !tag[rel.range()]
         .split_whitespace()
         .any(|w| w.eq_ignore_ascii_case("stylesheet"))
     {
         return None;
     }
-    let (hs, he) = find_attr_value_range(tag, "href")?;
-    let href = &tag[hs..he];
+    let href = &tag[find_attr_value(tag, "href")?.range()];
     href.starts_with('/').then(|| href.to_string())
 }
 
@@ -175,6 +174,14 @@ mod tests {
         let html = r#"<link rel="stylesheet" href="/p/tokens.css"><p>x</p>"#;
         let r = inline_stylesheets(html, files(&[("/p/tokens.css", b":root{--a:1}")]));
         assert_eq!(r.html, "<style>:root{--a:1}</style><p>x</p>");
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn unquoted_rel_and_href_are_read() {
+        let html = "<link rel=stylesheet href=/p/a.css><link href=/p/b.css rel=stylesheet title=t>";
+        let r = inline_stylesheets(html, files(&[("/p/a.css", b".a{}"), ("/p/b.css", b".b{}")]));
+        assert_eq!(r.html, "<style>.a{}</style><style>.b{}</style>");
         assert!(r.warnings.is_empty());
     }
 

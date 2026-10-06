@@ -2,6 +2,8 @@
 //! canvasd's export: no parser, just quote-aware tag boundaries and
 //! attribute lookups over the byte string.
 
+use std::ops::Range;
+
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
 /// `>` inside a quoted attribute value doesn't end the tag early. Tag
 /// boundaries follow the browser's tokenizer: `<` opens a tag only before a
@@ -75,7 +77,7 @@ enum Tok {
 
 /// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
 /// `<title>` or `<textarea>` element holds no tags, so after its opening tag
-/// the scan resumes at its closing tag, which the tag's `text_end` names. In
+/// the scan resumes at its closing tag, which the tag's `text_end` holds. In
 /// SVG or MathML those elements hold markup like any other, and a
 /// `<![CDATA[` section there is one tag through its `]]>`.
 pub fn tags(html: &str) -> Tags<'_> {
@@ -87,15 +89,21 @@ pub fn tags(html: &str) -> Tags<'_> {
     }
 }
 
-/// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and
-/// `text_end`, where the scan resumes. For a raw-text element's opening tag
-/// that is its closing tag (or the end of the HTML), so `[end, text_end)` is
-/// the element's text; for any other tag it is `end`.
+/// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and for
+/// the opening tag of an element the scan read as raw text, `text_end`: its
+/// closing tag (or the end of the HTML), where the scan resumes, so
+/// `[end, text_end)` is the element's text. Any other tag, an SVG or MathML
+/// `<style>` included, has none and the scan resumes at `end`. `foreign`
+/// is true for a start tag that opened an SVG or MathML element, `<svg>` and
+/// `<math>` themselves included: the browser gives such an element none of
+/// its HTML namesake's behavior, so an SVG `<link>` loads no stylesheet and
+/// an SVG `<script>` ignores `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tag {
     pub start: usize,
     pub end: usize,
-    pub text_end: usize,
+    pub text_end: Option<usize>,
+    pub foreign: bool,
 }
 
 pub struct Tags<'a> {
@@ -256,8 +264,9 @@ impl Tags<'_> {
     }
 
     /// Updates the open elements for the start tag `tag`, and returns where
-    /// the scan resumes.
-    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+    /// its text ends when the scan reads it as raw text, and whether it
+    /// opened an SVG or MathML element.
+    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
         let self_closing = tag.ends_with("/>");
         let mut as_html = match self.open.last() {
             None => true,
@@ -277,7 +286,7 @@ impl Tags<'_> {
             match name {
                 "svg" => Ns::Svg,
                 "math" => Ns::Math,
-                _ => return self.html_start_tag(tag, name, end),
+                _ => return (self.html_start_tag(tag, name, end), false),
             }
         } else if self.open.last().is_some_and(|e| e.ns == Ns::Math) {
             Ns::Math
@@ -287,28 +296,27 @@ impl Tags<'_> {
         // An `<svg>` or `<math>` read as HTML meets the table modes first,
         // which can close a `<colgroup>`.
         if as_html && !self.table_start_tag(name) {
-            return end;
+            return (None, false);
         }
         self.insert(tag, name);
-        if self_closing {
-            return end;
+        if !self_closing {
+            self.open.push(Element {
+                name: name.to_string(),
+                ns,
+                point: integration_point(tag, name, ns == Ns::Math),
+            });
         }
-        self.open.push(Element {
-            name: name.to_string(),
-            ns,
-            point: integration_point(tag, name, ns == Ns::Math),
-        });
-        end
+        (None, true)
     }
 
     /// Updates the open elements for the HTML start tag `<name>`, closing
     /// what the tree builder closes before inserting it, and returns where
-    /// the scan resumes.
-    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+    /// its text ends when it is a raw-text element.
+    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<usize> {
         // A card is already in a body, where `<html>` and `<body>` only add
         // attributes to the open ones and `<head>` is dropped.
         if !self.table_start_tag(name) || matches!(name, "html" | "body" | "head") {
-            return end;
+            return None;
         }
         self.body_start_tag(name);
         // A `<frame>` in a body is dropped, so nothing is inserted.
@@ -320,8 +328,10 @@ impl Tags<'_> {
         }
         match name {
             // In HTML `<style/>` still opens its text.
-            "script" | "style" | "title" | "textarea" => closing_tag_start(self.html, end, name),
-            _ => end,
+            "script" | "style" | "title" | "textarea" => {
+                Some(closing_tag_start(self.html, end, name))
+            }
+            _ => None,
         }
     }
 
@@ -373,8 +383,8 @@ impl Tags<'_> {
             || TABLE_PARTS.contains(&name)
             || matches!(name, "table" | "style" | "script" | "template" | "form")
             || (name == "input"
-                && find_attr_value_range(tag, "type")
-                    .is_some_and(|(s, e)| tag[s..e].eq_ignore_ascii_case("hidden")));
+                && find_attr_value(tag, "type")
+                    .is_some_and(|v| tag[v.range()].eq_ignore_ascii_case("hidden")));
         in_table && !held
     }
 
@@ -738,6 +748,19 @@ impl Tags<'_> {
         }
     }
 
+    /// The index of the innermost open HTML `<template>`.
+    fn template_index(&self) -> Option<usize> {
+        self.open
+            .iter()
+            .rposition(|e| !e.is_foreign() && e.name == "template")
+    }
+
+    /// Whether the scan is inside an HTML `<template>`, whose contents the
+    /// browser never shows.
+    fn in_template(&self) -> bool {
+        self.template_index().is_some()
+    }
+
     /// Pops foreign elements until the innermost is HTML or an integration
     /// point.
     fn pop_foreign_to_point(&mut self) {
@@ -783,6 +806,16 @@ impl Tags<'_> {
     /// Closes elements for the end tag `</name>` as the tree builder's "in
     /// body" rules do.
     fn html_end_tag(&mut self, name: &str) {
+        // Every insertion mode reads `</template>` by the "in head" rules:
+        // it closes the innermost template and everything it holds, past any
+        // special element, and is dropped when no template is open.
+        if name == "template" {
+            if let Some(i) = self.template_index() {
+                self.open.truncate(i);
+                self.reset_mode();
+            }
+            return;
+        }
         if self.table_end_tag(name) {
             return;
         }
@@ -814,9 +847,6 @@ impl Tags<'_> {
                     let e = &self.open[i];
                     if !e.is_foreign() && e.name == name {
                         self.open.truncate(i);
-                        if name == "template" {
-                            self.reset_mode();
-                        }
                         return;
                     }
                     if e.is_special() {
@@ -1047,8 +1077,8 @@ fn integration_point(tag: &str, name: &str, math: bool) -> Point {
         (false, "foreignobject" | "desc" | "title") => Point::Html,
         (true, "mi" | "mo" | "mn" | "ms" | "mtext") => Point::MathText,
         (true, "annotation-xml")
-            if find_attr_value_range(tag, "encoding").is_some_and(|(s, e)| {
-                let encoding = &tag[s..e];
+            if find_attr_value(tag, "encoding").is_some_and(|v| {
+                let encoding = &tag[v.range()];
                 encoding.eq_ignore_ascii_case("text/html")
                     || encoding.eq_ignore_ascii_case("application/xhtml+xml")
             }) =>
@@ -1137,11 +1167,8 @@ impl Iterator for Tags<'_> {
                 .map_or(self.html.len(), |e| body + e + "]]>".len());
         }
         let tag = &self.html[start..end];
-        let text_end = if tag.as_bytes()[1].is_ascii_alphabetic() {
-            match tag_name(tag) {
-                Some(name) => self.start_tag(tag, &name, end),
-                None => end,
-            }
+        let (text_end, foreign) = if tag.as_bytes()[1].is_ascii_alphabetic() {
+            tag_name(tag).map_or((None, false), |name| self.start_tag(tag, &name, end))
         } else {
             match tag.strip_prefix("</") {
                 // An end tag starts with a letter; `</>` is dropped, and any
@@ -1164,13 +1191,14 @@ impl Iterator for Tags<'_> {
                 }
                 None => {}
             }
-            end
+            (None, false)
         };
-        self.pos = text_end;
+        self.pos = text_end.unwrap_or(end);
         Some(Tag {
             start,
             end,
             text_end,
+            foreign,
         })
     }
 }
@@ -1207,21 +1235,44 @@ pub fn tag_name(tag: &str) -> Option<String> {
     Some(inner[..end].to_ascii_lowercase())
 }
 
+/// An attribute value [`find_attr_value`] found in an opening tag: the byte
+/// range of the value relative to the tag, and the quote written around it
+/// (`None` for an unquoted value).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttrValue {
+    start: usize,
+    end: usize,
+    pub quote: Option<char>,
+}
+
+impl AttrValue {
+    /// The value's bytes, quotes excluded.
+    pub fn range(self) -> Range<usize> {
+        self.start..self.end
+    }
+
+    /// The value's bytes with its quotes. An unquoted value ends at the
+    /// whitespace or `>` after it, which this range leaves out.
+    pub fn outer(self) -> Range<usize> {
+        let q = self.quote.map_or(0, char::len_utf8);
+        self.start - q..self.end + q
+    }
+}
+
 /// Finds the attribute `attr` (case-insensitive name) in the opening tag
-/// `tag`, reading its attributes as the browser's tokenizer does, and returns
-/// the byte range of its value relative to `tag`: between the quotes of
-/// `name="v"` or `name='v'`, or for an unquoted `name=v` up to whitespace or
-/// `>`. Spaces around `=` are allowed. Text inside another attribute's value
-/// is never read as an attribute, so `alt="a src=x"` holds no `src`. The
-/// first attribute of a name wins, as in the browser, and one written without
-/// `=` has no value: `None`.
-pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
+/// `tag`, reading its attributes as the browser's tokenizer does: its value
+/// lies between the quotes of `name="v"` or `name='v'`, or for an unquoted
+/// `name=v` runs up to whitespace or `>`. Spaces around `=` are allowed. Text
+/// inside another attribute's value is never read as an attribute, so
+/// `alt="a src=x"` holds no `src`. The first attribute of a name wins, as in
+/// the browser, and one written without `=` has no value: `None`.
+pub fn find_attr_value(tag: &str, attr: &str) -> Option<AttrValue> {
     find_attr(tag, attr).flatten()
 }
 
-/// [`find_attr_value_range`]'s lookup, telling a missing attribute (`None`)
-/// from one written without `=` (`Some(None)`).
-fn find_attr(tag: &str, attr: &str) -> Option<Option<(usize, usize)>> {
+/// [`find_attr_value`]'s lookup, telling a missing attribute (`None`) from one
+/// written without `=` (`Some(None)`).
+fn find_attr(tag: &str, attr: &str) -> Option<Option<AttrValue>> {
     let b = tag.as_bytes();
     let space = |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
     let name_ends = |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
@@ -1257,44 +1308,47 @@ fn find_attr(tag: &str, attr: &str) -> Option<Option<(usize, usize)>> {
         while space(i) {
             i += 1;
         }
-        let (vs, ve) = match b.get(i) {
+        let value = match b.get(i) {
             Some(&q @ (b'"' | b'\'')) => {
-                let vs = i + 1;
-                let ve = vs + tag[vs..].find(q as char)?;
-                i = ve + 1;
-                (vs, ve)
+                let quote = q as char;
+                let start = i + 1;
+                let end = start + tag[start..].find(quote)?;
+                i = end + 1;
+                AttrValue {
+                    start,
+                    end,
+                    quote: Some(quote),
+                }
             }
             _ => {
-                let vs = i;
+                let start = i;
                 while i < b.len() && !space(i) && b[i] != b'>' {
                     i += 1;
                 }
-                (vs, i)
+                AttrValue {
+                    start,
+                    end: i,
+                    quote: None,
+                }
             }
         };
         if is_attr {
-            return Some(Some((vs, ve)));
+            return Some(Some(value));
         }
     }
 }
 
-/// `tag` with the attribute value at `[vs, ve)` (a [`find_attr_value_range`]
-/// range) replaced by `value`, which must already be safe inside a quoted
+/// `tag` with the attribute value `old` (a [`find_attr_value`] result for
+/// `tag`) replaced by `value`, which must already be safe inside a quoted
 /// value ([`escape_attr`]). An unquoted value is written in double quotes, so
 /// the new one stays one value whatever it holds.
-pub fn replace_attr_value(tag: &str, (vs, ve): (usize, usize), value: &str) -> String {
-    let quote = if attr_value_is_quoted(tag, vs) {
-        ""
-    } else {
-        "\""
-    };
-    format!("{}{quote}{value}{quote}{}", &tag[..vs], &tag[ve..])
-}
-
-/// Whether the [`find_attr_value_range`] value starting at `vs` is quoted.
-/// The byte before an unquoted value is `=` or whitespace, never a quote.
-pub fn attr_value_is_quoted(tag: &str, vs: usize) -> bool {
-    tag[..vs].ends_with(['"', '\''])
+pub fn replace_attr_value(tag: &str, old: AttrValue, value: &str) -> String {
+    let quote = if old.quote.is_some() { "" } else { "\"" };
+    format!(
+        "{}{quote}{value}{quote}{}",
+        &tag[..old.start],
+        &tag[old.end..]
+    )
 }
 
 /// What names a card in a list or a page title: the text of its first
@@ -1310,32 +1364,22 @@ pub fn card_label(html: &str) -> Option<String> {
     })
 }
 
-/// The text of the first `<h1>`–`<h3>`, tags stripped.
+/// The visible text of the first `<h1>`–`<h3>` outside a `<template>`,
+/// whitespace collapsed. `None` when it is empty or never closed.
 pub fn first_heading(html: &str) -> Option<String> {
-    for Tag { start, end, .. } in tags(html) {
+    let mut scan = tags(html);
+    while let Some(Tag { start, end, .. }) = scan.next() {
+        if scan.in_template() {
+            continue;
+        }
         let name = tag_name(&html[start..end]);
         if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
-            let close = format!("</{level}");
-            let rest = &html[end..];
-            let stop = rest.to_ascii_lowercase().find(&close)?;
-            let text = collapse_whitespace(&strip_tags(&rest[..stop]));
+            let text = read_visible(html, &mut scan, end, Some(level))?;
+            let text = collapse_whitespace(&text);
             return (!text.is_empty()).then_some(text);
         }
     }
     None
-}
-
-/// `html` with every tag removed and the escapes [`escape_attr`] writes
-/// decoded once.
-pub fn strip_tags(html: &str) -> String {
-    let mut out = String::new();
-    let mut pos = 0;
-    for Tag { start, end, .. } in tags(html) {
-        out.push_str(&html[pos..start]);
-        pos = end;
-    }
-    out.push_str(&html[pos..]);
-    decode_entities(&out)
 }
 
 /// Tags that start a new line of text, opening or closing.
@@ -1374,47 +1418,64 @@ const BLOCK_TAGS: &[&str] = &[
     "ul",
 ];
 
-/// Like [`strip_tags`], but the contents of `<script>`, `<style>` and
-/// `<template>` are dropped and each block tag starts a new line.
+/// `html` with every tag removed, the contents of `<script>`, `<style>` and
+/// `<template>` dropped, each block tag starting a new line, and every
+/// character reference decoded once ([`decode_entities`]), each run of text
+/// between two tags on its own, as the parser reads it.
 fn visible_text(html: &str) -> String {
+    read_visible(html, &mut tags(html), 0, None).unwrap_or_default()
+}
+
+/// [`visible_text`] of what `scan` passes over from `pos`: up to the end tag
+/// `</close>` outside a `<template>` (`None` when it never comes), or to the
+/// end of `html` when `close` is `None`.
+fn read_visible(
+    html: &str,
+    scan: &mut Tags,
+    mut pos: usize,
+    close: Option<&str>,
+) -> Option<String> {
     let mut out = String::new();
-    let mut pos = 0;
-    let mut scan = tags(html);
+    // Whether the text after the last tag is inside a `<template>`.
+    let mut hidden = scan.in_template();
     while let Some(Tag {
         start,
         end,
         text_end,
+        ..
     }) = scan.next()
     {
-        out.push_str(&html[pos..start]);
+        if !hidden {
+            out.push_str(&decode_entities(&html[pos..start]));
+        }
         pos = end;
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
+        if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
+            return Some(out);
+        }
         match name.as_deref() {
-            Some("script" | "style") => pos = text_end,
-            // Not raw text, but its contents are never shown.
-            Some("template") if !tag.starts_with("</") => {
-                pos = closing_tag_start(html, end, "template");
-                scan.skip_to(pos);
-            }
-            Some(name) if BLOCK_TAGS.contains(&name) => out.push('\n'),
+            Some("script" | "style") => pos = text_end.unwrap_or(end),
+            Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
         }
+        hidden = scan.in_template();
     }
-    if pos < html.len() {
-        out.push_str(&html[pos..]);
+    if close.is_some() {
+        return None;
     }
-    decode_entities(&out)
+    if pos < html.len() && !hidden {
+        out.push_str(&decode_entities(&html[pos..]));
+    }
+    Some(out)
 }
 
-/// `s` with the five entities [`escape_attr`] writes decoded.
+/// `s` with every character reference decoded once, as the HTML parser
+/// decodes text between tags: any named reference (with or without its
+/// semicolon, for the names the spec allows bare) and any decimal or hex
+/// numeric one.
 pub fn decode_entities(s: &str) -> String {
-    // `&amp;` last, so `&amp;lt;` decodes to `&lt;`, not `<`.
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+    htmlize::unescape(s).into_owned()
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -1635,6 +1696,56 @@ mod tests {
                 "<title/>",
                 "</annotation-xml>",
                 "</math>"
+            ]
+        );
+    }
+
+    #[test]
+    fn text_end_marks_only_tags_read_as_raw_text() {
+        let html = "<style></style><style/>a{}</style><svg><style></style><style/></svg><b>";
+        let ends: Vec<(&str, Option<usize>)> = tags(html)
+            .map(|t| (&html[t.start..t.end], t.text_end))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                ("<style>", Some(7)),
+                ("</style>", None),
+                ("<style/>", Some(26)),
+                ("</style>", None),
+                ("<svg>", None),
+                ("<style>", None),
+                ("</style>", None),
+                ("<style/>", None),
+                ("</svg>", None),
+                ("<b>", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn foreign_marks_start_tags_that_open_svg_or_math_elements() {
+        let html = "<link><svg><link/><script></script><foreignObject><link>\
+                    </foreignObject><p><link></p><math><mi/></math><b>";
+        let foreign: Vec<(&str, bool)> = tags(html)
+            .filter(|t| !html[t.start..].starts_with("</"))
+            .map(|t| (&html[t.start..t.end], t.foreign))
+            .collect();
+        assert_eq!(
+            foreign,
+            [
+                ("<link>", false),
+                ("<svg>", true),
+                ("<link/>", true),
+                ("<script>", true),
+                ("<foreignObject>", true),
+                // An integration point holds HTML; a `<p>` breaks out.
+                ("<link>", false),
+                ("<p>", false),
+                ("<link>", false),
+                ("<math>", true),
+                ("<mi/>", true),
+                ("<b>", false),
             ]
         );
     }
@@ -1972,7 +2083,7 @@ mod tests {
     #[test]
     fn attr_values_are_read_as_the_tokenizer_reads_them() {
         fn value<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
-            find_attr_value_range(tag, attr).map(|(s, e)| &tag[s..e])
+            find_attr_value(tag, attr).map(|v| &tag[v.range()])
         }
         assert_eq!(value("<img src=/a.png>", "src"), Some("/a.png"));
         assert_eq!(value("<img src = /a.png/>", "src"), Some("/a.png/"));
@@ -1990,14 +2101,30 @@ mod tests {
     #[test]
     fn replace_attr_value_quotes_an_unquoted_value() {
         let tag = "<img src=/a.png alt=x>";
-        let range = find_attr_value_range(tag, "src").unwrap();
+        let old = find_attr_value(tag, "src").unwrap();
         assert_eq!(
-            replace_attr_value(tag, range, "a b"),
+            replace_attr_value(tag, old, "a b"),
             "<img src=\"a b\" alt=x>"
         );
         let tag = "<img src='/a.png'>";
-        let range = find_attr_value_range(tag, "src").unwrap();
-        assert_eq!(replace_attr_value(tag, range, "x"), "<img src='x'>");
+        let old = find_attr_value(tag, "src").unwrap();
+        assert_eq!(replace_attr_value(tag, old, "x"), "<img src='x'>");
+    }
+
+    #[test]
+    fn attr_values_report_their_quote() {
+        let tag = "<img src=/a.png alt=x>";
+        let v = find_attr_value(tag, "src").unwrap();
+        assert_eq!(v.quote, None);
+        assert_eq!(&tag[v.outer()], "/a.png");
+        // The space after an unquoted value belongs to what follows it.
+        assert_eq!(&tag[v.outer().end..], " alt=x>");
+        let tag = "<img src = '/a.png' alt=x>";
+        let v = find_attr_value(tag, "src").unwrap();
+        assert_eq!(v.quote, Some('\''));
+        assert_eq!(&tag[v.outer()], "'/a.png'");
+        let tag = "<img src=\"\">";
+        assert_eq!(find_attr_value(tag, "src").unwrap().quote, Some('"'));
     }
 
     #[test]
@@ -2021,13 +2148,89 @@ mod tests {
             card_label("<p>a &amp;lt; b</p>").as_deref(),
             Some("a &lt; b")
         );
+        assert_eq!(
+            card_label("<p>&#38; &#x26; &amp &copy x &mdash; &notit; &bogus; &#0;</p>").as_deref(),
+            Some("& & & © x — ¬it; &bogus; \u{fffd}")
+        );
+        // A reference split by a tag is two runs of text, neither decoded.
+        assert_eq!(
+            card_label("<p>&not<b>in;</b> &am<i></i>p; &#<b>65</b>;</p>").as_deref(),
+            Some("¬in; &amp; &#65;")
+        );
         assert_eq!(card_label("<p>one</p><p>two</p>").as_deref(), Some("one"));
         assert_eq!(card_label("<img src=x><script>x</script>"), None);
     }
 
     #[test]
-    fn strip_tags_keeps_literal_tags_in_title_text() {
-        assert_eq!(strip_tags("<title>a<b>c</title>"), "a<b>c");
+    fn card_label_skips_all_of_a_nested_template() {
+        let label = |html| card_label(html).unwrap_or_default();
+        assert_eq!(
+            label("<template>a<template>b</template>HIDDEN</template>shown"),
+            "shown"
+        );
+        // `</template>` closes its template past a `<p>` or `<div>` it holds.
+        assert_eq!(
+            label("<template><p>a<div>b</template>shown<p>more"),
+            "shown"
+        );
+        // A `</template>` in script text or SVG's own `<template>` ends nothing.
+        assert_eq!(
+            label("<template><script>'</template>'</script>HIDDEN</template>shown"),
+            "shown"
+        );
+        assert_eq!(
+            label("<template><svg><template></template>HIDDEN</svg></template>shown"),
+            "shown"
+        );
+        assert_eq!(label("</template>shown"), "shown");
+    }
+
+    #[test]
+    fn card_label_skips_a_heading_inside_a_template() {
+        let label = |html| card_label(html).unwrap_or_default();
+        assert_eq!(
+            label("<template><h1>hid</h1></template>Shown line"),
+            "Shown line"
+        );
+        assert_eq!(
+            label("<template><div><h2>hid</h2></template><h3>shown</h3>"),
+            "shown"
+        );
+        assert_eq!(card_label("<template><h1>x</h1>"), None);
+    }
+
+    #[test]
+    fn first_heading_drops_a_template_inside_the_heading() {
+        assert_eq!(
+            first_heading("<h1>Title<template>hid</template></h1>").as_deref(),
+            Some("Title")
+        );
+        // A `</h1>` inside the template ends nothing.
+        assert_eq!(
+            first_heading("<h1>A<template></h1></template>B</h1>").as_deref(),
+            Some("AB")
+        );
+        assert_eq!(
+            first_heading("<h1>A<script>'</h1>'</script>B</h1>").as_deref(),
+            Some("AB")
+        );
+    }
+
+    #[test]
+    fn visible_text_drops_a_template_and_keeps_what_follows() {
+        // A block tag inside the template starts no line of its own.
+        assert_eq!(visible_text("a<template><div>x</div></template>b"), "ab");
+        assert_eq!(
+            visible_text("<template><p>a<div>b</template>shown<p>more"),
+            "shown\nmore"
+        );
+        assert_eq!(visible_text("a<template><p>unclosed"), "a");
+        // `</template>` closes its template past the table it holds, and the
+        // row after it reads as visible again.
+        assert_eq!(
+            visible_text("<table><tr><template><table><td>x</template><td>y</table>"),
+            "\n\n\ny\n"
+        );
     }
 
     #[test]

@@ -1,7 +1,9 @@
 /* Served first in every artifact HTML page (artifacts::served_page), joined
    onto one line so the page's own line numbers don't move: so no line
    comments, and every statement ends in a semicolon. It posts each uncaught
-   error and unhandled rejection to the viewer as canvas-artifact-error.
+   error and unhandled rejection to the viewer as canvas-artifact-error, and
+   a click on an http(s) link as canvas-artifact-open, so the viewer opens it
+   in the default browser instead of the pane navigating away.
 
    The pane's opaque origin makes WebKit report nearly every error to window
    as a bare "Script error.": anything but the top level of a script fetched
@@ -81,6 +83,17 @@
     }
     return guarded;
   };
+  listen.call(document, "click", (e) => {
+    if (e.defaultPrevented) return;
+    const a = e.target && e.target.closest && e.target.closest("a[href]");
+    const href = a && a.href;
+    const url = typeof href === "string" ? href : href && typeof href.baseVal === "string" ? new URL(href.baseVal, document.baseURI).href : "";
+    if (!/^https?:\/\//i.test(url)) return;
+    e.preventDefault();
+    try {
+      parent.postMessage({ type: "canvas-artifact-open", url }, "*");
+    } catch (_) {}
+  });
   try {
     for (const name of ["setTimeout", "setInterval", "requestAnimationFrame", "requestIdleCallback", "queueMicrotask"]) {
       const original = window[name];

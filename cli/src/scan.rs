@@ -4,9 +4,7 @@
 //! daemon and viewer resolve. No I/O of its own — callers inject an
 //! `exists` predicate, which is the test seam.
 
-use canvas_core::html::{
-    attr_value_is_quoted, find_attr_value_range, next_tag, replace_attr_value, tag_name, tags, Tag,
-};
+use canvas_core::html::{find_attr_value, next_tag, replace_attr_value, tag_name, tags, Tag};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scanned {
@@ -64,9 +62,9 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
 
         match name.as_deref() {
             Some(tag_kind @ ("img" | "video" | "source")) => {
-                match find_attr_value_range(tag, "src") {
-                    Some((vs, ve)) => {
-                        let value = &tag[vs..ve];
+                match find_attr_value(tag, "src") {
+                    Some(src) => {
+                        let value = &tag[src.range()];
                         if value.starts_with('/') {
                             if exists(value) {
                                 let idx = images.len();
@@ -74,19 +72,18 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                                 // Written as exactly `src="canvas-image:<n>"`, with no
                                 // whitespace around `=` and an unquoted value given
                                 // double quotes: canvasd matches that one shape.
-                                let quoted = attr_value_is_quoted(tag, vs);
-                                let quote = if quoted { &tag[vs - 1..vs] } else { "\"" };
-                                let before_value = tag[..vs - usize::from(quoted)].trim_end();
+                                let quote = src.quote.unwrap_or('"');
+                                let before_value = tag[..src.outer().start].trim_end();
                                 let name_end = before_value
                                     .strip_suffix('=')
                                     .unwrap_or(before_value)
                                     .trim_end();
                                 out.push_str(name_end);
                                 out.push('=');
-                                out.push_str(quote);
+                                out.push(quote);
                                 out.push_str(&format!("canvas-image:{idx}"));
-                                out.push_str(quote);
-                                out.push_str(&tag[ve + usize::from(quoted)..]);
+                                out.push(quote);
+                                out.push_str(&tag[src.outer().end..]);
                             } else {
                                 let what = if tag_kind == "img" { "image" } else { "video" };
                                 warnings.push(format!(
@@ -101,9 +98,9 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                     None => out.push_str(tag),
                 }
             }
-            Some("a") => match find_attr_value_range(tag, "href") {
-                Some((vs, ve)) => {
-                    let value = &tag[vs..ve];
+            Some("a") => match find_attr_value(tag, "href") {
+                Some(href) => {
+                    let value = &tag[href.range()];
                     let is_url = value.starts_with("http://") || value.starts_with("https://");
                     let is_abs_path = value.starts_with('/');
                     if is_url || (is_abs_path && exists(value)) {
@@ -111,7 +108,7 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
                         targets.push(value.to_string());
                         out.push_str(&replace_attr_value(
                             tag,
-                            (vs, ve),
+                            href,
                             &format!("#canvas-open-{idx}"),
                         ));
                     } else if is_abs_path {
@@ -190,8 +187,8 @@ fn sole_image_in_link(
 }
 
 fn has_existing_local(tag: &str, attr: &str, exists: &impl Fn(&str) -> bool) -> bool {
-    find_attr_value_range(tag, attr).is_some_and(|(vs, ve)| {
-        let value = &tag[vs..ve];
+    find_attr_value(tag, attr).is_some_and(|v| {
+        let value = &tag[v.range()];
         value.starts_with('/') && exists(value)
     })
 }

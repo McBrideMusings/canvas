@@ -8,7 +8,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
-    ArtifactSource, NewArtifactRequest, PutArtifactRequest, RelinkArtifactRequest,
+    ArtifactSource, NewArtifactRequest, OpenLinkRequest, PutArtifactRequest, RelinkArtifactRequest,
     ScriptErrorReport,
 };
 
@@ -414,6 +414,41 @@ pub async fn report_script_error(
         ],
     );
     artifacts.record_script_error(&id, report);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// The viewer relays a click on an `http(s)` link inside the pane showing
+/// `id`: canvasd keeps it for `canvas artifact show` and opens it in the default
+/// browser. Anything else, or a URL over 2KB, is a 400; a second open within
+/// a second of the last is a 429.
+pub async fn open_artifact_link(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<OpenLinkRequest>,
+) -> Response {
+    if !state.artifacts.read().await.records.contains_key(&id) {
+        return not_found();
+    }
+    let url = req.url;
+    if !(url.starts_with("http://") || url.starts_with("https://"))
+        || url.len() > 2048
+        || url.chars().any(char::is_control)
+    {
+        return bad_request("only an http(s) link of at most 2048 bytes opens".to_string());
+    }
+    if !state
+        .artifacts
+        .write()
+        .await
+        .record_opened_link(&id, url.clone())
+    {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    if !crate::routes::open_target(&url).await {
+        canvas_core::log::warn("artifact link open failed", &[("id", &id), ("url", &url)]);
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    canvas_core::log::info("artifact link opened", &[("id", &id), ("url", &url)]);
     StatusCode::NO_CONTENT.into_response()
 }
 

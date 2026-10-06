@@ -56,11 +56,14 @@ beside the terminal all day.
   `canvas-post://<card_id>` shows the window and parks the id in `PendingCard`,
   and the viewer takes it with `take_pending_card` once its state has loaded,
   clears search and filters, scrolls to the card and rings it.
-  The card menu's "Export post…" calls `export_card` (`export.rs`): it fetches
+  The card menu's "Export post…" calls `export_card` (`export.rs`; `capabilities/export.json` grants it to
+  the main window alone): it fetches
   `GET /api/cards/:id/export` over the socket (waiting `EXPORT_DOWNLOAD_SECS`
   plus 15s), opens a save dialog from Rust (`tauri-plugin-dialog`; the viewer
-  holds no dialog permission), writes the page and returns the path, `null` for
-  a cancelled dialog, or a one-line reason the item shows as "Export failed: …";
+  holds no dialog permission), writes the page and returns `{path, warnings}`
+  (the toast names what the warnings left out: "Exported to f.html without 1
+  image and 2 CDN files"), `null` for a cancelled dialog, or a one-line reason
+  the item shows as "Export failed: …";
   it logs `post exported`, `post export cancelled` or `post export failed`.
   A debug build with `CANVAS_DEBUG_DIR` set (`debug.rs`; `verify-app.sh` sets
   it) runs each `eval/*.js` in that folder in the main window, so a script can
@@ -186,10 +189,16 @@ beside the terminal all day.
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
-  not raw text: its CSS is its text and CDATA sections, references read with
-  entities decoded and replacements written with entities (`]]>` split inside
-  CDATA). A failure, or an `@import` nested past
-  `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning, and each download
+  not raw text: its CSS is its text and CDATA sections, every HTML character
+  reference (named or numeric, `htmlize` via `canvas_core::html::decode_entities`)
+  decoded once per text run outside CDATA before the scan (`Cdn::markup_css`) and replacements
+  written with entities (`]]>` split inside CDATA); a style where nothing was
+  inlined keeps its text exactly as written. A failure, or an `@import` nested past
+  `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
+  `@import` with conditions whose sheet still holds an `@import` that stays a link,
+  since the browser ignores an `@import` inside a block. `export_card` drops a
+  `fetch-failed` warning whose URL's content went into the page through another
+  reference (`Cdn`'s list of inlined URLs). Each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through
   `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build
   ignores it. None of `buildIframeDoc`'s theming, sizing or sandbox is
@@ -341,6 +350,16 @@ beside the terminal all day.
   builds a new frame, so an unloading page can't report onto the next). canvasd keeps the newest 50 per artifact
   in memory (dropped on delete), logs `artifact script error`, and `show`
   lists them as `scriptErrors`.
+  Links: the same relay catches a click on an `<a>` whose resolved `href` is
+  `http(s)` (relative links resolve to `canvas:` and navigate inside the pane),
+  prevents the navigation and posts `canvas-artifact-open` `{url}`; the viewer
+  relays it, for the pane's frame only, to `POST /api/artifacts/:id/open`.
+  canvasd refuses anything but `http(s)` of at most 2KB (400) and a second
+  open from one artifact within a second (429, since a page script can post the
+  message with no click), runs macOS
+  `open` on it (`routes::open_target`; a debug build runs `CANVAS_OPEN_BIN`
+  instead when set), logs `artifact link opened`, and keeps the newest 50 in
+  memory (dropped on delete); `show` lists them as `openedLinks`.
   Widgets and refresh: `canvas artifact new|put --widget <file> --refresh '<cmd>'
   [--every <secs>]` (5s minimum, default 30s; a flag left off keeps what the
   record has) stores `widgetHtml` and `refresh: {command, everySecs, cwd, pid}`
@@ -391,8 +410,9 @@ beside the terminal all day.
   canvasd's in-process tests never touch the real data dir. canvasd logs every
   request (an axum middleware in `canvasd/src/lib.rs`: method, path, status, ms, and
   the body of a 4xx/5xx as `error`) plus start, reload, store, sweep and refresh
-  failures; the CLI logs every canvasd call in `client::call_any_status` (status, or
-  `canvasd unreachable` with the reason) and each hook's outcome; the app logs bridge
+  failures; `canvas_core::unix_http::call` logs each request it sends (status, or
+  `canvasd unreachable` with the reason): every CLI call to canvasd and the app's
+  export fetch; the CLI also logs each hook's outcome; the app logs bridge
   failures, event-stream changes, daemon install and integration sync. Every write
   failure is swallowed. New features log through it.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)

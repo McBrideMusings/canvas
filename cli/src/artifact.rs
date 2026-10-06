@@ -15,9 +15,10 @@
 //! and failing when N is 0; bare `pane` prints the pane a viewer last reported
 //! showing, failing when no open viewer has reported one.
 
+use canvas_core::unix_http::percent_encode;
 use canvas_core::{Refresh, MIN_REFRESH_SECS};
 
-use crate::client::{self, percent_encode};
+use crate::client;
 use crate::format::{self, Format};
 
 /// How often `--refresh` runs when `--every` is not given.

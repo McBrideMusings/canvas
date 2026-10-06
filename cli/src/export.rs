@@ -18,13 +18,14 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use canvas_core::export::{self as card_export, Exported};
 use canvas_core::html::{card_label, escape_attr, escape_text};
 use canvas_core::{Card, ExportWarning, ExportWarningKind, Session};
 use serde::Serialize;
 use zip::write::SimpleFileOptions;
 use zip::{DateTime, ZipWriter};
 
-use crate::client::{self, Exported};
+use crate::client;
 
 const DEFAULT_ZIP: &str = "canvas-export.zip";
 
@@ -75,7 +76,7 @@ pub fn run(args: Args) -> Result<(), String> {
 }
 
 fn run_card(card_id: &str, out: Option<String>) -> Result<(), String> {
-    let result = match client::export_card(card_id)? {
+    let result = match card_export::fetch(card_id)? {
         Exported::Page(result) => result,
         Exported::Gone => return Err("canvasd returned HTTP 404 (no card with that id)".into()),
         Exported::Failed(e) => return Err(e),
@@ -199,7 +200,7 @@ fn write_zip(
                 reason,
             })
         };
-        let result = match client::export_card(&card.id).map_err(ZipFailure::Canvasd)? {
+        let result = match card_export::fetch(&card.id).map_err(ZipFailure::Canvasd)? {
             Exported::Page(result) => result,
             // Evicted (or deleted) between the listing and its export.
             Exported::Gone => {

@@ -535,3 +535,81 @@ async fn artifact_html_is_served_with_the_error_relay_and_other_files_untouched(
     let script = send(&app, "GET", &format!("/artifacts/{id}/app.js"), None).await;
     assert_eq!(String::from_utf8_lossy(&script), "throw new Error('x')");
 }
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn an_artifact_page_link_opens_through_open_and_is_listed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_dir();
+    let log = dir.join("opened.txt");
+    let stub = dir.join("open-stub.sh");
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\necho \"$1\" >> '{}'\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("CANVAS_OPEN_BIN", &stub);
+
+    let app = build_router(AppState::open(&dir).await);
+    let id = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let status = |uri: String, url: &str| {
+        let app = app.clone();
+        let body = json!({ "url": url }).to_string();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+        }
+    };
+    let route = format!("/api/artifacts/{id}/open");
+    assert_eq!(
+        status(route.clone(), "https://www.rainforestpay.com/").await,
+        204
+    );
+    assert_eq!(status(route.clone(), "file:///etc/passwd").await, 400);
+    assert_eq!(status(route.clone(), "/etc/passwd").await, 400);
+    assert_eq!(status(route.clone(), "javascript:alert(1)").await, 400);
+    assert_eq!(status(route.clone(), "https://a.test/\nb").await, 400);
+    assert_eq!(
+        status(
+            route.clone(),
+            &format!("https://a.test/{}", "x".repeat(2048))
+        )
+        .await,
+        400
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert_eq!(
+        status(
+            "/api/artifacts/art-0000000000/open".into(),
+            "https://a.test/"
+        )
+        .await,
+        404
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "https://www.rainforestpay.com/\n"
+    );
+    let shown: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{id}"), None).await)
+            .unwrap();
+    let opened = shown["openedLinks"].as_array().unwrap();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0]["url"], "https://www.rainforestpay.com/");
+}

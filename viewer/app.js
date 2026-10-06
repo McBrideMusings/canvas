@@ -1180,11 +1180,28 @@
     );
   }
 
+  // What an export's warnings left out of the page, as "1 image and 2 CDN
+  // files", or "" when it left nothing out. A missing-image warning is an
+  // image or video the card names; a fetch-failed one a CDN script, stylesheet
+  // or font that stays a network link.
+  function exportGaps(warnings) {
+    const count = (kind) => warnings.filter((w) => w.kind === kind).length;
+    const images = count("missing-image");
+    const cdn = count("fetch-failed");
+    const other = warnings.length - images - cdn;
+    const parts = [];
+    if (images) parts.push(`${images} ${images === 1 ? "image" : "images"}`);
+    if (cdn) parts.push(`${cdn} CDN ${cdn === 1 ? "file" : "files"}`);
+    if (other) parts.push(`${other} other ${other === 1 ? "item" : "items"}`);
+    if (parts.length < 2) return parts.join("");
+    return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  }
+
   // The app's export_card fetches canvasd's export of the post, asks where to
-  // save it and writes it; it answers the path, null for a cancelled dialog,
-  // or a one-line reason. The item stays in the menu, marked busy, until then.
-  // aria-disabled rather than disabled: disabling the focused item would drop
-  // focus out of the menu, which closes it.
+  // save it and writes it; it answers {path, warnings}, null for a cancelled
+  // dialog, or a one-line reason. The item stays in the menu, marked busy,
+  // until then. aria-disabled rather than disabled: disabling the focused item
+  // would drop focus out of the menu, which closes it.
   async function exportPost(card, item) {
     if (item.getAttribute("aria-disabled") === "true") return;
     item.setAttribute("aria-disabled", "true");
@@ -1192,16 +1209,20 @@
     item.removeAttribute("title");
     setButtonIcon(item, "download", "Exporting…");
     let error = null;
-    let path = null;
+    let saved = null;
     try {
-      path = await window.__TAURI__.core.invoke("export_card", { cardId: card.id });
+      saved = await window.__TAURI__.core.invoke("export_card", { cardId: card.id });
     } catch (e) {
       error = String(e);
     }
     item.removeAttribute("aria-disabled");
     if (error === null) {
       if (openMenu && openMenu.menu.contains(item)) closeMenu();
-      if (path) toast(`Exported to ${path.split("/").pop()}`);
+      if (saved) {
+        const missing = exportGaps(saved.warnings);
+        const name = saved.path.split("/").pop();
+        toast(missing ? `Exported to ${name} without ${missing}` : `Exported to ${name}`);
+      }
       return;
     }
     const text = `Export failed: ${error}`;
@@ -2176,6 +2197,24 @@
           break;
         }
       }
+      return;
+    }
+
+    if (data.type === "canvas-artifact-open") {
+      // A click on an http(s) link inside the artifact pane. Only the pane's
+      // own frame counts, the artifact is the one that frame was built for,
+      // and canvasd refuses anything but http(s).
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      if (typeof data.url !== "string") return;
+      fetch(`/api/artifacts/${encodeURIComponent(artifactFrameId)}/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: data.url }),
+      })
+        .then((r) => {
+          if (!r.ok) toast("Couldn't open link");
+        })
+        .catch(() => toast("Couldn't open link"));
       return;
     }
 
