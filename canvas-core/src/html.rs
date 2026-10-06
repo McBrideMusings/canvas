@@ -2,6 +2,9 @@
 //! canvasd's export: no parser, just quote-aware tag boundaries and
 //! attribute lookups over the byte string.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
@@ -156,11 +159,12 @@ struct Element {
 
 /// An entry in the list of active formatting elements: the open or closed
 /// element `id`, and what tells it from another of its name, its attributes
-/// (lowercased names, decoded values, sorted).
+/// (lowercased names, decoded values, sorted), with `hash` a hash of both.
 struct Formatting {
     id: usize,
     name: String,
     attrs: Vec<(String, String)>,
+    hash: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -372,22 +376,39 @@ impl Tags<'_> {
     /// are closed, in order, each a copy of the one closed, as the tree
     /// builder's "reconstruct the active formatting elements" step does.
     fn reconstruct(&mut self) {
-        let mut first = self.formatting.len();
+        let Some(Some(newest)) = self.formatting.last() else {
+            return;
+        };
+        if self.open_index(newest.id).is_some() {
+            return;
+        }
+        let open: HashSet<usize> = self.open.iter().map(|e| e.id).collect();
+        let last = self.formatting.len() - 1;
+        let mut first = last;
         while let Some(Some(entry)) = first.checked_sub(1).map(|i| &self.formatting[i]) {
-            if self.open_index(entry.id).is_some() {
+            if open.contains(&entry.id) {
                 break;
             }
             first -= 1;
         }
-        for i in first..self.formatting.len() {
+        let mut i = first;
+        while i <= last {
             let Some(entry) = &self.formatting[i] else {
-                continue;
+                return;
             };
             let name = entry.name.clone();
             self.insert("", &name);
             let id = self.push_html(&name);
             if let Some(entry) = &mut self.formatting[i] {
                 entry.id = id;
+            }
+            // With the stack full, each later entry's insertion closes the
+            // one before it, so only the newest stays open.
+            if self.open.len() >= MAX_OPEN && i + 1 < last {
+                self.open.pop();
+                i = last;
+            } else {
+                i += 1;
             }
         }
     }
@@ -397,25 +418,28 @@ impl Tags<'_> {
     /// name and attributes removes the oldest of those.
     fn push_formatting(&mut self, id: usize, name: &str, tag: &str) {
         let attrs = attr_key(tag);
-        let since = self
-            .formatting
-            .iter()
-            .rposition(Option::is_none)
-            .map_or(0, |i| i + 1);
-        let same: Vec<usize> = (since..self.formatting.len())
-            .filter(|&i| {
-                self.formatting[i]
-                    .as_ref()
-                    .is_some_and(|f| f.name == name && f.attrs == attrs)
-            })
-            .collect();
-        if same.len() >= 3 {
-            self.formatting.remove(same[0]);
+        let mut hasher = DefaultHasher::new();
+        (name, &attrs).hash(&mut hasher);
+        let hash = hasher.finish();
+        let mut same = 0;
+        let mut oldest = None;
+        for (i, entry) in self.formatting.iter().enumerate().rev() {
+            let Some(f) = entry else {
+                break;
+            };
+            if f.hash == hash && f.name == name && f.attrs == attrs {
+                same += 1;
+                oldest = Some(i);
+            }
+        }
+        if let Some(i) = oldest.filter(|_| same >= 3) {
+            self.formatting.remove(i);
         }
         self.formatting.push(Some(Formatting {
             id,
             name: name.to_string(),
             attrs,
+            hash,
         }));
     }
 
@@ -1856,6 +1880,27 @@ mod tests {
                 assert!(scan.open.len() <= MAX_OPEN, "{unit}: {}", scan.open.len());
             }
         }
+    }
+
+    #[test]
+    fn a_long_list_of_formatting_elements_scans_in_one_pass() {
+        // Distinct attributes keep every `<b>` listed. Past the depth cap
+        // each text run reopens the 300 closed ones, as the browser does, but
+        // only the newest stays open, so it pushes one element instead of
+        // 300 and checks each entry against the stack in one step, not 509.
+        let bs: String = (0..800).map(|i| format!("<b id={i}>")).collect();
+        let html = bs + &"<div>x</div>".repeat(4_000);
+        let mut scan = tags(&html);
+        let mut n = 0;
+        while scan.next().is_some() {
+            n += 1;
+            assert!(scan.open.len() <= MAX_OPEN);
+        }
+        assert_eq!(n, 8_800);
+        // Noah's Ark compares each new entry with every one before it, as
+        // the browser does, one hash at a time.
+        let bs: String = (0..5_000).map(|i| format!("<b id={i}>t")).collect();
+        assert_eq!(tags(&bs).count(), 5_000);
     }
 
     #[test]
