@@ -73,16 +73,35 @@ enum Tok {
     Quoted(u8),
 }
 
-/// Every tag in `html`, in order, as [`next_tag`] ranges. The text of a
-/// `<script>`, `<style>`, `<title>` or `<textarea>` element holds no tags,
-/// so after its opening tag the scan resumes at its closing tag.
+/// Every tag in `html`, in order. The text of a `<script>`, `<style>`,
+/// `<title>` or `<textarea>` element holds no tags, so after its opening tag
+/// the scan resumes at its closing tag, which the tag's `text_end` names.
 pub fn tags(html: &str) -> Tags<'_> {
-    Tags { html, pos: 0 }
+    Tags {
+        html,
+        pos: 0,
+        foreign: 0,
+    }
+}
+
+/// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and
+/// `text_end`, where the scan resumes. For a raw-text element's opening tag
+/// that is its closing tag (or the end of the HTML), so `[end, text_end)` is
+/// the element's text; for any other tag it is `end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tag {
+    pub start: usize,
+    pub end: usize,
+    pub text_end: usize,
 }
 
 pub struct Tags<'a> {
     html: &'a str,
     pos: usize,
+    /// How many `<svg>` and `<math>` elements are open: inside one a `/>`
+    /// closes an element. HTML islands within them (`<foreignObject>`) and an
+    /// HTML tag that ends one early are not tracked.
+    foreign: usize,
 }
 
 impl Tags<'_> {
@@ -93,25 +112,45 @@ impl Tags<'_> {
 }
 
 impl Iterator for Tags<'_> {
-    type Item = (usize, usize);
+    type Item = Tag;
 
-    fn next(&mut self) -> Option<(usize, usize)> {
+    fn next(&mut self) -> Option<Tag> {
         let (start, end) = next_tag(self.html, self.pos)?;
         let tag = &self.html[start..end];
-        self.pos = match tag_name(tag).as_deref() {
-            // A self-closed one (SVG's `<title/>`) has no text to skip.
-            Some(name @ ("script" | "style" | "title" | "textarea")) if !tag.ends_with("/>") => {
-                raw_text_end(self.html, end, name)
+        let self_closed = self.foreign > 0 && tag.ends_with("/>");
+        let text_end = match tag_name(tag).as_deref() {
+            Some("svg" | "math") if !tag.ends_with("/>") => {
+                self.foreign += 1;
+                end
+            }
+            // In HTML `<style/>` still opens its text; inside SVG or MathML
+            // (`<title/>`) it is closed and has none.
+            Some(name @ ("script" | "style" | "title" | "textarea")) if !self_closed => {
+                closing_tag_start(self.html, end, name)
+            }
+            None if tag.starts_with("</")
+                && matches!(
+                    tag_name(&tag.replacen("</", "<", 1)).as_deref(),
+                    Some("svg" | "math")
+                ) =>
+            {
+                self.foreign = self.foreign.saturating_sub(1);
+                end
             }
             _ => end,
         };
-        Some((start, end))
+        self.pos = text_end;
+        Some(Tag {
+            start,
+            end,
+            text_end,
+        })
     }
 }
 
-/// Where the text of a `<script>`, `<style>`, `<title>` or `<textarea>` element opened before
-/// `from` ends: its closing tag, or the end of the HTML.
-pub fn raw_text_end(html: &str, from: usize, name: &str) -> usize {
+/// The offset of the first `</name` at or after `from`, any case, or the end
+/// of the HTML.
+fn closing_tag_start(html: &str, from: usize, name: &str) -> usize {
     html[from..]
         .to_ascii_lowercase()
         .find(&format!("</{name}"))
@@ -185,7 +224,7 @@ pub fn card_label(html: &str) -> Option<String> {
 
 /// The text of the first `<h1>`–`<h3>`, tags stripped.
 pub fn first_heading(html: &str) -> Option<String> {
-    for (start, end) in tags(html) {
+    for Tag { start, end, .. } in tags(html) {
         let name = tag_name(&html[start..end]);
         if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
             let close = format!("</{level}");
@@ -203,7 +242,7 @@ pub fn first_heading(html: &str) -> Option<String> {
 pub fn strip_tags(html: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
-    for (start, end) in tags(html) {
+    for Tag { start, end, .. } in tags(html) {
         out.push_str(&html[pos..start]);
         pos = end;
     }
@@ -253,18 +292,21 @@ fn visible_text(html: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
     let mut scan = tags(html);
-    while let Some((start, end)) = scan.next() {
+    while let Some(Tag {
+        start,
+        end,
+        text_end,
+    }) = scan.next()
+    {
         out.push_str(&html[pos..start]);
         pos = end;
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
         match name.as_deref() {
-            Some(name @ ("script" | "style" | "template")) if !tag.starts_with("</") => {
-                let close = format!("</{name}");
-                pos = html[end..]
-                    .to_ascii_lowercase()
-                    .find(&close)
-                    .map_or(html.len(), |stop| end + stop);
+            Some("script" | "style") => pos = text_end,
+            // Not raw text, but its contents are never shown.
+            Some("template") if !tag.starts_with("</") => {
+                pos = closing_tag_start(html, end, "template");
                 scan.skip_to(pos);
             }
             Some(name) if BLOCK_TAGS.contains(&name) => out.push('\n'),
@@ -310,7 +352,7 @@ mod tests {
     fn tags_skip_script_and_style_text() {
         let html =
             "<script src=a.js>i<n; s='x</SCRIPT><style>a<b{content:\"'\"}</style><img src=x>";
-        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert_eq!(
             names,
             [
@@ -326,7 +368,7 @@ mod tests {
     #[test]
     fn a_comment_is_one_tag_whatever_it_holds() {
         let html = "<!-- don't <script> --><img src=x><title>a<b's</title><!--><!---><svg><title/><b><!-- open";
-        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert_eq!(
             names,
             [
@@ -345,13 +387,37 @@ mod tests {
     }
 
     #[test]
+    fn a_self_closing_slash_ends_raw_text_only_inside_svg() {
+        let html = "<style/><b>x</b></style><svg><title/></svg><b>y</b>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(
+            names,
+            ["<style/>", "</style>", "<svg>", "<title/>", "</svg>", "<b>", "</b>"]
+        );
+    }
+
+    #[test]
+    fn card_label_skips_the_text_of_a_self_closed_script_or_style() {
+        for html in [
+            "<style/><b>x</b></style><p>after</p>",
+            "<script/><b>x</b></script><p>after</p>",
+        ] {
+            assert_eq!(card_label(html).as_deref(), Some("after"), "{html}");
+        }
+        assert_eq!(
+            card_label("<svg><title/></svg><b>y</b>").as_deref(),
+            Some("y")
+        );
+    }
+
+    #[test]
     fn a_quote_opens_a_value_only_after_an_equals_sign() {
         let html = "a < b's <x <'s<b's<i src=x><p title=x'y a = '>'>";
-        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert_eq!(names, ["<x <'s<b's<i src=x>", "<p title=x'y a = '>'>"]);
 
         let html = "<a=\"><a href=p?q='x'><a =\"x><a/b=\"x>y\"><?x a=\"x><!doctype a=\"b>";
-        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert_eq!(
             names,
             [

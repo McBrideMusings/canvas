@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use canvas_core::html::{find_attr_value_range, tag_name, tags};
+use canvas_core::html::{find_attr_value_range, tag_name, tags, Tag};
 use canvas_core::{base64, MAX_ASSET_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub fn inline_stylesheets(html: &str, read: impl Fn(&str) -> Option<Vec<u8>>) ->
     let mut out = String::with_capacity(html.len());
     let mut warnings = Vec::new();
     let mut pos = 0usize;
-    for (start, end) in tags(html) {
+    for Tag { start, end, .. } in tags(html) {
         out.push_str(&html[pos..start]);
         let tag = &html[start..end];
         pos = end;

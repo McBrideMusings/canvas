@@ -4,7 +4,7 @@
 //! daemon and viewer resolve. No I/O of its own — callers inject an
 //! `exists` predicate, which is the test seam.
 
-use canvas_core::html::{find_attr_value_range, next_tag, tag_name, tags};
+use canvas_core::html::{find_attr_value_range, next_tag, tag_name, tags, Tag};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scanned {
@@ -46,7 +46,12 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
     let mut warnings = Vec::new();
     let mut pos = 0usize;
 
-    for (tag_start, tag_end) in tags(html) {
+    for Tag {
+        start: tag_start,
+        end: tag_end,
+        ..
+    } in tags(html)
+    {
         out.push_str(&html[pos..tag_start]);
         let tag = &html[tag_start..tag_end];
         let name = if tag.starts_with("</") {
@@ -134,7 +139,7 @@ fn unwrap_image_links(html: &str, exists: &impl Fn(&str) -> bool) -> String {
     let mut out = String::with_capacity(html.len());
     let mut pos = 0usize;
     let mut walk = tags(html);
-    while let Some((start, end)) = walk.next() {
+    while let Some(Tag { start, end, .. }) = walk.next() {
         let tag = &html[start..end];
         if tag_name(tag).as_deref() == Some("a") && has_existing_local(tag, "href", exists) {
             if let Some((img_start, img_end, close_end)) = sole_image_in_link(html, end, exists) {

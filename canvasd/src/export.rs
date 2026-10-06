@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    escape_attr, escape_text, find_attr_value_range, first_heading, raw_text_end, tag_name, tags,
+    escape_attr, escape_text, find_attr_value_range, first_heading, tag_name, tags, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -102,7 +102,12 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     let mut anchors: Vec<bool> = Vec::new();
     let mut pos = 0usize;
 
-    for (start, end) in tags(html) {
+    for Tag {
+        start,
+        end,
+        text_end,
+    } in tags(html)
+    {
         out.push_str(&html[pos..start]);
         let tag = &html[start..end];
         pos = end;
@@ -200,7 +205,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                         out.push_str(&without_attr(tag, "src", (vs, ve)));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
-                        pos = raw_text_end(html, end, "script");
+                        pos = text_end;
                     }
                     None => out.push_str(tag),
                 }
@@ -230,11 +235,10 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 }
             }
             Some("style") => {
-                let close = raw_text_end(html, end, "style");
                 out.push_str(tag);
-                let css = cdn.css(&html[end..close], None, 0, warnings);
+                let css = cdn.css(&html[end..text_end], None, 0, warnings);
                 out.push_str(&escape_raw(&css, "style"));
-                pos = close;
+                pos = text_end;
             }
             _ => out.push_str(tag),
         }
@@ -857,6 +861,14 @@ mod tests {
             .html
             .contains(r#"href="https://example.com/" target="_blank""#));
         assert!(!r.html.contains("/api/"));
+    }
+
+    #[test]
+    fn a_self_closed_style_resumes_where_the_scan_does() {
+        let html = r#"<style/><b>x</b></style><img src="/api/cards/c1/images/0">"#;
+        let r = export_card(&card(html, &["/x/a.png"], &[]), None, files, offline);
+        assert!(r.html.contains(r#"<style/><b>x</b></style>"#));
+        assert!(r.html.contains(r#"<img src="data:image/png;base64,YWJj">"#));
     }
 
     #[test]
