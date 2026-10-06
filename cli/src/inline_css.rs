@@ -178,6 +178,14 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_rel_and_href_are_read() {
+        let html = "<link rel=stylesheet href=/p/a.css><link href=/p/b.css rel=stylesheet title=t>";
+        let r = inline_stylesheets(html, files(&[("/p/a.css", b".a{}"), ("/p/b.css", b".b{}")]));
+        assert_eq!(r.html, "<style>.a{}</style><style>.b{}</style>");
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
     fn urls_inside_become_data_uris_relative_to_the_stylesheet() {
         let css =
             b"@font-face{src:url('fonts/a.woff2') format('woff2')}.b{background:url(/p/i.png)}";

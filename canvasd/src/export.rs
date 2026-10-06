@@ -1122,6 +1122,30 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_script_src_and_stylesheet_link_are_inlined() {
+        let c = card(
+            "<script src=https://unpkg.com/lib.js defer></script><script async src=https://unpkg.com/lib.js></script><link rel=stylesheet href=https://cdnjs.cloudflare.com/x/css/b.css media=print><link media=screen href=//cdnjs.cloudflare.com/x/css/b.css rel=stylesheet>",
+            &[],
+            &[],
+        );
+        let r = export_card(&c, None, files, cdn_files);
+        let script = r"var s='<\/script>',t='<!--\x3CSCRIPT>';</script>";
+        assert!(
+            r.html
+                .contains(&format!("<script defer>{script}<script async>{script}")),
+            "{}",
+            r.html
+        );
+        assert!(
+            r.html
+                .contains(r#"<style media="print">.b{}</style><style media="screen">.b{}</style>"#),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty());
+    }
+
+    #[test]
     fn only_a_script_start_inside_an_html_comment_is_escaped() {
         for (text, want) in [
             (
