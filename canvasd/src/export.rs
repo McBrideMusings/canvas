@@ -234,7 +234,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                         out.push_str(&without_attr(tag, "src", src));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
-                        pos = text_end;
+                        pos = text_end.unwrap_or(end);
                     }
                     None => out.push_str(tag),
                 }
@@ -266,15 +266,17 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
             }
             // The scan reads an HTML `<style>`'s text as raw text and resumes
             // at its closing tag; an SVG or MathML one's it reads on.
-            Some("style") if text_end == end && !tag.ends_with("/>") => {
-                out.push_str(tag);
-                markup_style = true;
-            }
             Some("style") => {
                 out.push_str(tag);
-                let css = cdn.css(&html[end..text_end], None, 0, warnings);
-                out.push_str(&escape_raw(&css, "style"));
-                pos = text_end;
+                match text_end {
+                    Some(text_end) => {
+                        let css = cdn.css(&html[end..text_end], None, 0, warnings);
+                        out.push_str(&escape_raw(&css, "style"));
+                        pos = text_end;
+                    }
+                    // Its CSS follows unless it closed itself.
+                    None => markup_style = !tag.ends_with("/>"),
+                }
             }
             _ => out.push_str(tag),
         }

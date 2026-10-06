@@ -77,7 +77,7 @@ enum Tok {
 
 /// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
 /// `<title>` or `<textarea>` element holds no tags, so after its opening tag
-/// the scan resumes at its closing tag, which the tag's `text_end` names. In
+/// the scan resumes at its closing tag, which the tag's `text_end` holds. In
 /// SVG or MathML those elements hold markup like any other, and a
 /// `<![CDATA[` section there is one tag through its `]]>`.
 pub fn tags(html: &str) -> Tags<'_> {
@@ -89,15 +89,16 @@ pub fn tags(html: &str) -> Tags<'_> {
     }
 }
 
-/// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and
-/// `text_end`, where the scan resumes. For a raw-text element's opening tag
-/// that is its closing tag (or the end of the HTML), so `[end, text_end)` is
-/// the element's text; for any other tag it is `end`.
+/// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and for
+/// the opening tag of an element the scan read as raw text, `text_end`: its
+/// closing tag (or the end of the HTML), where the scan resumes, so
+/// `[end, text_end)` is the element's text. Any other tag, an SVG or MathML
+/// `<style>` included, has none and the scan resumes at `end`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tag {
     pub start: usize,
     pub end: usize,
-    pub text_end: usize,
+    pub text_end: Option<usize>,
 }
 
 pub struct Tags<'a> {
@@ -258,8 +259,8 @@ impl Tags<'_> {
     }
 
     /// Updates the open elements for the start tag `tag`, and returns where
-    /// the scan resumes.
-    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+    /// its text ends when the scan reads it as raw text.
+    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<usize> {
         let self_closing = tag.ends_with("/>");
         let mut as_html = match self.open.last() {
             None => true,
@@ -289,28 +290,28 @@ impl Tags<'_> {
         // An `<svg>` or `<math>` read as HTML meets the table modes first,
         // which can close a `<colgroup>`.
         if as_html && !self.table_start_tag(name) {
-            return end;
+            return None;
         }
         self.insert(tag, name);
         if self_closing {
-            return end;
+            return None;
         }
         self.open.push(Element {
             name: name.to_string(),
             ns,
             point: integration_point(tag, name, ns == Ns::Math),
         });
-        end
+        None
     }
 
     /// Updates the open elements for the HTML start tag `<name>`, closing
     /// what the tree builder closes before inserting it, and returns where
-    /// the scan resumes.
-    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+    /// its text ends when it is a raw-text element.
+    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<usize> {
         // A card is already in a body, where `<html>` and `<body>` only add
         // attributes to the open ones and `<head>` is dropped.
         if !self.table_start_tag(name) || matches!(name, "html" | "body" | "head") {
-            return end;
+            return None;
         }
         self.body_start_tag(name);
         // A `<frame>` in a body is dropped, so nothing is inserted.
@@ -322,8 +323,10 @@ impl Tags<'_> {
         }
         match name {
             // In HTML `<style/>` still opens its text.
-            "script" | "style" | "title" | "textarea" => closing_tag_start(self.html, end, name),
-            _ => end,
+            "script" | "style" | "title" | "textarea" => {
+                Some(closing_tag_start(self.html, end, name))
+            }
+            _ => None,
         }
     }
 
@@ -1160,10 +1163,7 @@ impl Iterator for Tags<'_> {
         }
         let tag = &self.html[start..end];
         let text_end = if tag.as_bytes()[1].is_ascii_alphabetic() {
-            match tag_name(tag) {
-                Some(name) => self.start_tag(tag, &name, end),
-                None => end,
-            }
+            tag_name(tag).and_then(|name| self.start_tag(tag, &name, end))
         } else {
             match tag.strip_prefix("</") {
                 // An end tag starts with a letter; `</>` is dropped, and any
@@ -1186,9 +1186,9 @@ impl Iterator for Tags<'_> {
                 }
                 None => {}
             }
-            end
+            None
         };
-        self.pos = text_end;
+        self.pos = text_end.unwrap_or(end);
         Some(Tag {
             start,
             end,
@@ -1448,7 +1448,7 @@ fn read_visible(
             return Some(out);
         }
         match name.as_deref() {
-            Some("script" | "style") => pos = text_end,
+            Some("script" | "style") => pos = text_end.unwrap_or(end),
             Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
         }
@@ -1689,6 +1689,29 @@ mod tests {
                 "<title/>",
                 "</annotation-xml>",
                 "</math>"
+            ]
+        );
+    }
+
+    #[test]
+    fn text_end_marks_only_tags_read_as_raw_text() {
+        let html = "<style></style><style/>a{}</style><svg><style></style><style/></svg><b>";
+        let ends: Vec<(&str, Option<usize>)> = tags(html)
+            .map(|t| (&html[t.start..t.end], t.text_end))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                ("<style>", Some(7)),
+                ("</style>", None),
+                ("<style/>", Some(26)),
+                ("</style>", None),
+                ("<svg>", None),
+                ("<style>", None),
+                ("</style>", None),
+                ("<style/>", None),
+                ("</svg>", None),
+                ("<b>", None),
             ]
         );
     }
