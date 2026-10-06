@@ -273,6 +273,21 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_in_a_link_keeps_its_image_and_the_next_link_unwraps() {
+        let html = concat!(
+            r#"<a href="/abs/x.png"><!-- it's --><img src="/abs/x.png"></a>"#,
+            r#"<a href="/abs/x.png"><img src="/abs/x.png"></a>"#,
+        );
+        assert_eq!(
+            unwrap_image_links(html, &exists_in(&["/abs/x.png"])),
+            concat!(
+                r#"<a href="/abs/x.png"><!-- it's --><img src="/abs/x.png"></a>"#,
+                r#"<img src="/abs/x.png">"#,
+            )
+        );
+    }
+
+    #[test]
     fn links_with_other_content_or_a_url_keep_their_image() {
         let html = concat!(
             r#"<a href="/abs/x.png"><img src="/abs/x.png"> caption</a>"#,

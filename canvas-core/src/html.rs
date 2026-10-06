@@ -389,4 +389,30 @@ mod tests {
         assert_eq!(card_label("<p>one</p><p>two</p>").as_deref(), Some("one"));
         assert_eq!(card_label("<img src=x><script>x</script>"), None);
     }
+
+    #[test]
+    fn strip_tags_keeps_literal_tags_in_title_text() {
+        assert_eq!(strip_tags("<title>a<b>c</title>"), "a<b>c");
+    }
+
+    #[test]
+    fn card_label_ignores_a_heading_in_script_text() {
+        assert_eq!(
+            card_label("<script>s='<h1>no</h1>'</script><h2>yes</h2>").as_deref(),
+            Some("yes")
+        );
+    }
+
+    #[test]
+    fn card_label_ignores_a_heading_in_a_comment() {
+        assert_eq!(
+            card_label("<!-- x > <h1>old</h1> --><h2>new</h2>").as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn card_label_reads_a_bare_less_than_and_quote_as_text() {
+        assert_eq!(card_label("<p>a < b's</p>").as_deref(), Some("a < b's"));
+    }
 }
