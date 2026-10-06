@@ -83,6 +83,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         html,
         pos: 0,
         open: Vec::new(),
+        mode: Mode::Body,
     }
 }
 
@@ -112,8 +113,20 @@ pub struct Tags<'a> {
     /// adoption agency's rounds. The list of active formatting elements is
     /// not kept, so its marker is read off the open cells and captions, and
     /// the elements the browser reopens from it before text are not reopened.
+    /// Like WebKit's, the stack holds at most [`MAX_OPEN`] elements: see
+    /// [`Tags::insert`].
     open: Vec<Element>,
+    /// The tree builder's insertion mode. Like WebKit's it is kept, not read
+    /// off the open elements each time: the depth cap can close the table,
+    /// section, row or cell that set it, and the mode stays.
+    mode: Mode,
 }
+
+/// WebKit's cap on its stack of open elements
+/// (`defaultMaximumHTMLParserDOMTreeDepth`), less the `<html>`, `<body>` and
+/// wrapper `<div>` that the viewer's card frame and an exported page both put
+/// around a card.
+const MAX_OPEN: usize = 512 - 3;
 
 /// One open element.
 struct Element {
@@ -205,6 +218,24 @@ enum Mode {
     ColumnGroup,
 }
 
+/// The insertion mode the HTML element `name` starts when it opens, and
+/// that the "reset the insertion mode" step reads off it.
+fn mode_of(name: &str) -> Option<Mode> {
+    Some(match name {
+        "td" | "th" => Mode::Cell,
+        "tr" => Mode::Row,
+        "tbody" | "thead" | "tfoot" => Mode::TableBody,
+        "caption" => Mode::Caption,
+        "colgroup" => Mode::ColumnGroup,
+        "table" => Mode::Table,
+        "template" => Mode::Template,
+        _ => return None,
+    })
+}
+
+/// A table's sections.
+const SECTIONS: &[&str] = &["tbody", "tfoot", "thead"];
+
 /// Which HTML integration point a foreign [`Element`] is: where the browser
 /// reads a start tag as HTML.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,13 +277,19 @@ impl Tags<'_> {
             match name {
                 "svg" => Ns::Svg,
                 "math" => Ns::Math,
-                _ => return self.html_start_tag(name, end),
+                _ => return self.html_start_tag(tag, name, end),
             }
         } else if self.open.last().is_some_and(|e| e.ns == Ns::Math) {
             Ns::Math
         } else {
             Ns::Svg
         };
+        // An `<svg>` or `<math>` read as HTML meets the table modes first,
+        // which can close a `<colgroup>`.
+        if as_html && !self.table_start_tag(name) {
+            return end;
+        }
+        self.insert(tag, name);
         if self_closing {
             return end;
         }
@@ -267,11 +304,17 @@ impl Tags<'_> {
     /// Updates the open elements for the HTML start tag `<name>`, closing
     /// what the tree builder closes before inserting it, and returns where
     /// the scan resumes.
-    fn html_start_tag(&mut self, name: &str, end: usize) -> usize {
-        if !self.table_start_tag(name) {
+    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+        // A card is already in a body, where `<html>` and `<body>` only add
+        // attributes to the open ones and `<head>` is dropped.
+        if !self.table_start_tag(name) || matches!(name, "html" | "body" | "head") {
             return end;
         }
         self.body_start_tag(name);
+        // A `<frame>` in a body is dropped, so nothing is inserted.
+        if name != "frame" {
+            self.insert(tag, name);
+        }
         if !VOID_TAGS.contains(&name) {
             self.push_html(name);
         }
@@ -282,36 +325,96 @@ impl Tags<'_> {
         }
     }
 
+    /// Opens the HTML element `<name>`, switching to the insertion mode a
+    /// table, one of its parts or a `<template>` starts.
     fn push_html(&mut self, name: &str) {
         self.open.push(Element {
             name: name.to_string(),
             ns: Ns::Html,
             point: Point::None,
         });
+        if let Some(mode) = mode_of(name) {
+            self.mode = mode;
+        }
     }
 
-    /// The tree builder's insertion mode, read off the open elements as its
-    /// "reset the insertion mode" step does, with the index of the element
-    /// that sets it.
-    fn mode(&self) -> (Mode, usize) {
-        for (i, e) in self.open.iter().enumerate().rev() {
-            if e.is_foreign() {
-                continue;
-            }
-            let mode = match e.name.as_str() {
-                "td" | "th" => Mode::Cell,
-                "tr" => Mode::Row,
-                "tbody" | "thead" | "tfoot" => Mode::TableBody,
-                "caption" => Mode::Caption,
-                "colgroup" => Mode::ColumnGroup,
-                "table" => Mode::Table,
-                "template" => Mode::Template,
-                "html" => Mode::Body,
-                _ => continue,
-            };
-            return (mode, i);
+    /// Inserts and opens the element `<name>` a table mode implies, such as
+    /// the `<tbody>` before a `<tr>`.
+    fn imply(&mut self, name: &str) {
+        self.insert("", name);
+        self.push_html(name);
+    }
+
+    /// Applies WebKit's depth cap before the tree builder attaches a node to
+    /// the innermost element: with the stack full, that element is closed and
+    /// the node goes to its parent instead. Every element counts (void and
+    /// self-closed ones too, which push nothing), as does a comment, but not
+    /// text or a node foster-parented out of a table. `tag` and `name` are
+    /// the start tag being inserted, empty for a comment.
+    fn insert(&mut self, tag: &str, name: &str) {
+        if self.open.len() >= MAX_OPEN && !self.fostered(tag, name) {
+            self.open.pop();
         }
-        (Mode::Body, 0)
+    }
+
+    /// Whether the start tag `tag` named `name` is foster-parented: in a
+    /// table, section or row, while the innermost element is one, a tag the
+    /// table holds no element for goes before the table instead.
+    fn fostered(&self, tag: &str, name: &str) -> bool {
+        let in_table = matches!(self.mode, Mode::Table | Mode::TableBody | Mode::Row)
+            && self.open.last().is_some_and(|e| {
+                !e.is_foreign()
+                    && matches!(
+                        e.name.as_str(),
+                        "table" | "tbody" | "tfoot" | "thead" | "tr"
+                    )
+            });
+        let held = name.is_empty()
+            || TABLE_PARTS.contains(&name)
+            || matches!(name, "table" | "style" | "script" | "template" | "form")
+            || (name == "input"
+                && find_attr_value_range(tag, "type")
+                    .is_some_and(|(s, e)| tag[s..e].eq_ignore_ascii_case("hidden")));
+        in_table && !held
+    }
+
+    /// Sets the insertion mode from the open elements, as the tree builder's
+    /// "reset the insertion mode appropriately" step does.
+    fn reset_mode(&mut self) {
+        self.mode = self
+            .open
+            .iter()
+            .rev()
+            .filter(|e| !e.is_foreign())
+            .find_map(|e| match e.name.as_str() {
+                "html" => Some(Mode::Body),
+                name => mode_of(name),
+            })
+            .unwrap_or(Mode::Body);
+    }
+
+    /// The index of the innermost open HTML element named in `names`, when
+    /// it is in table scope.
+    fn in_table_scope(&self, names: &[&str]) -> Option<usize> {
+        for (i, e) in self.open.iter().enumerate().rev() {
+            if !e.is_foreign() && names.contains(&e.name.as_str()) {
+                return Some(i);
+            }
+            if e.ends_scope(Scope::Table) {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Closes elements down to the innermost open HTML element named in
+    /// `names` or a `<template>`, as the table modes' "clear the stack back
+    /// to a context" steps do. With neither open, that is every element.
+    fn clear_to(&mut self, names: &[&str]) {
+        let keep = self.open.iter().rposition(|e| {
+            !e.is_foreign() && (names.contains(&e.name.as_str()) || e.name == "template")
+        });
+        self.open.truncate(keep.map_or(0, |i| i + 1));
     }
 
     /// Applies the table insertion modes' rules for the start tag `<name>`:
@@ -321,51 +424,178 @@ impl Tags<'_> {
     /// any table is dropped.
     fn table_start_tag(&mut self, name: &str) -> bool {
         loop {
-            let (mode, i) = self.mode();
             let part = TABLE_PARTS.contains(&name);
-            match mode {
+            match self.mode {
                 Mode::Body => return !part,
-                Mode::Cell | Mode::Caption if part => self.open.truncate(i),
+                Mode::Cell | Mode::Caption if part => {
+                    let (closes, next): (&[&str], _) = if self.mode == Mode::Cell {
+                        (&["td", "th"], Mode::Row)
+                    } else {
+                        (&["caption"], Mode::Table)
+                    };
+                    let Some(i) = self.in_table_scope(closes) else {
+                        return false;
+                    };
+                    self.open.truncate(i);
+                    self.mode = next;
+                }
                 Mode::Row if matches!(name, "td" | "th") => {
-                    self.open.truncate(i + 1);
+                    self.clear_to(&["tr"]);
                     return true;
                 }
-                Mode::Row if part => self.open.truncate(i),
+                Mode::Row if part => {
+                    let Some(i) = self.in_table_scope(&["tr"]) else {
+                        return false;
+                    };
+                    self.open.truncate(i);
+                    self.mode = Mode::TableBody;
+                }
                 Mode::TableBody if name == "tr" => {
-                    self.open.truncate(i + 1);
+                    self.clear_to(SECTIONS);
                     return true;
                 }
                 Mode::TableBody if matches!(name, "td" | "th") => {
-                    self.open.truncate(i + 1);
-                    self.push_html("tr");
+                    self.clear_to(SECTIONS);
+                    self.imply("tr");
                 }
-                Mode::TableBody if part => self.open.truncate(i),
+                Mode::TableBody if part => {
+                    let Some(i) = self.in_table_scope(SECTIONS) else {
+                        return false;
+                    };
+                    self.open.truncate(i);
+                    self.mode = Mode::Table;
+                }
                 Mode::ColumnGroup if !matches!(name, "col" | "template") => {
                     // Only a `<colgroup>` still current is closed; under
                     // anything else the tag is dropped.
-                    if i + 1 != self.open.len() {
+                    if !self
+                        .open
+                        .last()
+                        .is_some_and(|e| !e.is_foreign() && e.name == "colgroup")
+                    {
                         return false;
                     }
                     self.open.pop();
+                    self.mode = Mode::Table;
                 }
-                Mode::Table => match name {
+                Mode::Table | Mode::TableBody | Mode::Row => match name {
                     "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => {
-                        self.open.truncate(i + 1);
+                        self.clear_to(&["table"]);
                         return true;
                     }
                     "col" => {
-                        self.open.truncate(i + 1);
-                        self.push_html("colgroup");
-                        return true;
+                        self.clear_to(&["table"]);
+                        self.imply("colgroup");
                     }
                     "td" | "th" | "tr" => {
-                        self.open.truncate(i + 1);
-                        self.push_html("tbody");
+                        self.clear_to(&["table"]);
+                        self.imply("tbody");
                     }
-                    "table" => self.open.truncate(i),
+                    "table" => {
+                        let Some(i) = self.in_table_scope(&["table"]) else {
+                            return false;
+                        };
+                        self.open.truncate(i);
+                        self.reset_mode();
+                    }
                     _ => return true,
                 },
                 _ => return true,
+            }
+        }
+    }
+
+    /// Applies the table insertion modes' rules for the end tag `</name>`,
+    /// which close a cell, row, section, caption, column group or table by
+    /// the mode rather than by the elements open, and returns whether it
+    /// handled the tag; any other goes on to the "in body" rules.
+    fn table_end_tag(&mut self, name: &str) -> bool {
+        loop {
+            match (self.mode, name) {
+                (Mode::Body | Mode::Template, _) => return false,
+                (Mode::ColumnGroup, "template") => return false,
+                (Mode::ColumnGroup, _) => {
+                    let current = self
+                        .open
+                        .last()
+                        .is_some_and(|e| !e.is_foreign() && e.name == "colgroup");
+                    if name == "col" || !current {
+                        return true;
+                    }
+                    self.open.pop();
+                    self.mode = Mode::Table;
+                    if name == "colgroup" {
+                        return true;
+                    }
+                }
+                (Mode::Table, "table") => {
+                    if let Some(i) = self.in_table_scope(&["table"]) {
+                        self.open.truncate(i);
+                        self.reset_mode();
+                    }
+                    return true;
+                }
+                (Mode::TableBody, "tbody" | "tfoot" | "thead") => {
+                    if self.in_table_scope(&[name]).is_some() {
+                        self.clear_to(SECTIONS);
+                        self.open.pop();
+                        self.mode = Mode::Table;
+                    }
+                    return true;
+                }
+                (Mode::TableBody, "table") => {
+                    if self.in_table_scope(SECTIONS).is_none() {
+                        return true;
+                    }
+                    self.clear_to(SECTIONS);
+                    self.open.pop();
+                    self.mode = Mode::Table;
+                }
+                (Mode::Row, "tr" | "table" | "tbody" | "tfoot" | "thead") => {
+                    if self.in_table_scope(&["tr"]).is_none()
+                        || (name != "table" && self.in_table_scope(&[name]).is_none())
+                    {
+                        return true;
+                    }
+                    self.clear_to(&["tr"]);
+                    self.open.pop();
+                    self.mode = Mode::TableBody;
+                    if name == "tr" {
+                        return true;
+                    }
+                }
+                (Mode::Cell, "td" | "th") => {
+                    if let Some(i) = self.in_table_scope(&[name]) {
+                        self.open.truncate(i);
+                        self.mode = Mode::Row;
+                    }
+                    return true;
+                }
+                (Mode::Cell, "table" | "tbody" | "tfoot" | "thead" | "tr") => {
+                    if self.in_table_scope(&[name]).is_none() {
+                        return true;
+                    }
+                    if let Some(i) = self.in_table_scope(&["td", "th"]) {
+                        self.open.truncate(i);
+                    }
+                    self.mode = Mode::Row;
+                }
+                (Mode::Caption, "caption" | "table") => {
+                    let Some(i) = self.in_table_scope(&["caption"]) else {
+                        return true;
+                    };
+                    self.open.truncate(i);
+                    self.mode = Mode::Table;
+                    if name == "caption" {
+                        return true;
+                    }
+                }
+                (
+                    Mode::Table | Mode::TableBody | Mode::Row | Mode::Cell | Mode::Caption,
+                    "body" | "caption" | "col" | "colgroup" | "html" | "tbody" | "td" | "tfoot"
+                    | "th" | "thead" | "tr",
+                ) => return true,
+                _ => return false,
             }
         }
     }
@@ -553,8 +783,17 @@ impl Tags<'_> {
     /// Closes elements for the end tag `</name>` as the tree builder's "in
     /// body" rules do.
     fn html_end_tag(&mut self, name: &str) {
+        if self.table_end_tag(name) {
+            return;
+        }
         let scope = match name {
-            "br" | "body" | "html" => return,
+            "body" | "html" => return,
+            // `</br>` inserts a `<br>`, and a `</p>` with no `<p>` to close
+            // an empty `<p>`, which can close the innermost element.
+            "br" => return self.insert("", name),
+            "p" if self.in_scope(name, Scope::Button).is_none() => {
+                return self.insert("", name);
+            }
             "p" => Scope::Button,
             "li" => Scope::ListItem,
             "table" | "caption" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th" => Scope::Table,
@@ -575,6 +814,9 @@ impl Tags<'_> {
                     let e = &self.open[i];
                     if !e.is_foreign() && e.name == name {
                         self.open.truncate(i);
+                        if name == "template" {
+                            self.reset_mode();
+                        }
                         return;
                     }
                     if e.is_special() {
@@ -887,7 +1129,8 @@ impl Iterator for Tags<'_> {
 
     fn next(&mut self) -> Option<Tag> {
         let (start, mut end) = next_tag(self.html, self.pos)?;
-        if self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed() {
+        let cdata = self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed();
+        if cdata {
             let body = start + "<![CDATA[".len();
             end = self.html[body..]
                 .find("]]>")
@@ -900,11 +1143,26 @@ impl Iterator for Tags<'_> {
                 None => end,
             }
         } else {
-            if let Some(name) = tag
-                .strip_prefix("</")
-                .and_then(|rest| tag_name(&format!("<{rest}")))
-            {
-                self.end_tag(&name);
+            match tag.strip_prefix("</") {
+                // An end tag starts with a letter; `</>` is dropped, and any
+                // other is a bogus comment.
+                Some(rest) if rest.starts_with(|c: char| c.is_ascii_alphabetic()) => {
+                    if let Some(name) = tag_name(&format!("<{rest}")) {
+                        self.end_tag(&name);
+                    }
+                }
+                Some(">") => {}
+                Some(_) => self.insert("", ""),
+                // A comment, bogus or not; a doctype and a CDATA section
+                // insert nothing.
+                None if !cdata
+                    && !tag
+                        .get(..9)
+                        .is_some_and(|t| t.eq_ignore_ascii_case("<!doctype")) =>
+                {
+                    self.insert("", "")
+                }
+                None => {}
             }
             end
         };
@@ -1215,6 +1473,97 @@ mod tests {
         let html = "<script>let a = 1;</script><p>text</p>".repeat(20_000) + "<h2>end</h2>";
         assert_eq!(tags(&html).count(), 20_000 * 4 + 2);
         assert_eq!(card_label(&html).as_deref(), Some("end"));
+    }
+
+    #[test]
+    fn deep_nesting_scans_in_one_pass() {
+        // Each stray end tag walks the open `<g>`s, which WebKit's depth cap
+        // holds to 509 inside a card: 20,000 of them cost about 10 million
+        // steps, not the 400 million an uncapped stack would.
+        let html = format!(
+            "<svg>{}{}<h2>end</h2>",
+            "<g>".repeat(20_000),
+            "</x>".repeat(20_000)
+        );
+        assert_eq!(tags(&html).count(), 40_003);
+        assert_eq!(card_label(&html).as_deref(), Some("end"));
+        // Whatever opens the elements, the stack never holds more than the
+        // cap, so no walk over it costs more than 509 steps.
+        for unit in [
+            "<div>",
+            "<span>",
+            "<b>",
+            "<svg><g>",
+            "<table><tr><td>",
+            "<table><caption>",
+            "<math><mi>",
+        ] {
+            let html = unit.repeat(2_000);
+            let mut scan = tags(&html);
+            while scan.next().is_some() {
+                assert!(scan.open.len() <= MAX_OPEN, "{unit}: {}", scan.open.len());
+            }
+        }
+    }
+
+    #[test]
+    fn a_node_inserted_at_webkits_depth_cap_closes_the_innermost_element() {
+        // WebKit's stack holds 512 elements, three of them the frame's
+        // `<html>`, `<body>` and wrapper `<div>`. Each case runs inside `k`
+        // more `<div>`s: at 508 its `<svg>` fills the stack (at 507, its
+        // `<foreignObject>` does), and the next node inserted closes that
+        // element. The `<style>` after it shows whether an `<svg>` is still
+        // open: inside one, `<style>` holds markup and its `<b>` is a tag;
+        // otherwise it is HTML raw text. Each count is the `<b>` elements
+        // WebKit builds.
+        for (k, inner, bs) in [
+            (508, "<svg>", 1),
+            (507, "<svg><!--c-->", 1),
+            (508, "<svg><!--c-->", 0),
+            (508, "<svg></3>", 0),
+            (508, "<svg><!x>", 0),
+            (508, "<svg><?x>", 0),
+            (508, "<svg><g/>", 0),
+            // Nothing is inserted for these.
+            (508, "<svg><!doctype html>", 1),
+            (508, "<svg><![CDATA[a]]>", 1),
+            (508, "<svg>text", 1),
+            (508, "<svg></>", 1),
+            // `<html>` and `<body>` open nothing in a body.
+            (507, "<body><svg><!--c-->", 1),
+            (507, "<html><svg><!--c-->", 1),
+            // A node foster-parented out of a table leaves it open.
+            (508, "<table><svg></svg></table>", 0),
+            (508, "<table><input><svg></table>", 0),
+            (508, "<table><input type=hidden><svg></table>", 1),
+            (508, "<table><col><svg></table>", 1),
+            // With the table closed, its row's mode still closes the row.
+            (508, "<table><tr><svg></table>", 0),
+            (506, "<svg><foreignObject></p>", 0),
+            (507, "<svg><foreignObject></p>", 1),
+            (507, "<svg><foreignObject></br>", 1),
+            (507, "<svg><foreignObject><img>", 1),
+            (507, "<svg><foreignObject><frame>", 0),
+        ] {
+            let html = format!("{}{inner}<style><b>x</b></style>", "<div>".repeat(k));
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{k} {inner}"
+            );
+        }
+        // Past the cap the `<g>` opens in place of the `<svg>`, so `</svg>`
+        // finds nothing to close and the `<g>` stays open.
+        for n in [600, 2000] {
+            let html = format!("{}<svg><g></svg><style><b>x</b></style>", "<div>".repeat(n));
+            assert_eq!(
+                tags(&html)
+                    .filter(|t| &html[t.start..t.end] == "<b>")
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]
