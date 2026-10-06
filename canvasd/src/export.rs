@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    escape_attr, escape_text, find_attr_value_range, first_heading, next_tag, tag_name,
+    escape_attr, escape_text, find_attr_value_range, first_heading, raw_text_end, tag_name, tags,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -102,7 +102,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     let mut anchors: Vec<bool> = Vec::new();
     let mut pos = 0usize;
 
-    while let Some((start, end)) = next_tag(html, pos) {
+    for (start, end) in tags(html) {
         out.push_str(&html[pos..start]);
         let tag = &html[start..end];
         pos = end;
@@ -501,16 +501,6 @@ fn without_attr(tag: &str, name: &str, (vs, ve): (usize, usize)) -> String {
     format!("{}{}", tag[..attr_start].trim_end(), &tag[ve + 1..])
 }
 
-/// Where the raw text of a `<script>` or `<style>` element opened before
-/// `from` ends: its closing tag, or the end of the HTML.
-fn raw_text_end(html: &str, from: usize, name: &str) -> usize {
-    html[from..]
-        .to_ascii_lowercase()
-        .find(&format!("</{name}"))
-        .map(|i| from + i)
-        .unwrap_or(html.len())
-}
-
 /// `text` with every `</name` written `<\/name`, so it can't close the
 /// element it is inlined into. In a script, a `<script` between `<!--` and
 /// `-->` is also written `\x3Cscript`: it would put the parser in the
@@ -632,6 +622,22 @@ mod tests {
             .contains(r#"<img src="data:image/png;base64,YWJj" alt="a">"#));
         assert!(!r.html.contains("/api/"));
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn script_text_that_looks_like_a_tag_does_not_stop_the_rewrite() {
+        let c = card(
+            r##"<script>if(i<n)s='it\'s';</script><img src="/api/cards/c1/images/0"><a href="#canvas-open-0">x</a>"##,
+            &["/x/a.png"],
+            &["https://example.com/"],
+        );
+        let r = export_card(&c, None, files, offline);
+        assert!(r.html.contains("<script>if(i<n)s='it\\'s';</script>"));
+        assert!(r.html.contains(r#"<img src="data:image/png;base64,YWJj">"#));
+        assert!(r
+            .html
+            .contains(r#"href="https://example.com/" target="_blank""#));
+        assert!(!r.html.contains("/api/"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! daemon and viewer resolve. No I/O of its own — callers inject an
 //! `exists` predicate, which is the test seam.
 
-use canvas_core::html::{find_attr_value_range, next_tag, tag_name};
+use canvas_core::html::{find_attr_value_range, next_tag, tag_name, tags};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scanned {
@@ -46,7 +46,7 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
     let mut warnings = Vec::new();
     let mut pos = 0usize;
 
-    while let Some((tag_start, tag_end)) = next_tag(html, pos) {
+    for (tag_start, tag_end) in tags(html) {
         out.push_str(&html[pos..tag_start]);
         let tag = &html[tag_start..tag_end];
         let name = if tag.starts_with("</") {
@@ -133,13 +133,15 @@ pub fn scan(html: &str, exists: impl Fn(&str) -> bool) -> Scanned {
 fn unwrap_image_links(html: &str, exists: &impl Fn(&str) -> bool) -> String {
     let mut out = String::with_capacity(html.len());
     let mut pos = 0usize;
-    while let Some((start, end)) = next_tag(html, pos) {
+    let mut walk = tags(html);
+    while let Some((start, end)) = walk.next() {
         let tag = &html[start..end];
         if tag_name(tag).as_deref() == Some("a") && has_existing_local(tag, "href", exists) {
             if let Some((img_start, img_end, close_end)) = sole_image_in_link(html, end, exists) {
                 out.push_str(&html[pos..start]);
                 out.push_str(&html[img_start..img_end]);
                 pos = close_end;
+                walk.skip_to(close_end);
                 continue;
             }
         }
@@ -200,6 +202,15 @@ mod tests {
         assert!(s.warnings.is_empty());
         assert!(s.html.contains(r#"src="canvas-image:0""#));
         assert!(!s.html.contains("/abs/x.png"));
+    }
+
+    #[test]
+    fn script_text_that_looks_like_a_tag_does_not_stop_the_scan() {
+        let html = "<script>if(i<n)s='it\\'s';</script><img src=\"/abs/x.png\">";
+        let s = scan(html, exists_in(&["/abs/x.png"]));
+        assert_eq!(s.images, vec!["/abs/x.png".to_string()]);
+        assert!(s.html.starts_with("<script>if(i<n)s='it\\'s';</script>"));
+        assert!(s.html.contains(r#"src="canvas-image:0""#));
     }
 
     #[test]

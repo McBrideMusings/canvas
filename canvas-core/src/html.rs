@@ -4,13 +4,22 @@
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
 /// `>` inside a quoted attribute value doesn't end the tag early. Returns
-/// the byte range `[start, end)` including the angle brackets. `None` past
-/// the last `<` or if a tag is left unterminated.
+/// the byte range `[start, end)` including the angle brackets. A comment
+/// is one range from `<!--` through `-->` (or the end of the HTML), so a
+/// quote or tag inside it is never read. `None` past the last `<` or if a
+/// tag is left unterminated.
 pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = html.as_bytes();
     let mut i = from;
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            if html[i..].starts_with("<!--") {
+                // From the opener's dashes, so `<!-->` and `<!--->` end at once.
+                let end = html[i + 2..]
+                    .find("-->")
+                    .map_or(html.len(), |e| i + 2 + e + 3);
+                return Some((i, end));
+            }
             let mut j = i + 1;
             let mut in_quote: Option<u8> = None;
             while j < bytes.len() {
@@ -36,6 +45,52 @@ pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
         i += 1;
     }
     None
+}
+
+/// Every tag in `html`, in order, as [`next_tag`] ranges. The text of a
+/// `<script>`, `<style>`, `<title>` or `<textarea>` element holds no tags,
+/// so after its opening tag the scan resumes at its closing tag.
+pub fn tags(html: &str) -> Tags<'_> {
+    Tags { html, pos: 0 }
+}
+
+pub struct Tags<'a> {
+    html: &'a str,
+    pos: usize,
+}
+
+impl Tags<'_> {
+    /// Resumes the scan at `pos`, past whatever the caller consumed itself.
+    pub fn skip_to(&mut self, pos: usize) {
+        self.pos = self.pos.max(pos);
+    }
+}
+
+impl Iterator for Tags<'_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        let (start, end) = next_tag(self.html, self.pos)?;
+        let tag = &self.html[start..end];
+        self.pos = match tag_name(tag).as_deref() {
+            // A self-closed one (SVG's `<title/>`) has no text to skip.
+            Some(name @ ("script" | "style" | "title" | "textarea")) if !tag.ends_with("/>") => {
+                raw_text_end(self.html, end, name)
+            }
+            _ => end,
+        };
+        Some((start, end))
+    }
+}
+
+/// Where the text of a `<script>`, `<style>`, `<title>` or `<textarea>` element opened before
+/// `from` ends: its closing tag, or the end of the HTML.
+pub fn raw_text_end(html: &str, from: usize, name: &str) -> usize {
+    html[from..]
+        .to_ascii_lowercase()
+        .find(&format!("</{name}"))
+        .map(|i| from + i)
+        .unwrap_or(html.len())
 }
 
 /// The lowercased tag name of an opening tag, e.g. `"img"` or `"a"`.
@@ -104,9 +159,7 @@ pub fn card_label(html: &str) -> Option<String> {
 
 /// The text of the first `<h1>`–`<h3>`, tags stripped.
 pub fn first_heading(html: &str) -> Option<String> {
-    let mut pos = 0;
-    while let Some((start, end)) = next_tag(html, pos) {
-        pos = end;
+    for (start, end) in tags(html) {
         let name = tag_name(&html[start..end]);
         if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
             let close = format!("</{level}");
@@ -124,7 +177,7 @@ pub fn first_heading(html: &str) -> Option<String> {
 pub fn strip_tags(html: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
-    while let Some((start, end)) = next_tag(html, pos) {
+    for (start, end) in tags(html) {
         out.push_str(&html[pos..start]);
         pos = end;
     }
@@ -173,7 +226,8 @@ const BLOCK_TAGS: &[&str] = &[
 fn visible_text(html: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
-    while let Some((start, end)) = next_tag(html, pos) {
+    let mut scan = tags(html);
+    while let Some((start, end)) = scan.next() {
         out.push_str(&html[pos..start]);
         pos = end;
         let tag = &html[start..end];
@@ -185,6 +239,7 @@ fn visible_text(html: &str) -> String {
                     .to_ascii_lowercase()
                     .find(&close)
                     .map_or(html.len(), |stop| end + stop);
+                scan.skip_to(pos);
             }
             Some(name) if BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
@@ -224,6 +279,44 @@ pub fn escape_attr(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tags_skip_script_and_style_text() {
+        let html =
+            "<script src=a.js>i<n; s='x</SCRIPT><style>a<b{content:\"'\"}</style><img src=x>";
+        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        assert_eq!(
+            names,
+            [
+                "<script src=a.js>",
+                "</SCRIPT>",
+                "<style>",
+                "</style>",
+                "<img src=x>"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comment_is_one_tag_whatever_it_holds() {
+        let html = "<!-- don't <script> --><img src=x><title>a<b's</title><!--><!---><svg><title/><b><!-- open";
+        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        assert_eq!(
+            names,
+            [
+                "<!-- don't <script> -->",
+                "<img src=x>",
+                "<title>",
+                "</title>",
+                "<!-->",
+                "<!--->",
+                "<svg>",
+                "<title/>",
+                "<b>",
+                "<!-- open"
+            ]
+        );
+    }
 
     #[test]
     fn card_label_prefers_the_first_heading() {
