@@ -141,7 +141,8 @@ impl Tags<'_> {
         let mut as_html = match self.foreign.last() {
             None => true,
             Some(top) => match top.point {
-                Point::None => false,
+                // Any `<annotation-xml>` holds an `<svg>` as HTML would.
+                Point::None => top.math && top.name == "annotation-xml" && name == "svg",
                 Point::Html => true,
                 Point::MathText => !matches!(name, "mglyph" | "malignmark"),
             },
@@ -680,6 +681,21 @@ mod tests {
         ] {
             let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
             assert!(!names.contains(&"<b>"), "{html}: {names:?}");
+        }
+        // How many `<b>` elements Chromium builds from each.
+        for (html, bs) in [
+            // `</br>` ends the svg, so `<title/>` opens HTML title text.
+            ("<svg><g></br><title/></svg><b>y</b>", 0),
+            // `<mglyph>` stays MathML inside `<mi>`, so `<style/>` is closed.
+            ("<math><mi><mglyph><style/></mglyph></mi></math><b>y</b>", 1),
+            // An `<svg>` in any `<annotation-xml>` is SVG, with its islands.
+            ("<math><annotation-xml><svg><foreignObject><b>x</b></foreignObject><title/></svg></annotation-xml></math><b>y</b>", 2),
+            ("<math><annotation-xml encoding='application/xhtml+xml'><style/><b>x</b></style></annotation-xml></math>", 0),
+            // One `</svg>` closes every element inside it.
+            ("<svg><g><g><a></svg><title/><b>y</b>", 0),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(names.iter().filter(|n| **n == "<b>").count(), bs, "{html}: {names:?}");
         }
         // `<font>` without a colour, face or size stays inside the svg.
         let html = "<svg><font><title/></font></svg>";
