@@ -399,6 +399,114 @@ fn export_all_of_an_empty_daemon_writes_just_the_index() {
     assert!(entries["index.html"].contains("No posts to export"));
 }
 
+/// A stand-in canvasd on its own socket: `/api/state` lists cards `kept`
+/// and `skipped` in one session, `kept` exports as a fixed page, and
+/// `skipped`'s export answers `status` with `body`. Each connection gets one
+/// response and is closed, which is how the CLI's client frames a body.
+struct FakeDaemon {
+    socket: PathBuf,
+}
+
+impl FakeDaemon {
+    fn dir(&self) -> &Path {
+        self.socket.parent().unwrap()
+    }
+}
+
+fn spawn_fake_daemon(status: u16, body: &'static str) -> FakeDaemon {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = std::env::temp_dir().join(format!(
+        "canvas-export-fake-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("canvasd.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let state = serde_json::json!({
+        "sessions": [{
+            "id": "s1", "cwd": "/tmp/fake", "agent": "claude-code", "name": "fake",
+            "startedAt": "2026-10-05T14:00:00+00:00"
+        }],
+        "cards": [
+            { "id": "kept", "sessionId": "s1", "at": "2026-10-05T14:01:00+00:00", "html": "<h1>Kept</h1>" },
+            { "id": "skipped", "sessionId": "s1", "at": "2026-10-05T14:02:00+00:00", "html": "<h1>Skipped</h1>" }
+        ],
+        "artifacts": []
+    })
+    .to_string();
+    let kept = serde_json::json!({ "html": "<h1>Kept</h1>", "warnings": [] }).to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            let path = request_line.split(' ').nth(1).unwrap_or("");
+            let (code, text) = match path {
+                "/api/state" => (200, state.as_str()),
+                "/api/cards/kept/export" => (200, kept.as_str()),
+                "/api/cards/skipped/export" => (status, body),
+                _ => (404, "no such route"),
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                text.len()
+            );
+        }
+    });
+    FakeDaemon { socket }
+}
+
+/// Runs `canvas export --all -o all.zip` against `fake`; returns the printed
+/// JSON and the zip's entry names, asserting a clean exit.
+fn export_all_from(fake: &FakeDaemon) -> (serde_json::Value, Vec<String>) {
+    let out = fake.dir().join("all.zip");
+    let output = Command::new(canvas_bin())
+        .args(["export", "--all", "-o", out.to_str().unwrap()])
+        .env("CANVAS_SOCKET", &fake.socket)
+        .env("CANVAS_DATA_DIR", fake.dir())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let mut names: Vec<String> = archive.file_names().map(String::from).collect();
+    names.sort();
+    (printed, names)
+}
+
+#[test]
+fn export_all_skips_a_card_canvasd_no_longer_holds() {
+    let fake = spawn_fake_daemon(404, "no card with that id");
+    let (printed, names) = export_all_from(&fake);
+    assert_eq!(printed["cards"], 1, "{printed}");
+    let warnings = printed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{printed}");
+    assert_eq!(warnings[0]["kind"], "card-gone");
+    assert_eq!(warnings[0]["card_id"], "skipped");
+    assert_eq!(names, vec!["index.html", "kept.html"]);
+}
+
+#[test]
+fn export_all_skips_a_card_whose_export_fails() {
+    let fake = spawn_fake_daemon(500, "export blew up");
+    let (printed, names) = export_all_from(&fake);
+    assert_eq!(printed["cards"], 1, "{printed}");
+    let warnings = printed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{printed}");
+    assert_eq!(warnings[0]["kind"], "export-failed");
+    assert_eq!(warnings[0]["card_id"], "skipped");
+    assert_eq!(warnings[0]["reason"], "export blew up");
+    assert_eq!(names, vec!["index.html", "kept.html"]);
+}
+
 #[test]
 fn export_all_fails_with_one_line_when_canvasd_is_unreachable() {
     let daemon = spawn_daemon();
