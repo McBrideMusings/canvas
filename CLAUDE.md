@@ -56,7 +56,8 @@ beside the terminal all day.
   `canvas-post://<card_id>` shows the window and parks the id in `PendingCard`,
   and the viewer takes it with `take_pending_card` once its state has loaded,
   clears search and filters, scrolls to the card and rings it.
-  The card menu's "Export post…" calls `export_card` (`export.rs`): it fetches
+  The card menu's "Export post…" calls `export_card` (`export.rs`; `capabilities/export.json` grants it to
+  the main window alone): it fetches
   `GET /api/cards/:id/export` over the socket (waiting `EXPORT_DOWNLOAD_SECS`
   plus 15s), opens a save dialog from Rust (`tauri-plugin-dialog`; the viewer
   holds no dialog permission), writes the page and returns `{path, warnings}`
