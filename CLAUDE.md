@@ -66,6 +66,10 @@ beside the terminal all day.
   it) runs each `eval/*.js` in that folder in the main window, so a script can
   drive the viewer without taking focus (`admin verify-app eval <js|->`), and a
   `save-path` file there answers the save dialog (empty for cancelled).
+  `CANVAS_DEBUG_WINDOW=x,y` moves the main window there at start (onto a Retina
+  screen). `scripts/clip-demo.sh` is the looping demo for a recorded clip: a
+  throwaway daemon and app, four made-up cards, period 5.6s, starting at t0 once
+  the file `ADMIN_CLIP_START` names exists when `ADMIN_CLIP=1`.
   The `daemon_status` command reports installed/up-to-date/loaded/running
   plus any install error, and the Settings window's Daemon tab polls it.
   Its `relaunchNeeded` is true only when a bundled binary exists and differs from
