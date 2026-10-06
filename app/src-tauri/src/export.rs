@@ -5,12 +5,21 @@
 use std::path::PathBuf;
 
 use canvas_core::export::{self, Exported};
+use canvas_core::ExportWarning;
+use serde::Serialize;
 use tauri_plugin_dialog::DialogExt;
 
-/// Returns the written path, `None` when the dialog was cancelled, or a
+/// A written page: where it went, and what the export left out of it.
+#[derive(Serialize)]
+pub struct Saved {
+    path: String,
+    warnings: Vec<ExportWarning>,
+}
+
+/// Returns the written page, `None` when the dialog was cancelled, or a
 /// one-line reason.
 #[tauri::command]
-pub async fn export_card(app: tauri::AppHandle, card_id: String) -> Result<Option<String>, String> {
+pub async fn export_card(app: tauri::AppHandle, card_id: String) -> Result<Option<Saved>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         save(&app, &card_id).inspect_err(|error| {
             canvas_core::log::warn(
@@ -23,7 +32,7 @@ pub async fn export_card(app: tauri::AppHandle, card_id: String) -> Result<Optio
     .map_err(|e| e.to_string())?
 }
 
-fn save(app: &tauri::AppHandle, card_id: &str) -> Result<Option<String>, String> {
+fn save(app: &tauri::AppHandle, card_id: &str) -> Result<Option<Saved>, String> {
     let page = match export::fetch(card_id)? {
         Exported::Page(page) => page,
         Exported::Gone => return Err("canvasd has no post with that id".to_string()),
@@ -45,7 +54,10 @@ fn save(app: &tauri::AppHandle, card_id: &str) -> Result<Option<String>, String>
             ("warnings", &page.warnings.len()),
         ],
     );
-    Ok(Some(path))
+    Ok(Some(Saved {
+        path,
+        warnings: page.warnings,
+    }))
 }
 
 /// The save dialog, or in a debug build the path `debug::save_path` supplies.

@@ -59,8 +59,10 @@ beside the terminal all day.
   The card menu's "Export post…" calls `export_card` (`export.rs`): it fetches
   `GET /api/cards/:id/export` over the socket (waiting `EXPORT_DOWNLOAD_SECS`
   plus 15s), opens a save dialog from Rust (`tauri-plugin-dialog`; the viewer
-  holds no dialog permission), writes the page and returns the path, `null` for
-  a cancelled dialog, or a one-line reason the item shows as "Export failed: …";
+  holds no dialog permission), writes the page and returns `{path, warnings}`
+  (the toast names what the warnings left out: "Exported to f.html without 1
+  image and 2 CDN files"), `null` for a cancelled dialog, or a one-line reason
+  the item shows as "Export failed: …";
   it logs `post exported`, `post export cancelled` or `post export failed`.
   A debug build with `CANVAS_DEBUG_DIR` set (`debug.rs`; `verify-app.sh` sets
   it) runs each `eval/*.js` in that folder in the main window, so a script can
