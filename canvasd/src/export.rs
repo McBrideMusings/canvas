@@ -44,6 +44,10 @@ pub fn export_card(
     let mut warnings = Vec::new();
     let mut cdn = Cdn::new(fetch, Duration::from_secs(EXPORT_DOWNLOAD_SECS));
     let body = rewrite(card, &read, &mut cdn, &mut warnings);
+    // A file one reference left as a link while another put it in the page
+    // isn't missing from the page.
+    warnings
+        .retain(|w| w.kind != ExportWarningKind::FetchFailed || !cdn.present.contains(&w.target));
     let title = escape_text(&card_label(&card.html).unwrap_or_else(|| "Canvas post".into()));
     let mut html = String::with_capacity(body.len() + 1024);
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
@@ -226,6 +230,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
+                        cdn.present.push(url.clone());
                         out.push_str(&without_attr(tag, "src", (vs, ve)));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
@@ -241,6 +246,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
+                        cdn.present.push(url.clone());
                         cdn.importing.push(url.clone());
                         let css = cdn.css(
                             &String::from_utf8_lossy(&bytes),
@@ -289,13 +295,17 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
 
 /// Downloads for one export: each URL fetched once, all of them within one
 /// time budget, and at most `MAX_INLINED_BYTES` inlined in total. A URL that
-/// isn't inlined warns once.
+/// isn't inlined warns once; `export_card` drops the warning when another
+/// reference put the URL in the page (`present`).
 struct Cdn<F> {
     fetch: F,
     budget: Duration,
     deadline: Instant,
     cache: HashMap<String, Result<Vec<u8>, String>>,
     warned: HashSet<String>,
+    /// Every URL whose content went into the page, in order, so a
+    /// stylesheet's expansion that is thrown away can drop its own.
+    present: Vec<String>,
     inlined: usize,
     /// The stylesheets being expanded, outermost first, so an `@import`
     /// that closes a cycle is dropped.
@@ -313,6 +323,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             deadline: Instant::now() + budget,
             cache: HashMap::new(),
             warned: HashSet::new(),
+            present: Vec::new(),
             inlined: 0,
             importing: Vec::new(),
             linked: Vec::new(),
@@ -360,7 +371,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
-    /// A `fetch-failed` warning that `url` stays a link, once per URL.
+    /// A `fetch-failed` warning that `url` stays a link, once per URL;
+    /// `export_card` drops it if `url` ends up in `present`.
     fn warn(&mut self, url: &str, reason: String, warnings: &mut Vec<ExportWarning>) {
         if self.warned.insert(url.to_string()) {
             warnings.push(ExportWarning {
@@ -462,7 +474,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     self.warn(u, reason, warnings);
                     None
                 } else {
-                    let (bytes_before, links_before) = (self.inlined, self.linked.len());
+                    let (bytes_before, links_before, present_before) =
+                        (self.inlined, self.linked.len(), self.present.len());
                     self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
                         let text = self.css(
@@ -479,10 +492,14 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                                     "kept as a link: its @import of {nested} would be ignored inside {block}"
                                 );
                                 self.inlined = bytes_before;
+                                self.present.truncate(present_before);
                                 self.warn(u, reason, warnings);
                                 None
                             }
-                            _ => Some(text),
+                            _ => {
+                                self.present.push(u.clone());
+                                Some(text)
+                            }
                         }
                     })
                 }
@@ -534,6 +551,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         };
         if cdn::allowed(target) {
             if let Some(bytes) = self.get(target, warnings) {
+                self.present.push(target.to_string());
                 let path = target.split('?').next().unwrap_or(target);
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
                 return Some(format!(
@@ -1444,7 +1462,78 @@ mod tests {
     }
 
     #[test]
-    fn repeated_imports_stop_at_the_inlining_total() {
+    fn a_sheet_too_deep_to_inline_but_inlined_elsewhere_does_not_warn() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => "@import \"y.css\";@import \"b.css\";@import \"x.css\";.a{}",
+                Some("b.css") => "@import \"c.css\";.b{}",
+                Some("c.css") => "@import \"d.css\";.c{}",
+                Some("d.css") => "@import \"e.css\";.d{}",
+                Some("e.css") => "@import \"x.css\";@import \"y.css\";.e{}",
+                Some("x.css") => ".x{}",
+                Some("y.css") => ".y{}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>.y{}@import url("https://unpkg.com/x.css");@import url("https://unpkg.com/y.css");.e{}.d{}.c{}.b{}.x{}.a{}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_sheet_kept_as_a_link_but_inlined_elsewhere_does_not_warn() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => {
+                    "@import \"e.css\" print;@import \"b.css\" layer(l);@import \"f.css\" layer(l);@import \"f.css\";"
+                }
+                Some("b.css") => "@import \"https://example.com/c.css\";@import \"e.css\";.b{}",
+                Some("e.css") => "@import \"gone.css\";.e{}",
+                Some("f.css") => "@import \"https://example.com/c.css\";.f{}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>@import url("https://unpkg.com/e.css") print;@import url("https://unpkg.com/b.css") layer(l);@import url("https://unpkg.com/f.css") layer(l);@import "https://example.com/c.css";.f{}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        // e.css went into b.css's expansion, which b.css staying a link threw
+        // away, so e.css is still missing; f.css is in the page.
+        let got: Vec<_> = r.warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(
+            got,
+            [
+                "https://unpkg.com/gone.css",
+                "https://unpkg.com/e.css",
+                "https://unpkg.com/b.css"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sheet_repeated_past_the_inlining_total_does_not_warn() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
             &[],
@@ -1463,9 +1552,43 @@ mod tests {
             "{}",
             r.html.len()
         );
-        assert_eq!(r.warnings.len(), 1);
-        assert_eq!(r.warnings[0].target, "https://unpkg.com/b.css");
-        assert!(r.warnings[0].reason.contains("already inlined 8 MB"));
+        assert!(r
+            .html
+            .contains(r#"@import url("https://unpkg.com/b.css");"#));
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn repeated_imports_stop_at_the_inlining_total() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let a: String = (0..40).map(|n| format!("@import \"b{n}.css\";")).collect();
+        // a.css counts toward the total too.
+        let fit = (MAX_INLINED_BYTES - a.len()) / MAX_ASSET_BYTES;
+        let b = vec![b'x'; MAX_ASSET_BYTES];
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/a.css" => Ok(a.clone().into_bytes()),
+            u if u.starts_with("https://unpkg.com/b") => Ok(b.clone()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+            "{}",
+            r.html.len()
+        );
+        assert_eq!(r.warnings.len(), 40 - fit);
+        assert_eq!(
+            r.warnings[0].target,
+            format!("https://unpkg.com/b{fit}.css")
+        );
+        assert!(r
+            .warnings
+            .iter()
+            .all(|w| w.reason.contains("already inlined 8 MB")));
     }
 
     #[test]
