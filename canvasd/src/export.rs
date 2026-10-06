@@ -16,8 +16,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    attr_value_is_quoted, card_label, decode_entities, escape_attr, escape_text,
-    find_attr_value_range, replace_attr_value, tag_name, tags, Tag,
+    card_label, decode_entities, escape_attr, escape_text, find_attr_value, replace_attr_value,
+    tag_name, tags, AttrValue, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -155,11 +155,11 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
 
         match tag_name(tag).as_deref() {
             Some(kind @ ("img" | "video" | "source")) => {
-                let Some((vs, ve)) = find_attr_value_range(tag, "src") else {
+                let Some(src) = find_attr_value(tag, "src") else {
                     out.push_str(tag);
                     continue;
                 };
-                let Some(index) = tag[vs..ve]
+                let Some(index) = tag[src.range()]
                     .strip_prefix(&image_prefix)
                     .and_then(|n| n.parse::<usize>().ok())
                 else {
@@ -168,7 +168,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 let path = card.images.get(index).map(String::as_str).unwrap_or("");
                 match media_data_uri(path, read) {
-                    Ok(uri) => out.push_str(&replace_attr_value(tag, (vs, ve), &uri)),
+                    Ok(uri) => out.push_str(&replace_attr_value(tag, src, &uri)),
                     Err(reason) => {
                         warnings.push(ExportWarning {
                             kind: ExportWarningKind::MissingImage,
@@ -187,30 +187,30 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                         } else {
                             // Drop ` src="…"` whole: an empty src would make
                             // the browser request the page's own URL.
-                            out.push_str(&without_attr(tag, "src", (vs, ve)));
+                            out.push_str(&without_attr(tag, "src", src));
                         }
                     }
                 }
             }
             Some("a") => {
-                let link = find_attr_value_range(tag, "href").and_then(|(vs, ve)| {
-                    let index = tag[vs..ve]
+                let link = find_attr_value(tag, "href").and_then(|href| {
+                    let index = tag[href.range()]
                         .strip_prefix("#canvas-open-")?
                         .parse::<usize>()
                         .ok()?;
-                    Some((vs, ve, card.targets.get(index).map(String::as_str)))
+                    Some((href, card.targets.get(index).map(String::as_str)))
                 });
                 match link {
                     None => {
                         anchors.push(false);
                         out.push_str(tag);
                     }
-                    Some((vs, ve, Some(url)))
+                    Some((href, Some(url)))
                         if url.starts_with("http://") || url.starts_with("https://") =>
                     {
                         anchors.push(false);
                         let close = if tag.ends_with("/>") { "/>" } else { ">" };
-                        let tag = replace_attr_value(tag, (vs, ve), &escape_attr(url));
+                        let tag = replace_attr_value(tag, href, &escape_attr(url));
                         out.push_str(tag.strip_suffix(close).unwrap_or(&tag));
                         out.push_str(" target=\"_blank\" rel=\"noopener\"");
                         out.push_str(close);
@@ -221,17 +221,17 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 }
             }
             Some("script") => {
-                let src = find_attr_value_range(tag, "src")
-                    .and_then(|(vs, ve)| Some((vs, ve, cdn::join(None, &attr_url(&tag[vs..ve]))?)))
-                    .filter(|(_, _, url)| cdn::allowed(url));
-                let Some((vs, ve, url)) = src else {
+                let src = find_attr_value(tag, "src")
+                    .and_then(|src| Some((src, cdn::join(None, &attr_url(&tag[src.range()]))?)))
+                    .filter(|(_, url)| cdn::allowed(url));
+                let Some((src, url)) = src else {
                     out.push_str(tag);
                     continue;
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
                         cdn.present.push(url.clone());
-                        out.push_str(&without_attr(tag, "src", (vs, ve)));
+                        out.push_str(&without_attr(tag, "src", src));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
                         pos = text_end;
@@ -256,10 +256,10 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                             warnings,
                         );
                         cdn.importing.pop();
-                        match find_attr_value_range(tag, "media") {
-                            Some((ms, me)) => out.push_str(&format!(
+                        match find_attr_value(tag, "media") {
+                            Some(media) => out.push_str(&format!(
                                 "<style media=\"{}\">",
-                                tag[ms..me].replace('"', "&quot;")
+                                tag[media.range()].replace('"', "&quot;")
                             )),
                             None => out.push_str("<style>"),
                         }
@@ -803,16 +803,15 @@ fn starts_with_word(b: &[u8], i: usize, word: &[u8]) -> bool {
 /// The absolute URL a `<link rel="stylesheet">` loads. An alternate
 /// stylesheet is off until chosen, so it is never inlined as a live one.
 fn stylesheet_href(tag: &str) -> Option<String> {
-    let (rs, re) = find_attr_value_range(tag, "rel")?;
-    let rel: Vec<String> = tag[rs..re]
+    let rel: Vec<String> = tag[find_attr_value(tag, "rel")?.range()]
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect();
     if !rel.iter().any(|w| w == "stylesheet") || rel.iter().any(|w| w == "alternate") {
         return None;
     }
-    let (hs, he) = find_attr_value_range(tag, "href")?;
-    cdn::join(None, &attr_url(&tag[hs..he]))
+    let href = find_attr_value(tag, "href")?;
+    cdn::join(None, &attr_url(&tag[href.range()]))
 }
 
 /// A URL attribute's value as the browser reads it: surrounding whitespace
@@ -822,17 +821,19 @@ fn attr_url(value: &str) -> String {
 }
 
 /// `tag` with its `name="…"` (or unquoted `name=…`) attribute, whose value
-/// spans `value`, removed.
-fn without_attr(tag: &str, name: &str, (vs, ve): (usize, usize)) -> String {
-    let attr_start = tag[..vs]
-        .trim_end_matches(['"', '\''])
+/// is `value`, removed.
+fn without_attr(tag: &str, name: &str, value: AttrValue) -> String {
+    let attr_start = tag[..value.outer().start]
         .trim_end()
         .trim_end_matches('=')
         .trim_end()
         .len()
         - name.len();
-    let attr_end = ve + usize::from(attr_value_is_quoted(tag, vs));
-    format!("{}{}", tag[..attr_start].trim_end(), &tag[attr_end..])
+    format!(
+        "{}{}",
+        tag[..attr_start].trim_end(),
+        &tag[value.outer().end..]
+    )
 }
 
 /// `text` with every `</name` written `<\/name`, so it can't close the
@@ -1032,7 +1033,7 @@ mod tests {
     #[test]
     fn unquoted_values_are_rewritten_in_double_quotes() {
         let c = card(
-            "<img src=/api/cards/c1/images/0 alt=a><video src=/api/cards/c1/images/1></video><a href=#canvas-open-0>site</a>",
+            "<img src=/api/cards/c1/images/0 alt=a><video src=/api/cards/c1/images/1 muted></video><a href=#canvas-open-0>site</a>",
             &["/x/a.png", "/x/gone.webm"],
             &["https://example.com/?a=1&b=2"],
         );
@@ -1043,7 +1044,7 @@ mod tests {
             "{}",
             r.html
         );
-        assert!(r.html.contains("<video></video>"), "{}", r.html);
+        assert!(r.html.contains("<video muted></video>"), "{}", r.html);
         assert!(r.html.contains(
             r#"<a href="https://example.com/?a=1&amp;b=2" target="_blank" rel="noopener">site</a>"#
         ));

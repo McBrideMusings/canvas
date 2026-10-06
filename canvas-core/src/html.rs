@@ -2,6 +2,8 @@
 //! canvasd's export: no parser, just quote-aware tag boundaries and
 //! attribute lookups over the byte string.
 
+use std::ops::Range;
+
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
 /// `>` inside a quoted attribute value doesn't end the tag early. Tag
 /// boundaries follow the browser's tokenizer: `<` opens a tag only before a
@@ -373,8 +375,8 @@ impl Tags<'_> {
             || TABLE_PARTS.contains(&name)
             || matches!(name, "table" | "style" | "script" | "template" | "form")
             || (name == "input"
-                && find_attr_value_range(tag, "type")
-                    .is_some_and(|(s, e)| tag[s..e].eq_ignore_ascii_case("hidden")));
+                && find_attr_value(tag, "type")
+                    .is_some_and(|v| tag[v.range()].eq_ignore_ascii_case("hidden")));
         in_table && !held
     }
 
@@ -1067,8 +1069,8 @@ fn integration_point(tag: &str, name: &str, math: bool) -> Point {
         (false, "foreignobject" | "desc" | "title") => Point::Html,
         (true, "mi" | "mo" | "mn" | "ms" | "mtext") => Point::MathText,
         (true, "annotation-xml")
-            if find_attr_value_range(tag, "encoding").is_some_and(|(s, e)| {
-                let encoding = &tag[s..e];
+            if find_attr_value(tag, "encoding").is_some_and(|v| {
+                let encoding = &tag[v.range()];
                 encoding.eq_ignore_ascii_case("text/html")
                     || encoding.eq_ignore_ascii_case("application/xhtml+xml")
             }) =>
@@ -1227,21 +1229,44 @@ pub fn tag_name(tag: &str) -> Option<String> {
     Some(inner[..end].to_ascii_lowercase())
 }
 
+/// An attribute value [`find_attr_value`] found in an opening tag: the byte
+/// range of the value relative to the tag, and the quote written around it
+/// (`None` for an unquoted value).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttrValue {
+    pub start: usize,
+    pub end: usize,
+    pub quote: Option<char>,
+}
+
+impl AttrValue {
+    /// The value's bytes, quotes excluded.
+    pub fn range(self) -> Range<usize> {
+        self.start..self.end
+    }
+
+    /// The value's bytes with its quotes. An unquoted value ends at the
+    /// whitespace or `>` after it, which this range leaves out.
+    pub fn outer(self) -> Range<usize> {
+        let q = self.quote.map_or(0, char::len_utf8);
+        self.start - q..self.end + q
+    }
+}
+
 /// Finds the attribute `attr` (case-insensitive name) in the opening tag
-/// `tag`, reading its attributes as the browser's tokenizer does, and returns
-/// the byte range of its value relative to `tag`: between the quotes of
-/// `name="v"` or `name='v'`, or for an unquoted `name=v` up to whitespace or
-/// `>`. Spaces around `=` are allowed. Text inside another attribute's value
-/// is never read as an attribute, so `alt="a src=x"` holds no `src`. The
-/// first attribute of a name wins, as in the browser, and one written without
-/// `=` has no value: `None`.
-pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
+/// `tag`, reading its attributes as the browser's tokenizer does: its value
+/// lies between the quotes of `name="v"` or `name='v'`, or for an unquoted
+/// `name=v` runs up to whitespace or `>`. Spaces around `=` are allowed. Text
+/// inside another attribute's value is never read as an attribute, so
+/// `alt="a src=x"` holds no `src`. The first attribute of a name wins, as in
+/// the browser, and one written without `=` has no value: `None`.
+pub fn find_attr_value(tag: &str, attr: &str) -> Option<AttrValue> {
     find_attr(tag, attr).flatten()
 }
 
-/// [`find_attr_value_range`]'s lookup, telling a missing attribute (`None`)
-/// from one written without `=` (`Some(None)`).
-fn find_attr(tag: &str, attr: &str) -> Option<Option<(usize, usize)>> {
+/// [`find_attr_value`]'s lookup, telling a missing attribute (`None`) from one
+/// written without `=` (`Some(None)`).
+fn find_attr(tag: &str, attr: &str) -> Option<Option<AttrValue>> {
     let b = tag.as_bytes();
     let space = |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
     let name_ends = |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
@@ -1277,44 +1302,47 @@ fn find_attr(tag: &str, attr: &str) -> Option<Option<(usize, usize)>> {
         while space(i) {
             i += 1;
         }
-        let (vs, ve) = match b.get(i) {
+        let value = match b.get(i) {
             Some(&q @ (b'"' | b'\'')) => {
-                let vs = i + 1;
-                let ve = vs + tag[vs..].find(q as char)?;
-                i = ve + 1;
-                (vs, ve)
+                let quote = q as char;
+                let start = i + 1;
+                let end = start + tag[start..].find(quote)?;
+                i = end + 1;
+                AttrValue {
+                    start,
+                    end,
+                    quote: Some(quote),
+                }
             }
             _ => {
-                let vs = i;
+                let start = i;
                 while i < b.len() && !space(i) && b[i] != b'>' {
                     i += 1;
                 }
-                (vs, i)
+                AttrValue {
+                    start,
+                    end: i,
+                    quote: None,
+                }
             }
         };
         if is_attr {
-            return Some(Some((vs, ve)));
+            return Some(Some(value));
         }
     }
 }
 
-/// `tag` with the attribute value at `[vs, ve)` (a [`find_attr_value_range`]
-/// range) replaced by `value`, which must already be safe inside a quoted
+/// `tag` with the attribute value `old` (a [`find_attr_value`] result for
+/// `tag`) replaced by `value`, which must already be safe inside a quoted
 /// value ([`escape_attr`]). An unquoted value is written in double quotes, so
 /// the new one stays one value whatever it holds.
-pub fn replace_attr_value(tag: &str, (vs, ve): (usize, usize), value: &str) -> String {
-    let quote = if attr_value_is_quoted(tag, vs) {
-        ""
-    } else {
-        "\""
-    };
-    format!("{}{quote}{value}{quote}{}", &tag[..vs], &tag[ve..])
-}
-
-/// Whether the [`find_attr_value_range`] value starting at `vs` is quoted.
-/// The byte before an unquoted value is `=` or whitespace, never a quote.
-pub fn attr_value_is_quoted(tag: &str, vs: usize) -> bool {
-    tag[..vs].ends_with(['"', '\''])
+pub fn replace_attr_value(tag: &str, old: AttrValue, value: &str) -> String {
+    let quote = if old.quote.is_some() { "" } else { "\"" };
+    format!(
+        "{}{quote}{value}{quote}{}",
+        &tag[..old.start],
+        &tag[old.end..]
+    )
 }
 
 /// What names a card in a list or a page title: the text of its first
@@ -1999,7 +2027,7 @@ mod tests {
     #[test]
     fn attr_values_are_read_as_the_tokenizer_reads_them() {
         fn value<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
-            find_attr_value_range(tag, attr).map(|(s, e)| &tag[s..e])
+            find_attr_value(tag, attr).map(|v| &tag[v.range()])
         }
         assert_eq!(value("<img src=/a.png>", "src"), Some("/a.png"));
         assert_eq!(value("<img src = /a.png/>", "src"), Some("/a.png/"));
@@ -2017,14 +2045,30 @@ mod tests {
     #[test]
     fn replace_attr_value_quotes_an_unquoted_value() {
         let tag = "<img src=/a.png alt=x>";
-        let range = find_attr_value_range(tag, "src").unwrap();
+        let old = find_attr_value(tag, "src").unwrap();
         assert_eq!(
-            replace_attr_value(tag, range, "a b"),
+            replace_attr_value(tag, old, "a b"),
             "<img src=\"a b\" alt=x>"
         );
         let tag = "<img src='/a.png'>";
-        let range = find_attr_value_range(tag, "src").unwrap();
-        assert_eq!(replace_attr_value(tag, range, "x"), "<img src='x'>");
+        let old = find_attr_value(tag, "src").unwrap();
+        assert_eq!(replace_attr_value(tag, old, "x"), "<img src='x'>");
+    }
+
+    #[test]
+    fn attr_values_report_their_quote() {
+        let tag = "<img src=/a.png alt=x>";
+        let v = find_attr_value(tag, "src").unwrap();
+        assert_eq!(v.quote, None);
+        assert_eq!(&tag[v.outer()], "/a.png");
+        // The space after an unquoted value belongs to what follows it.
+        assert_eq!(&tag[v.outer().end..], " alt=x>");
+        let tag = "<img src = '/a.png' alt=x>";
+        let v = find_attr_value(tag, "src").unwrap();
+        assert_eq!(v.quote, Some('\''));
+        assert_eq!(&tag[v.outer()], "'/a.png'");
+        let tag = "<img src=\"\">";
+        assert_eq!(find_attr_value(tag, "src").unwrap().quote, Some('"'));
     }
 
     #[test]
