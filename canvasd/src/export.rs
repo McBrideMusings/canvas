@@ -823,17 +823,14 @@ fn attr_url(value: &str) -> String {
 /// `tag` with its `name="…"` (or unquoted `name=…`) attribute, whose value
 /// is `value`, removed.
 fn without_attr(tag: &str, name: &str, value: AttrValue) -> String {
-    let attr_start = tag[..value.outer().start]
+    let outer = value.outer();
+    let attr_start = tag[..outer.start]
         .trim_end()
         .trim_end_matches('=')
         .trim_end()
         .len()
         - name.len();
-    format!(
-        "{}{}",
-        tag[..attr_start].trim_end(),
-        &tag[value.outer().end..]
-    )
+    format!("{}{}", tag[..attr_start].trim_end(), &tag[outer.end..])
 }
 
 /// `text` with every `</name` written `<\/name`, so it can't close the

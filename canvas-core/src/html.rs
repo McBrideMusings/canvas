@@ -1234,8 +1234,8 @@ pub fn tag_name(tag: &str) -> Option<String> {
 /// (`None` for an unquoted value).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttrValue {
-    pub start: usize,
-    pub end: usize,
+    start: usize,
+    end: usize,
     pub quote: Option<char>,
 }
 
