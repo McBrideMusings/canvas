@@ -93,12 +93,17 @@ pub fn tags(html: &str) -> Tags<'_> {
 /// the opening tag of an element the scan read as raw text, `text_end`: its
 /// closing tag (or the end of the HTML), where the scan resumes, so
 /// `[end, text_end)` is the element's text. Any other tag, an SVG or MathML
-/// `<style>` included, has none and the scan resumes at `end`.
+/// `<style>` included, has none and the scan resumes at `end`. `foreign`
+/// is true for a start tag that opened an SVG or MathML element, `<svg>` and
+/// `<math>` themselves included: the browser gives such an element none of
+/// its HTML namesake's behavior, so an SVG `<link>` loads no stylesheet and
+/// an SVG `<script>` ignores `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tag {
     pub start: usize,
     pub end: usize,
     pub text_end: Option<usize>,
+    pub foreign: bool,
 }
 
 pub struct Tags<'a> {
@@ -259,8 +264,9 @@ impl Tags<'_> {
     }
 
     /// Updates the open elements for the start tag `tag`, and returns where
-    /// its text ends when the scan reads it as raw text.
-    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<usize> {
+    /// its text ends when the scan reads it as raw text, and whether it
+    /// opened an SVG or MathML element.
+    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
         let self_closing = tag.ends_with("/>");
         let mut as_html = match self.open.last() {
             None => true,
@@ -280,7 +286,7 @@ impl Tags<'_> {
             match name {
                 "svg" => Ns::Svg,
                 "math" => Ns::Math,
-                _ => return self.html_start_tag(tag, name, end),
+                _ => return (self.html_start_tag(tag, name, end), false),
             }
         } else if self.open.last().is_some_and(|e| e.ns == Ns::Math) {
             Ns::Math
@@ -290,18 +296,17 @@ impl Tags<'_> {
         // An `<svg>` or `<math>` read as HTML meets the table modes first,
         // which can close a `<colgroup>`.
         if as_html && !self.table_start_tag(name) {
-            return None;
+            return (None, false);
         }
         self.insert(tag, name);
-        if self_closing {
-            return None;
+        if !self_closing {
+            self.open.push(Element {
+                name: name.to_string(),
+                ns,
+                point: integration_point(tag, name, ns == Ns::Math),
+            });
         }
-        self.open.push(Element {
-            name: name.to_string(),
-            ns,
-            point: integration_point(tag, name, ns == Ns::Math),
-        });
-        None
+        (None, true)
     }
 
     /// Updates the open elements for the HTML start tag `<name>`, closing
@@ -1162,8 +1167,8 @@ impl Iterator for Tags<'_> {
                 .map_or(self.html.len(), |e| body + e + "]]>".len());
         }
         let tag = &self.html[start..end];
-        let text_end = if tag.as_bytes()[1].is_ascii_alphabetic() {
-            tag_name(tag).and_then(|name| self.start_tag(tag, &name, end))
+        let (text_end, foreign) = if tag.as_bytes()[1].is_ascii_alphabetic() {
+            tag_name(tag).map_or((None, false), |name| self.start_tag(tag, &name, end))
         } else {
             match tag.strip_prefix("</") {
                 // An end tag starts with a letter; `</>` is dropped, and any
@@ -1186,13 +1191,14 @@ impl Iterator for Tags<'_> {
                 }
                 None => {}
             }
-            None
+            (None, false)
         };
         self.pos = text_end.unwrap_or(end);
         Some(Tag {
             start,
             end,
             text_end,
+            foreign,
         })
     }
 }
@@ -1436,6 +1442,7 @@ fn read_visible(
         start,
         end,
         text_end,
+        ..
     }) = scan.next()
     {
         if !hidden {
@@ -1712,6 +1719,33 @@ mod tests {
                 ("<style/>", None),
                 ("</svg>", None),
                 ("<b>", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn foreign_marks_start_tags_that_open_svg_or_math_elements() {
+        let html = "<link><svg><link/><script></script><foreignObject><link>\
+                    </foreignObject><p><link></p><math><mi/></math><b>";
+        let foreign: Vec<(&str, bool)> = tags(html)
+            .filter(|t| !html[t.start..].starts_with("</"))
+            .map(|t| (&html[t.start..t.end], t.foreign))
+            .collect();
+        assert_eq!(
+            foreign,
+            [
+                ("<link>", false),
+                ("<svg>", true),
+                ("<link/>", true),
+                ("<script>", true),
+                ("<foreignObject>", true),
+                // An integration point holds HTML; a `<p>` breaks out.
+                ("<link>", false),
+                ("<p>", false),
+                ("<link>", false),
+                ("<math>", true),
+                ("<mi/>", true),
+                ("<b>", false),
             ]
         );
     }

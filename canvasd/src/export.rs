@@ -114,6 +114,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         start,
         end,
         text_end,
+        foreign,
     } in tags(html)
     {
         let text = &html[pos..start];
@@ -220,6 +221,9 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     Some(_) => anchors.push(true),
                 }
             }
+            // An SVG or MathML `<script>` or `<link>` fetches nothing, so it
+            // stays as written.
+            Some("script" | "link") if foreign => out.push_str(tag),
             Some("script") => {
                 let src = find_attr_value(tag, "src")
                     .and_then(|src| Some((src, cdn::join(None, &attr_url(&tag[src.range()]))?)))
@@ -1239,6 +1243,26 @@ mod tests {
             assert!(r.html.contains(want), "{html}\n{}", r.html);
             assert!(r.warnings.is_empty(), "{html}: {:?}", r.warnings);
         }
+    }
+
+    #[test]
+    fn svg_and_math_scripts_and_links_stay_as_written() {
+        // The browser fetches neither an SVG `<script src>` nor an SVG or
+        // MathML `<link>`, so inlining either would add code or CSS the card
+        // never ran. Inside `<foreignObject>` they are HTML again.
+        let kept = r#"<svg><script src="https://unpkg.com/lib.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/m.css?a=1&amp;b=2"/></svg><math><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/b.css"></math>"#;
+        let r = export_card(&card(kept, &[], &[]), None, files, cdn_files);
+        assert!(r.html.contains(kept), "{}", r.html);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+
+        let html = r#"<svg><foreignObject><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/b.css"></foreignObject></svg>"#;
+        let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+        assert!(
+            r.html
+                .contains("<svg><foreignObject><style>.b{}</style></foreignObject></svg>"),
+            "{}",
+            r.html
+        );
     }
 
     #[test]
