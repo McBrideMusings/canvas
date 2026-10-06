@@ -16,8 +16,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    attr_value_is_quoted, decode_entities, escape_attr, escape_text, find_attr_value_range,
-    first_heading, replace_attr_value, tag_name, tags, Tag,
+    attr_value_is_quoted, card_label, decode_entities, escape_attr, escape_text,
+    find_attr_value_range, replace_attr_value, tag_name, tags, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -44,7 +44,7 @@ pub fn export_card(
     let mut warnings = Vec::new();
     let mut cdn = Cdn::new(fetch, Duration::from_secs(EXPORT_DOWNLOAD_SECS));
     let body = rewrite(card, &read, &mut cdn, &mut warnings);
-    let title = escape_text(&first_heading(&body).unwrap_or_else(|| "Canvas post".into()));
+    let title = escape_text(&card_label(&card.html).unwrap_or_else(|| "Canvas post".into()));
     let mut html = String::with_capacity(body.len() + 1024);
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
@@ -957,6 +957,7 @@ mod tests {
         assert_eq!(r.warnings[0].target, "/x/gone.png");
         assert!(r.html.contains("image missing: gone.png"));
         assert!(!r.html.contains("<img"));
+        assert!(r.html.contains("<title>Canvas post</title>"), "{}", r.html);
     }
 
     #[test]
@@ -1412,6 +1413,17 @@ mod tests {
     fn no_data_no_shim() {
         let r = export_card(&card("<p>hi</p>", &[], &[]), None, files, offline);
         assert!(!r.html.contains("canvas-data"));
-        assert!(r.html.contains("<title>Canvas post</title>"));
+        assert!(r.html.contains("<title>hi</title>"), "{}", r.html);
+    }
+
+    #[test]
+    fn a_card_with_no_text_is_titled_canvas_post() {
+        let r = export_card(
+            &card("<hr><script>x</script>", &[], &[]),
+            None,
+            files,
+            offline,
+        );
+        assert!(r.html.contains("<title>Canvas post</title>"), "{}", r.html);
     }
 }
