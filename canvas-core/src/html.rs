@@ -738,6 +738,19 @@ impl Tags<'_> {
         }
     }
 
+    /// The index of the innermost open HTML `<template>`.
+    fn template_index(&self) -> Option<usize> {
+        self.open
+            .iter()
+            .rposition(|e| !e.is_foreign() && e.name == "template")
+    }
+
+    /// Whether the scan is inside an HTML `<template>`, whose contents the
+    /// browser never shows.
+    fn in_template(&self) -> bool {
+        self.template_index().is_some()
+    }
+
     /// Pops foreign elements until the innermost is HTML or an integration
     /// point.
     fn pop_foreign_to_point(&mut self) {
@@ -783,6 +796,16 @@ impl Tags<'_> {
     /// Closes elements for the end tag `</name>` as the tree builder's "in
     /// body" rules do.
     fn html_end_tag(&mut self, name: &str) {
+        // Every insertion mode reads `</template>` by the "in head" rules:
+        // it closes the innermost template and everything it holds, past any
+        // special element, and is dropped when no template is open.
+        if name == "template" {
+            if let Some(i) = self.template_index() {
+                self.open.truncate(i);
+                self.reset_mode();
+            }
+            return;
+        }
         if self.table_end_tag(name) {
             return;
         }
@@ -814,9 +837,6 @@ impl Tags<'_> {
                     let e = &self.open[i];
                     if !e.is_foreign() && e.name == name {
                         self.open.truncate(i);
-                        if name == "template" {
-                            self.reset_mode();
-                        }
                         return;
                     }
                     if e.is_special() {
@@ -1379,6 +1399,8 @@ const BLOCK_TAGS: &[&str] = &[
 fn visible_text(html: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
+    // Whether the text after the last tag is inside a `<template>`.
+    let mut hidden = false;
     let mut scan = tags(html);
     while let Some(Tag {
         start,
@@ -1386,22 +1408,20 @@ fn visible_text(html: &str) -> String {
         text_end,
     }) = scan.next()
     {
-        out.push_str(&html[pos..start]);
+        if !hidden {
+            out.push_str(&html[pos..start]);
+        }
         pos = end;
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
         match name.as_deref() {
             Some("script" | "style") => pos = text_end,
-            // Not raw text, but its contents are never shown.
-            Some("template") if !tag.starts_with("</") => {
-                pos = closing_tag_start(html, end, "template");
-                scan.skip_to(pos);
-            }
-            Some(name) if BLOCK_TAGS.contains(&name) => out.push('\n'),
+            Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
         }
+        hidden = scan.in_template();
     }
-    if pos < html.len() {
+    if pos < html.len() && !hidden {
         out.push_str(&html[pos..]);
     }
     decode_entities(&out)
@@ -2023,6 +2043,47 @@ mod tests {
         );
         assert_eq!(card_label("<p>one</p><p>two</p>").as_deref(), Some("one"));
         assert_eq!(card_label("<img src=x><script>x</script>"), None);
+    }
+
+    #[test]
+    fn card_label_skips_all_of_a_nested_template() {
+        let label = |html| card_label(html).unwrap_or_default();
+        assert_eq!(
+            label("<template>a<template>b</template>HIDDEN</template>shown"),
+            "shown"
+        );
+        // `</template>` closes its template past a `<p>` or `<div>` it holds.
+        assert_eq!(
+            label("<template><p>a<div>b</template>shown<p>more"),
+            "shown"
+        );
+        // A `</template>` in script text or SVG's own `<template>` ends nothing.
+        assert_eq!(
+            label("<template><script>'</template>'</script>HIDDEN</template>shown"),
+            "shown"
+        );
+        assert_eq!(
+            label("<template><svg><template></template>HIDDEN</svg></template>shown"),
+            "shown"
+        );
+        assert_eq!(label("</template>shown"), "shown");
+    }
+
+    #[test]
+    fn visible_text_drops_a_template_and_keeps_what_follows() {
+        // A block tag inside the template starts no line of its own.
+        assert_eq!(visible_text("a<template><div>x</div></template>b"), "ab");
+        assert_eq!(
+            visible_text("<template><p>a<div>b</template>shown<p>more"),
+            "shown\nmore"
+        );
+        assert_eq!(visible_text("a<template><p>unclosed"), "a");
+        // `</template>` closes its template past the table it holds, and the
+        // row after it reads as visible again.
+        assert_eq!(
+            visible_text("<table><tr><template><table><td>x</template><td>y</table>"),
+            "\n\n\ny\n"
+        );
     }
 
     #[test]
