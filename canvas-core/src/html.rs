@@ -411,6 +411,24 @@ mod tests {
     }
 
     #[test]
+    fn card_label_tracks_where_svg_and_math_end() {
+        for (html, label) in [
+            (
+                "<math><mi/></math><style/><b>x</b></style><p>after</p>",
+                "after",
+            ),
+            ("<svg><svg></svg><title/></svg><b>y</b>", "y"),
+            ("</svg><style/><b>x</b></style><p>after</p>", "after"),
+            (
+                "<SVG><title/></SVG><style/><b>x</b></style><p>after</p>",
+                "after",
+            ),
+        ] {
+            assert_eq!(card_label(html).as_deref(), Some(label), "{html}");
+        }
+    }
+
+    #[test]
     fn a_quote_opens_a_value_only_after_an_equals_sign() {
         let html = "a < b's <x <'s<b's<i src=x><p title=x'y a = '>'>";
         let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
