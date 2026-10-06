@@ -292,10 +292,11 @@ const BREAKOUT_TAGS: &[&str] = &[
     "var",
 ];
 
-/// HTML elements that never hold content, so they leave no element open.
+/// HTML start tags that leave no element open: void elements, `<image>`
+/// (read as `<img>`) and `<frame>` (dropped in a body).
 const VOID_TAGS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr",
+    "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "image", "img",
+    "input", "keygen", "link", "meta", "param", "source", "track", "wbr",
 ];
 
 impl Iterator for Tags<'_> {
@@ -792,6 +793,13 @@ mod tests {
                 bs,
                 "{html}: {names:?}"
             );
+        }
+        // Start tags that leave no HTML element open inside the island.
+        for tag in ["image", "frame", "keygen", "basefont", "bgsound"] {
+            let html =
+                format!("<svg><foreignObject><{tag}><![CDATA[x>y<b>z</b>]]></foreignObject></svg>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert!(!names.contains(&"<b>"), "{html}: {names:?}");
         }
     }
 
