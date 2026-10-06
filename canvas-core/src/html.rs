@@ -3,16 +3,24 @@
 //! attribute lookups over the byte string.
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
-/// `>` inside a quoted attribute value doesn't end the tag early. Returns
-/// the byte range `[start, end)` including the angle brackets. A comment
-/// is one range from `<!--` through `-->` (or the end of the HTML), so a
-/// quote or tag inside it is never read. `None` past the last `<` or if a
-/// tag is left unterminated.
+/// `>` inside a quoted attribute value doesn't end the tag early. Tag
+/// boundaries follow the browser's tokenizer: `<` opens a tag only before a
+/// letter, `/`, `!` or `?` (so the `<` in `a < b` is text), and a quote opens
+/// a value only where a value starts, after the `=` that ends an attribute
+/// name (so the `'` in `<b's>` or `<a href=p?q='x'>` is just a character).
+/// `<!` and `<?` end at the first `>`. Returns the byte range `[start, end)`
+/// including the angle brackets. A comment is one range from `<!--` through
+/// `-->` (or the end of the HTML), so a quote or tag inside it is never read.
+/// `None` past the last tag or if a tag is left unterminated.
 pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = html.as_bytes();
     let mut i = from;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
+        if bytes[i] == b'<'
+            && bytes
+                .get(i + 1)
+                .is_some_and(|&c| c.is_ascii_alphabetic() || matches!(c, b'/' | b'!' | b'?'))
+        {
             if html[i..].starts_with("<!--") {
                 // From the opener's dashes, so `<!-->` and `<!--->` end at once.
                 let end = html[i + 2..]
@@ -20,31 +28,49 @@ pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
                     .map_or(html.len(), |e| i + 2 + e + 3);
                 return Some((i, end));
             }
-            let mut j = i + 1;
-            let mut in_quote: Option<u8> = None;
-            while j < bytes.len() {
-                let c = bytes[j];
-                match in_quote {
-                    Some(q) => {
-                        if c == q {
-                            in_quote = None;
-                        }
-                    }
-                    None => {
-                        if c == b'"' || c == b'\'' {
-                            in_quote = Some(c);
-                        } else if c == b'>' {
-                            return Some((i, j + 1));
-                        }
-                    }
-                }
-                j += 1;
+            if matches!(bytes[i + 1], b'!' | b'?') {
+                return html[i..].find('>').map(|e| (i, i + e + 1));
+            }
+            let mut state = Tok::Name;
+            for (j, &c) in bytes.iter().enumerate().skip(i + 1) {
+                let space = c.is_ascii_whitespace();
+                state = match (state, c) {
+                    (Tok::Quoted(q), _) if c == q => Tok::BeforeAttr,
+                    (Tok::Quoted(q), _) => Tok::Quoted(q),
+                    (_, b'>') => return Some((i, j + 1)),
+                    (Tok::Name, b'/') => Tok::BeforeAttr,
+                    (Tok::Name | Tok::Unquoted, _) if space => Tok::BeforeAttr,
+                    (Tok::Name | Tok::Unquoted, _) => state,
+                    (Tok::BeforeAttr, b'/') => Tok::BeforeAttr,
+                    (Tok::BeforeAttr, _) if space => Tok::BeforeAttr,
+                    (Tok::BeforeAttr, _) => Tok::AttrName,
+                    (Tok::AttrName, b'=') => Tok::BeforeValue,
+                    (Tok::AttrName, b'/') => Tok::BeforeAttr,
+                    (Tok::AttrName, _) => Tok::AttrName,
+                    (Tok::BeforeValue, b'"' | b'\'') => Tok::Quoted(c),
+                    (Tok::BeforeValue, _) if space => Tok::BeforeValue,
+                    (Tok::BeforeValue, _) => Tok::Unquoted,
+                };
             }
             return None;
         }
         i += 1;
     }
     None
+}
+
+/// Where [`next_tag`] stands inside a tag: the tokenizer's states, merged
+/// where they end a tag the same way. `AttrName` also covers the spaces after
+/// a name, since `=` there still starts a value; `BeforeAttr` also covers
+/// self-closing and the end of a quoted value.
+#[derive(Clone, Copy)]
+enum Tok {
+    Name,
+    BeforeAttr,
+    AttrName,
+    BeforeValue,
+    Unquoted,
+    Quoted(u8),
 }
 
 /// Every tag in `html`, in order, as [`next_tag`] ranges. The text of a
@@ -314,6 +340,27 @@ mod tests {
                 "<title/>",
                 "<b>",
                 "<!-- open"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quote_opens_a_value_only_after_an_equals_sign() {
+        let html = "a < b's <x <'s<b's<i src=x><p title=x'y a = '>'>";
+        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        assert_eq!(names, ["<x <'s<b's<i src=x>", "<p title=x'y a = '>'>"]);
+
+        let html = "<a=\"><a href=p?q='x'><a =\"x><a/b=\"x>y\"><?x a=\"x><!doctype a=\"b>";
+        let names: Vec<&str> = tags(html).map(|(s, e)| &html[s..e]).collect();
+        assert_eq!(
+            names,
+            [
+                "<a=\">",
+                "<a href=p?q='x'>",
+                "<a =\"x>",
+                "<a/b=\"x>y\">",
+                "<?x a=\"x>",
+                "<!doctype a=\"b>"
             ]
         );
     }

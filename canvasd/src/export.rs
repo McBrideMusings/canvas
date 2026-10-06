@@ -860,6 +860,21 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_in_text_does_not_stop_the_rewrite() {
+        for html in [
+            r#"a < b's <img src="/api/cards/c1/images/0">"#,
+            r#"a <'s<img src="/api/cards/c1/images/0">"#,
+            r#"<p title=x'y>t</p><img src="/api/cards/c1/images/0">"#,
+        ] {
+            let r = export_card(&card(html, &["/x/a.png"], &[]), None, files, offline);
+            assert!(
+                r.html.contains(r#"<img src="data:image/png;base64,YWJj">"#),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
     fn missing_image_warns_and_shows_placeholder() {
         let c = card(
             r#"<img src="/api/cards/c1/images/0">"#,

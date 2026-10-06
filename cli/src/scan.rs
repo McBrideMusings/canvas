@@ -214,6 +214,14 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_in_text_does_not_stop_the_scan() {
+        let html = "a < b's <img src=\"/abs/x.png\">";
+        let s = scan(html, exists_in(&["/abs/x.png"]));
+        assert_eq!(s.images, vec!["/abs/x.png".to_string()]);
+        assert!(s.html.contains(r#"src="canvas-image:0""#));
+    }
+
+    #[test]
     fn existing_local_video_and_source_share_the_image_list() {
         let html = r#"<video src="/abs/a.webm" controls></video><video><source src="/abs/b.mp4" type="video/mp4"></video><img src="/abs/x.png">"#;
         let s = scan(
