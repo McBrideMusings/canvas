@@ -80,7 +80,7 @@ pub fn tags(html: &str) -> Tags<'_> {
     Tags {
         html,
         pos: 0,
-        foreign: 0,
+        foreign: Vec::new(),
     }
 }
 
@@ -98,10 +98,34 @@ pub struct Tag {
 pub struct Tags<'a> {
     html: &'a str,
     pos: usize,
-    /// How many `<svg>` and `<math>` elements are open: inside one a `/>`
-    /// closes an element. HTML islands within them (`<foreignObject>`) and an
-    /// HTML tag that ends one early are not tracked.
-    foreign: usize,
+    /// The open SVG and MathML elements, innermost last, as the browser's
+    /// tree builder keeps them. A tag is read as foreign content (where `/>`
+    /// closes an element) while the innermost is not an integration point;
+    /// at one, a start tag is HTML again. A breakout tag such as `<p>` closes
+    /// every foreign element down to the nearest integration point, and an end
+    /// tag closes the innermost element of its name. HTML elements are not
+    /// kept, so an end tag for one opened before an `<svg>` leaves it open.
+    foreign: Vec<Foreign>,
+}
+
+/// One open element in SVG or MathML.
+struct Foreign {
+    name: String,
+    math: bool,
+    point: Point,
+}
+
+/// Which HTML integration point a [`Foreign`] element is: where the browser
+/// reads a start tag as HTML.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Point {
+    None,
+    /// SVG `<foreignObject>`, `<desc>` and `<title>`, and MathML
+    /// `<annotation-xml>` whose `encoding` is HTML: every start tag.
+    Html,
+    /// MathML `<mi>`, `<mo>`, `<mn>`, `<ms>` and `<mtext>`: every start tag
+    /// but `<mglyph>` and `<malignmark>`.
+    MathText,
 }
 
 impl Tags<'_> {
@@ -109,7 +133,141 @@ impl Tags<'_> {
     pub fn skip_to(&mut self, pos: usize) {
         self.pos = self.pos.max(pos);
     }
+
+    /// Updates the open foreign elements for the start tag `tag`, and
+    /// returns where the scan resumes.
+    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
+        let self_closing = tag.ends_with("/>");
+        let mut as_html = match self.foreign.last() {
+            None => true,
+            Some(top) => match top.point {
+                Point::None => false,
+                Point::Html => true,
+                Point::MathText => !matches!(name, "mglyph" | "malignmark"),
+            },
+        };
+        if !as_html && breaks_out(tag, name) {
+            while self.foreign.last().is_some_and(|f| f.point == Point::None) {
+                self.foreign.pop();
+            }
+            as_html = true;
+        }
+        let math = if as_html {
+            match name {
+                "svg" => false,
+                "math" => true,
+                // In HTML `<style/>` still opens its text.
+                "script" | "style" | "title" | "textarea" => {
+                    return closing_tag_start(self.html, end, name);
+                }
+                _ => return end,
+            }
+        } else {
+            self.foreign.last().is_some_and(|f| f.math)
+        };
+        if self_closing {
+            return end;
+        }
+        self.foreign.push(Foreign {
+            name: name.to_string(),
+            math,
+            point: integration_point(tag, name, math),
+        });
+        if !as_html && matches!(name, "script" | "style" | "title" | "textarea") {
+            return closing_tag_start(self.html, end, name);
+        }
+        end
+    }
+
+    /// Closes foreign elements for the end tag `</name>`.
+    fn end_tag(&mut self, name: &str) {
+        let in_foreign = self.foreign.last().is_some_and(|f| f.point == Point::None);
+        if in_foreign && matches!(name, "p" | "br") {
+            while self.foreign.last().is_some_and(|f| f.point == Point::None) {
+                self.foreign.pop();
+            }
+        } else if let Some(i) = self.foreign.iter().rposition(|f| f.name == name) {
+            self.foreign.truncate(i);
+        }
+    }
 }
+
+/// Whether the foreign element `name` (opened by `tag`) is an integration
+/// point.
+fn integration_point(tag: &str, name: &str, math: bool) -> Point {
+    match (math, name) {
+        (false, "foreignobject" | "desc" | "title") => Point::Html,
+        (true, "mi" | "mo" | "mn" | "ms" | "mtext") => Point::MathText,
+        (true, "annotation-xml")
+            if find_attr_value_range(tag, "encoding").is_some_and(|(s, e)| {
+                let encoding = &tag[s..e];
+                encoding.eq_ignore_ascii_case("text/html")
+                    || encoding.eq_ignore_ascii_case("application/xhtml+xml")
+            }) =>
+        {
+            Point::Html
+        }
+        _ => Point::None,
+    }
+}
+
+/// Whether the start tag `tag` named `name` ends foreign content: the HTML
+/// tags the tree builder never nests inside SVG or MathML.
+fn breaks_out(tag: &str, name: &str) -> bool {
+    match name {
+        "font" => ["color", "face", "size"]
+            .iter()
+            .any(|a| find_attr(tag, a).is_some()),
+        _ => BREAKOUT_TAGS.contains(&name),
+    }
+}
+
+const BREAKOUT_TAGS: &[&str] = &[
+    "b",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "listing",
+    "menu",
+    "meta",
+    "nobr",
+    "ol",
+    "p",
+    "pre",
+    "ruby",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "strike",
+    "sub",
+    "sup",
+    "table",
+    "tt",
+    "u",
+    "ul",
+    "var",
+];
 
 impl Iterator for Tags<'_> {
     type Item = Tag;
@@ -117,27 +275,19 @@ impl Iterator for Tags<'_> {
     fn next(&mut self) -> Option<Tag> {
         let (start, end) = next_tag(self.html, self.pos)?;
         let tag = &self.html[start..end];
-        let self_closed = self.foreign > 0 && tag.ends_with("/>");
-        let text_end = match tag_name(tag).as_deref() {
-            Some("svg" | "math") if !tag.ends_with("/>") => {
-                self.foreign += 1;
-                end
+        let text_end = if tag.as_bytes()[1].is_ascii_alphabetic() {
+            match tag_name(tag) {
+                Some(name) => self.start_tag(tag, &name, end),
+                None => end,
             }
-            // In HTML `<style/>` still opens its text; inside SVG or MathML
-            // (`<title/>`) it is closed and has none.
-            Some(name @ ("script" | "style" | "title" | "textarea")) if !self_closed => {
-                closing_tag_start(self.html, end, name)
-            }
-            None if tag.starts_with("</")
-                && matches!(
-                    tag_name(&tag.replacen("</", "<", 1)).as_deref(),
-                    Some("svg" | "math")
-                ) =>
+        } else {
+            if let Some(name) = tag
+                .strip_prefix("</")
+                .and_then(|rest| tag_name(&format!("<{rest}")))
             {
-                self.foreign = self.foreign.saturating_sub(1);
-                end
+                self.end_tag(&name);
             }
-            _ => end,
+            end
         };
         self.pos = text_end;
         Some(Tag {
@@ -189,6 +339,12 @@ pub fn tag_name(tag: &str) -> Option<String> {
 /// first attribute of a name wins, as in the browser, and one written without
 /// `=` has no value: `None`.
 pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
+    find_attr(tag, attr).flatten()
+}
+
+/// [`find_attr_value_range`]'s lookup, telling a missing attribute (`None`)
+/// from one written without `=` (`Some(None)`).
+fn find_attr(tag: &str, attr: &str) -> Option<Option<(usize, usize)>> {
     let b = tag.as_bytes();
     let space = |i: usize| b.get(i).is_some_and(u8::is_ascii_whitespace);
     let name_ends = |i: usize| i >= b.len() || space(i) || matches!(b[i], b'/' | b'>' | b'=');
@@ -216,7 +372,7 @@ pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
         }
         if b.get(i) != Some(&b'=') {
             if is_attr {
-                return None;
+                return Some(None);
             }
             continue;
         }
@@ -240,7 +396,7 @@ pub fn find_attr_value_range(tag: &str, attr: &str) -> Option<(usize, usize)> {
             }
         };
         if is_attr {
-            return Some((vs, ve));
+            return Some(Some((vs, ve)));
         }
     }
 }
@@ -470,6 +626,65 @@ mod tests {
             names,
             ["<style/>", "</style>", "<svg>", "<title/>", "</svg>", "<b>", "</b>"]
         );
+    }
+
+    #[test]
+    fn an_html_island_inside_svg_reads_tags_as_html() {
+        let html =
+            "<svg><foreignObject><style/><b>x</b></style></foreignObject><title/></svg><b>y</b>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(
+            names,
+            [
+                "<svg>",
+                "<foreignObject>",
+                "<style/>",
+                "</style>",
+                "</foreignObject>",
+                "<title/>",
+                "</svg>",
+                "<b>",
+                "</b>"
+            ]
+        );
+
+        let html = "<math><mi><style/><b>x</b></style></mi><annotation-xml encoding=\"Text/HTML\"><style/><b>x</b></style></annotation-xml><annotation-xml><title/></annotation-xml></math>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(
+            names,
+            [
+                "<math>",
+                "<mi>",
+                "<style/>",
+                "</style>",
+                "</mi>",
+                "<annotation-xml encoding=\"Text/HTML\">",
+                "<style/>",
+                "</style>",
+                "</annotation-xml>",
+                "<annotation-xml>",
+                "<title/>",
+                "</annotation-xml>",
+                "</math>"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_html_tag_ends_svg_early() {
+        for html in [
+            "<svg><p>x</p><style/><b>x</b></style>",
+            "<svg><g><font color=red>x</font><style/><b>x</b></style>",
+            "<svg><font face>x</font><style/><b>x</b></style>",
+            "<svg><g></p><style/><b>x</b></style>",
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert!(!names.contains(&"<b>"), "{html}: {names:?}");
+        }
+        // `<font>` without a colour, face or size stays inside the svg.
+        let html = "<svg><font><title/></font></svg>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(names, ["<svg>", "<font>", "<title/>", "</font>", "</svg>"]);
     }
 
     #[test]
