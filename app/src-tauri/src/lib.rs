@@ -230,6 +230,7 @@ pub fn run() {
             std::thread::spawn(move || bridge::forward_events(handle));
             #[cfg(debug_assertions)]
             {
+                debug::place_window(app.handle());
                 let eval_handle = app.handle().clone();
                 std::thread::spawn(move || debug::run_eval_queue(eval_handle));
             }

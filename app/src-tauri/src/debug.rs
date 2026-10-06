@@ -4,13 +4,16 @@
 //!
 //! - `eval/*.js`: each file is run in the main window once, in name order,
 //!   then deleted.
+//! - `CANVAS_DEBUG_WINDOW=x,y`: moves the main window to that point (logical
+//!   pixels, screen coordinates) at start, without activating it, so a recording
+//!   can put it on a Retina display.
 //! - `save-path`: while it exists, an export writes to the path it holds
 //!   instead of showing the save dialog; an empty file answers "cancelled".
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, LogicalPosition, Manager};
 
 fn dir() -> Option<PathBuf> {
     std::env::var_os("CANVAS_DEBUG_DIR").map(PathBuf::from)
@@ -22,6 +25,24 @@ pub fn save_path() -> Option<Option<PathBuf>> {
     let text = std::fs::read_to_string(dir()?.join("save-path")).ok()?;
     let path = text.trim();
     Some((!path.is_empty()).then(|| PathBuf::from(path)))
+}
+
+/// Moves the main window to `CANVAS_DEBUG_WINDOW` (`x,y`) when it is set.
+pub fn place_window(app: &AppHandle) {
+    let Ok(spec) = std::env::var("CANVAS_DEBUG_WINDOW") else {
+        return;
+    };
+    let point = spec
+        .split_once(',')
+        .and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)));
+    let (Some((x, y)), Some(window)) = (point, app.get_webview_window("main")) else {
+        canvas_core::log::warn("debug window placement ignored", &[("spec", &spec)]);
+        return;
+    };
+    match window.set_position(LogicalPosition::new(x, y)) {
+        Ok(()) => canvas_core::log::info("debug window placed", &[("x", &x), ("y", &y)]),
+        Err(e) => canvas_core::log::warn("debug window placement failed", &[("error", &e)]),
+    }
 }
 
 /// Runs forever on its own thread, polling `eval/` five times a second.
