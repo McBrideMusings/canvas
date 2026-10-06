@@ -188,7 +188,9 @@ beside the terminal all day.
   not raw text: its CSS is its text and CDATA sections, references read with
   entities decoded and replacements written with entities (`]]>` split inside
   CDATA). A failure, or an `@import` nested past
-  `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning, and each download
+  `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
+  `@import` with conditions whose sheet still holds an `@import` that stays a link,
+  since the browser ignores an `@import` inside a block. Each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through
   `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build
   ignores it. None of `buildIframeDoc`'s theming, sizing or sandbox is

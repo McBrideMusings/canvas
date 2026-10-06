@@ -300,6 +300,9 @@ struct Cdn<F> {
     /// The stylesheets being expanded, outermost first, so an `@import`
     /// that closes a cycle is dropped.
     importing: Vec<String>,
+    /// Every `@import` written out as a link, in order, so a stylesheet
+    /// about to be wrapped in a block can tell whether it holds one.
+    linked: Vec<String>,
 }
 
 impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
@@ -312,6 +315,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             warned: HashSet::new(),
             inlined: 0,
             importing: Vec::new(),
+            linked: Vec::new(),
         }
     }
 
@@ -438,7 +442,9 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
     /// What replaces one `@import`: the stylesheet it names under its
     /// conditions, or the import itself, made absolute. None keeps it as
     /// written. An import of a CDN stylesheet that stays a link warns. One
-    /// that closes a cycle is dropped, as the browser ignores it.
+    /// that closes a cycle is dropped, as the browser ignores it. A
+    /// stylesheet that holds an import staying a link is not inlined under
+    /// conditions, since the browser ignores an `@import` inside a block.
     fn import(
         &mut self,
         import: &Import,
@@ -456,7 +462,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     self.warn(u, reason, warnings);
                     None
                 } else {
-                    self.get(u, warnings).map(|bytes| {
+                    let (bytes_before, links_before) = (self.inlined, self.linked.len());
+                    self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
                         let text = self.css(
                             &String::from_utf8_lossy(&bytes),
@@ -466,15 +473,29 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                             warnings,
                         );
                         self.importing.pop();
-                        text
+                        match (import.block(), self.linked.get(links_before)) {
+                            (Some(block), Some(nested)) => {
+                                let reason = format!(
+                                    "kept as a link: its @import of {nested} would be ignored inside {block}"
+                                );
+                                self.inlined = bytes_before;
+                                self.warn(u, reason, warnings);
+                                None
+                            }
+                            _ => Some(text),
+                        }
                     })
                 }
             }
             _ => None,
         };
-        match (inlined, absolute) {
-            (Some(text), _) => Some(import.wrap(text)),
-            (None, Some(u)) if u != import.reference => {
+        if let Some(text) = inlined {
+            return Some(import.wrap(text));
+        }
+        self.linked
+            .push(absolute.clone().unwrap_or_else(|| import.reference.clone()));
+        match absolute {
+            Some(u) if u != import.reference => {
                 let sep = if import.conditions.is_empty() {
                     ""
                 } else {
@@ -486,7 +507,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     import.conditions
                 ))
             }
-            (None, _) => None,
+            _ => None,
         }
     }
 
@@ -540,6 +561,19 @@ struct Import {
 }
 
 impl Import {
+    /// The outermost block `wrap` puts the stylesheet in, if any.
+    fn block(&self) -> Option<&'static str> {
+        if self.layer.is_some() {
+            Some("@layer")
+        } else if self.supports.is_some() {
+            Some("@supports")
+        } else if !self.media.is_empty() {
+            Some("@media")
+        } else {
+            None
+        }
+    }
+
     /// `text` under this import's conditions, as the blocks that apply them
     /// in place: `@layer` outermost, then `@supports`, then `@media`.
     fn wrap(&self, mut text: String) -> String {
@@ -1318,6 +1352,56 @@ mod tests {
             r.html
         );
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_conditional_import_holding_a_link_stays_a_link() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            match url {
+            "https://unpkg.com/a.css" => Ok(
+                b"@import \"b.css\" layer(x);@import \"d.css\" print;@import \"e.css\";@import \"f.css\" screen;".to_vec(),
+            ),
+            "https://unpkg.com/f.css" => Ok(b"@import \"a.css\";.f{}".to_vec()),
+            "https://unpkg.com/b.css" => Ok(b"@import \"https://example.com/c.css\";.b{}".to_vec()),
+            "https://unpkg.com/d.css" => Ok(b"@import \"gone.css\";.d{}".to_vec()),
+            "https://unpkg.com/e.css" => Ok(b"@import \"https://example.com/c.css\";.e{}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        }
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>@import url("https://unpkg.com/b.css") layer(x);@import url("https://unpkg.com/d.css") print;@import "https://example.com/c.css";.e{}@media screen{.f{}}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/b.css",
+                    "kept as a link: its @import of https://example.com/c.css would be ignored inside @layer"
+                ),
+                (ExportWarningKind::FetchFailed, "https://unpkg.com/gone.css", "HTTP 404"),
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/d.css",
+                    "kept as a link: its @import of https://unpkg.com/gone.css would be ignored inside @media"
+                ),
+            ]
+        );
     }
 
     #[test]
