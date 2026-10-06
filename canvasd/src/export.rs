@@ -306,21 +306,29 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 Some(bytes)
             }
             Err(reason) => {
-                if self.warned.insert(url.to_string()) {
-                    warnings.push(ExportWarning {
-                        kind: ExportWarningKind::FetchFailed,
-                        target: url.to_string(),
-                        reason,
-                    });
-                }
+                self.warn(url, reason, warnings);
                 None
             }
+        }
+    }
+
+    /// A `fetch-failed` warning that `url` stays a link, once per URL.
+    fn warn(&mut self, url: &str, reason: String, warnings: &mut Vec<ExportWarning>) {
+        if self.warned.insert(url.to_string()) {
+            warnings.push(ExportWarning {
+                kind: ExportWarningKind::FetchFailed,
+                target: url.to_string(),
+                reason,
+            });
         }
     }
 
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
     /// each CDN `url()` by a `data:` URI. A reference relative to `base` that
     /// stays a link is made absolute, since the page no longer sits beside it.
+    /// The text is read as the browser tokenizes it: strings, comments and
+    /// escapes are copied untouched, and only a whole `url(` or `@import`
+    /// token is a reference.
     fn css(
         &mut self,
         css: &str,
@@ -328,144 +336,355 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         depth: usize,
         warnings: &mut Vec<ExportWarning>,
     ) -> String {
-        let lower = css.to_ascii_lowercase();
+        let b = css.as_bytes();
         let mut out = String::with_capacity(css.len());
         let mut pos = 0usize;
-        loop {
-            let import = lower[pos..].find("@import").map(|i| pos + i);
-            let url = lower[pos..].find("url(").map(|i| pos + i);
-            let comment = lower[pos..].find("/*").map(|i| pos + i);
-            let Some(at) = import.into_iter().chain(url).chain(comment).min() else {
-                break;
-            };
-            out.push_str(&css[pos..at]);
-            if Some(at) == comment {
-                let end = css[at + 2..]
-                    .find("*/")
-                    .map(|i| at + 2 + i + 2)
-                    .unwrap_or(css.len());
-                out.push_str(&css[at..end]);
-                pos = end;
-            } else if Some(at) == import {
-                let Some((reference, conditions, end)) = parse_import(css, at) else {
-                    out.push_str("@import");
-                    pos = at + "@import".len();
-                    continue;
-                };
-                pos = end;
-                let absolute = cdn::join(base, &reference);
-                let inlined = match &absolute {
-                    Some(u)
-                        if cdn::allowed(u)
-                            && depth < MAX_IMPORT_DEPTH
-                            && !layered(&conditions)
-                            && !self.importing.contains(u) =>
-                    {
-                        self.get(u, warnings).map(|bytes| {
-                            self.importing.push(u.clone());
-                            let text = self.css(
-                                &String::from_utf8_lossy(&bytes),
-                                Some(u),
-                                depth + 1,
-                                warnings,
-                            );
-                            self.importing.pop();
-                            text
-                        })
-                    }
-                    _ => None,
-                };
-                match (inlined, absolute) {
-                    (Some(text), _) if conditions.is_empty() => out.push_str(&text),
-                    (Some(text), _) => out.push_str(&format!("@media {conditions}{{{text}}}")),
-                    (None, Some(u)) if u != reference => {
-                        let sep = if conditions.is_empty() { "" } else { " " };
-                        out.push_str(&format!(
-                            "@import url(\"{}\"){sep}{conditions};",
-                            u.replace('"', "%22")
-                        ));
-                    }
-                    (None, _) => out.push_str(&css[at..end]),
-                }
-            } else {
-                let after = &css[at + 4..];
-                let Some(close) = after.find(')') else {
-                    pos = at;
-                    break;
-                };
-                let end = at + 4 + close + 1;
-                pos = end;
-                let reference = after[..close].trim().trim_matches(['"', '\'']);
-                if reference.is_empty()
-                    || reference.len() >= 5 && reference[..5].eq_ignore_ascii_case("data:")
-                    || reference.starts_with('#')
-                {
-                    out.push_str(&css[at..end]);
-                    continue;
-                }
-                let Some(absolute) = cdn::join(base, reference) else {
-                    out.push_str(&css[at..end]);
-                    continue;
-                };
-                let (target, fragment) = match absolute.find('#') {
-                    Some(i) => absolute.split_at(i),
-                    None => (absolute.as_str(), ""),
-                };
-                if cdn::allowed(target) {
-                    if let Some(bytes) = self.get(target, warnings) {
-                        let path = target.split('?').next().unwrap_or(target);
-                        let mime = mime_guess::from_path(path).first_or_octet_stream();
-                        out.push_str(&format!(
-                            "url(\"data:{};base64,{}{fragment}\")",
-                            mime.essence_str(),
-                            base64(&bytes)
-                        ));
+        let mut i = 0usize;
+        while i < b.len() {
+            match b[i] {
+                b'/' if b.get(i + 1) == Some(&b'*') => i = comment_end(b, i),
+                b'"' | b'\'' => i = string_end(b, i).0,
+                b'\\' => i += escape_len(b, i),
+                b'@' if starts_with_word(b, i, b"@import") => {
+                    let Some(import) = parse_import(css, i) else {
+                        i += "@import".len();
                         continue;
+                    };
+                    out.push_str(&css[pos..i]);
+                    let text = self.import(&import, &css[i..import.end], base, depth, warnings);
+                    out.push_str(&text);
+                    pos = import.end;
+                    i = import.end;
+                }
+                b'u' | b'U'
+                    if (i == 0 || !ident_byte(b[i - 1])) && starts_with_ci(b, i, b"url(") =>
+                {
+                    let (reference, end) = url_token(css, i);
+                    out.push_str(&css[pos..i]);
+                    match reference.and_then(|r| self.url(r, base, warnings)) {
+                        Some(text) => out.push_str(&text),
+                        None => out.push_str(&css[i..end]),
                     }
+                    pos = end;
+                    i = end;
                 }
-                if absolute == reference {
-                    out.push_str(&css[at..end]);
-                } else {
-                    out.push_str(&format!("url(\"{}\")", absolute.replace('"', "%22")));
-                }
+                _ => i += 1,
             }
         }
         out.push_str(&css[pos..]);
         out
     }
+
+    /// What replaces one `@import`, whose text is `statement`: the stylesheet
+    /// it names under its conditions, or the import itself, made absolute.
+    /// An import of a CDN stylesheet that stays a link warns, except one that
+    /// closes a cycle.
+    fn import(
+        &mut self,
+        import: &Import,
+        statement: &str,
+        base: Option<&str>,
+        depth: usize,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> String {
+        let absolute = cdn::join(base, &import.reference);
+        let inlined = match &absolute {
+            Some(u) if cdn::allowed(u) && !self.importing.contains(u) => {
+                if depth >= MAX_IMPORT_DEPTH {
+                    let reason =
+                        format!("skipped: nested more than {MAX_IMPORT_DEPTH} @imports deep");
+                    self.warn(u, reason, warnings);
+                    None
+                } else {
+                    self.get(u, warnings).map(|bytes| {
+                        self.importing.push(u.clone());
+                        let text = self.css(
+                            &String::from_utf8_lossy(&bytes),
+                            Some(u),
+                            depth + 1,
+                            warnings,
+                        );
+                        self.importing.pop();
+                        text
+                    })
+                }
+            }
+            _ => None,
+        };
+        match (inlined, absolute) {
+            (Some(text), _) => import.wrap(text),
+            (None, Some(u)) if u != import.reference => {
+                let sep = if import.conditions.is_empty() {
+                    ""
+                } else {
+                    " "
+                };
+                format!(
+                    "@import url(\"{}\"){sep}{};",
+                    u.replace('"', "%22"),
+                    import.conditions
+                )
+            }
+            (None, _) => statement.to_string(),
+        }
+    }
+
+    /// What replaces one `url()` naming `reference`: a CDN file as a `data:`
+    /// URI, or a relative reference made absolute. None keeps it as written.
+    fn url(
+        &mut self,
+        reference: &str,
+        base: Option<&str>,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<String> {
+        if reference.is_empty()
+            || reference
+                .get(..5)
+                .is_some_and(|p| p.eq_ignore_ascii_case("data:"))
+            || reference.starts_with('#')
+        {
+            return None;
+        }
+        let absolute = cdn::join(base, reference)?;
+        let (target, fragment) = match absolute.find('#') {
+            Some(i) => absolute.split_at(i),
+            None => (absolute.as_str(), ""),
+        };
+        if cdn::allowed(target) {
+            if let Some(bytes) = self.get(target, warnings) {
+                let path = target.split('?').next().unwrap_or(target);
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+                return Some(format!(
+                    "url(\"data:{};base64,{}{fragment}\")",
+                    mime.essence_str(),
+                    base64(&bytes)
+                ));
+            }
+        }
+        (absolute != reference).then(|| format!("url(\"{}\")", absolute.replace('"', "%22")))
+    }
 }
 
-/// The `@import` at `at` as (reference, the media or other conditions after
-/// it, the index just past its `;`), or None when it doesn't parse.
-fn parse_import(css: &str, at: usize) -> Option<(String, String, usize)> {
-    let start = at + "@import".len();
-    let semi = css[start..].find(';')?;
-    let statement = css[start..start + semi].trim();
-    let bytes = statement.as_bytes();
-    let (reference, rest) = if bytes.len() >= 4 && bytes[..4].eq_ignore_ascii_case(b"url(") {
-        let close = statement.find(')')?;
-        (
-            statement[4..close].trim().trim_matches(['"', '\'']),
-            &statement[close + 1..],
-        )
-    } else if let Some(q @ ('"' | '\'')) = statement.chars().next() {
-        let close = statement[1..].find(q)? + 1;
-        (&statement[1..close], &statement[close + 1..])
-    } else {
-        return None;
+/// One `@import` statement: the reference it names, the conditions after it
+/// as written and split into its `layer`, `supports()` and media list, and
+/// the index just past its `;`.
+struct Import {
+    reference: String,
+    conditions: String,
+    /// `Some("")` for an anonymous layer.
+    layer: Option<String>,
+    supports: Option<String>,
+    media: String,
+    end: usize,
+}
+
+impl Import {
+    /// `text` under this import's conditions, as the blocks that apply them
+    /// in place: `@layer` outermost, then `@supports`, then `@media`.
+    fn wrap(&self, mut text: String) -> String {
+        if !self.media.is_empty() {
+            text = format!("@media {}{{{text}}}", self.media);
+        }
+        if let Some(condition) = &self.supports {
+            text = format!("@supports ({condition}){{{text}}}");
+        }
+        match self.layer.as_deref() {
+            Some("") => format!("@layer{{{text}}}"),
+            Some(name) => format!("@layer {name}{{{text}}}"),
+            None => text,
+        }
+    }
+}
+
+/// The `@import` at `at`, or None when it doesn't parse: no string or
+/// `url()` after it, a block before its `;`, or an unclosed condition.
+fn parse_import(css: &str, at: usize) -> Option<Import> {
+    let b = css.as_bytes();
+    let start = skip_space(b, at + "@import".len());
+    let (reference, after) = match b.get(start)? {
+        b'"' | b'\'' => match string_end(b, start) {
+            (end, true) => (&css[start + 1..end - 1], end),
+            (_, false) => return None,
+        },
+        _ if starts_with_ci(b, start, b"url(") => match url_token(css, start) {
+            (Some(reference), end) => (reference, end),
+            (None, _) => return None,
+        },
+        _ => return None,
     };
-    Some((
-        reference.to_string(),
-        rest.trim().to_string(),
-        start + semi + 1,
-    ))
+    let mut i = after;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b';' => break,
+            b'{' | b'}' => return None,
+            b'"' | b'\'' => i = string_end(b, i).0,
+            b'/' if b.get(i + 1) == Some(&b'*') => i = comment_end(b, i),
+            b'(' => i = paren_end(b, i, true)?,
+            b'\\' => i += escape_len(b, i),
+            _ => i += 1,
+        }
+    }
+    let semi = i.min(b.len());
+    let conditions = css[after..semi].trim();
+    let mut rest = conditions;
+    let mut layer = None;
+    if starts_with_ci(rest.as_bytes(), 0, b"layer(") {
+        let close = paren_end(rest.as_bytes(), 5, true)?;
+        layer = Some(rest[6..close - 1].trim().to_string());
+        rest = rest[close..].trim_start();
+    } else if starts_with_word(rest.as_bytes(), 0, b"layer") {
+        layer = Some(String::new());
+        rest = rest[5..].trim_start();
+    }
+    let mut supports = None;
+    if starts_with_ci(rest.as_bytes(), 0, b"supports(") {
+        let close = paren_end(rest.as_bytes(), 8, true)?;
+        supports = Some(rest[9..close - 1].trim().to_string());
+        rest = rest[close..].trim_start();
+    }
+    Some(Import {
+        reference: reference.to_string(),
+        conditions: conditions.to_string(),
+        layer,
+        supports,
+        media: rest.to_string(),
+        end: (semi + 1).min(b.len()),
+    })
 }
 
-/// An `@import` into a cascade layer or behind `supports()` can't be
-/// rewritten as an `@media` block, so it stays an import.
-fn layered(conditions: &str) -> bool {
-    let c = conditions.to_ascii_lowercase();
-    c.starts_with("layer") || c.starts_with("supports(")
+/// The `url(` token at `at` as the reference it names and the index just
+/// past its `)`. The reference is None where the browser reads none: a
+/// string followed by more than space, or an unquoted URL holding a quote,
+/// `(`, space or escape, which is a bad URL. The token still runs to its own
+/// matching `)`, so nothing inside it is read as a reference; an unquoted one
+/// whose parentheses never balance ends at its first `)`, as the browser
+/// ends a bad URL.
+fn url_token(css: &str, at: usize) -> (Option<&str>, usize) {
+    let b = css.as_bytes();
+    let open = at + "url".len();
+    let start = skip_space(b, open + 1);
+    let quoted = matches!(b.get(start), Some(b'"' | b'\''));
+    let end =
+        paren_end(b, open, quoted).or_else(|| (!quoted).then(|| first_close(b, start)).flatten());
+    let Some(end) = end else {
+        return (None, b.len());
+    };
+    let inner = &css[start..end - 1];
+    let reference = if quoted {
+        match string_end(b, start) {
+            (close, true) if skip_space(b, close) == end - 1 => {
+                Some(&inner[1..close - start - 1]).filter(|url| !url.contains('\\'))
+            }
+            _ => None,
+        }
+    } else {
+        let url = inner.trim_end_matches(is_space);
+        (!url.contains(['"', '\'', '(', '\\']) && !url.contains(is_space)).then_some(url)
+    };
+    (reference, end)
+}
+
+/// The index just past the `)` matching the `(` at `open`, skipping
+/// escapes, and strings and comments too when `strings` is set. None when
+/// the text ends first.
+fn paren_end(b: &[u8], open: usize, strings: bool) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b'\\' => i += escape_len(b, i) - 1,
+            b'"' | b'\'' if strings => {
+                i = string_end(b, i).0;
+                continue;
+            }
+            b'/' if strings && b.get(i + 1) == Some(&b'*') => {
+                i = comment_end(b, i);
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The index just past the first unescaped `)` from `from`.
+fn first_close(b: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b')' => return Some(i + 1),
+            b'\\' => i += escape_len(b, i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// How many bytes the escape at `at` spans: the backslash and the character
+/// after it, or both bytes of an escaped CRLF.
+fn escape_len(b: &[u8], at: usize) -> usize {
+    if b.get(at + 1..at + 3) == Some(b"\r\n") {
+        3
+    } else {
+        2
+    }
+}
+
+/// The index just past the string opening at `at`, and whether its closing
+/// quote was found. An unescaped newline ends it unclosed, as in the browser.
+fn string_end(b: &[u8], at: usize) -> (usize, bool) {
+    let quote = b[at];
+    let mut i = at + 1;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b'\\' => i += escape_len(b, i),
+            b'\n' | b'\r' | b'\x0c' => return (i, false),
+            _ if c == quote => return (i + 1, true),
+            _ => i += 1,
+        }
+    }
+    (b.len(), false)
+}
+
+/// The index just past the comment opening at `at`, or the end of the text.
+fn comment_end(b: &[u8], at: usize) -> usize {
+    b[at + 2..]
+        .windows(2)
+        .position(|w| w == b"*/")
+        .map_or(b.len(), |i| at + 2 + i + 2)
+}
+
+fn skip_space(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).is_some_and(|&c| is_space(c as char)) {
+        i += 1;
+    }
+    i
+}
+
+fn is_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')
+}
+
+fn ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c >= 0x80
+}
+
+fn starts_with_ci(b: &[u8], i: usize, word: &[u8]) -> bool {
+    b.get(i..i + word.len())
+        .is_some_and(|s| s.eq_ignore_ascii_case(word))
+}
+
+/// `word` at `i`, not followed by more of an identifier.
+fn starts_with_word(b: &[u8], i: usize, word: &[u8]) -> bool {
+    starts_with_ci(b, i, word) && !b.get(i + word.len()).is_some_and(|&c| ident_byte(c))
 }
 
 /// The absolute URL a `<link rel="stylesheet">` loads. An alternate
@@ -870,6 +1089,131 @@ mod tests {
             r.html
         );
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn references_inside_css_strings_stay_text() {
+        let css = r#"@import "c;d.css";.a{content:"url(i.png) @import 'x.css';\"url(j.png)"}.b{content:'a\'url(k.png)'}"#;
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/p/s.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/p/s.css" => Ok(css.as_bytes().to_vec()),
+            "https://unpkg.com/p/c;d.css" => Ok(b".cd{}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let want = css.replace(r#"@import "c;d.css";"#, ".cd{}");
+        assert!(
+            r.html.contains(&format!("<style>{want}</style>")),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_url_ends_at_its_own_closing_parenthesis() {
+        let svg = "data:image/svg+xml,<svg><rect fill='url(%23a)' stroke='url(%23b)'/></svg>";
+        let css = format!(".a{{background:url({svg})}}.b{{background:url( \"{svg}\" )}}.c{{background:URL(i.png)}}.d{{background:url(x(y)}}.e{{background:url(j.png)}}.g{{content:\"x\\\r\ny\"}}.h{{background:url(k.png)}}.f{{background:url(\"a\\20b.png\")}}");
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/p/s.css">"#,
+            &[],
+            &[],
+        );
+        let body = css.clone();
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/p/s.css" => Ok(body.clone().into_bytes()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let want = css
+            .replace("URL(i.png)", r#"url("https://unpkg.com/p/i.png")"#)
+            .replace("url(j.png)", r#"url("https://unpkg.com/p/j.png")"#)
+            .replace("url(k.png)", r#"url("https://unpkg.com/p/k.png")"#);
+        assert!(
+            r.html.contains(&format!("<style>{want}</style>")),
+            "{}",
+            r.html
+        );
+        let targets: Vec<_> = r.warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                "https://unpkg.com/p/i.png",
+                "https://unpkg.com/p/j.png",
+                "https://unpkg.com/p/k.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn layer_and_supports_imports_are_inlined() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            match url {
+            "https://unpkg.com/a.css" => Ok(
+                b"@import url(b.css) layer(base) supports(display:grid) screen;@import \"b.css\" LAYER;@import 'b.css' supports(selector(a>b));"
+                    .to_vec(),
+            ),
+            "https://unpkg.com/b.css" => Ok(b".b{}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        }
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                "<style>@layer base{@supports (display:grid){@media screen{.b{}}}}@layer{.b{}}@supports (selector(a>b)){.b{}}</style>"
+            ),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn an_import_past_the_depth_limit_warns() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let name = url
+                .strip_prefix("https://unpkg.com/")
+                .and_then(|n| n.strip_suffix(".css"))
+                .filter(|n| matches!(*n, "a" | "b" | "c" | "d" | "e"))
+                .ok_or_else(|| "HTTP 404".to_string())?;
+            let next = (name.as_bytes()[0] + 1) as char;
+            Ok(format!("@import \"{next}.css\";.{name}{{}}").into_bytes())
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.contains(
+                r#"<style>@import url("https://unpkg.com/f.css");.e{}.d{}.c{}.b{}.a{}</style>"#
+            ),
+            "{}",
+            r.html
+        );
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [(
+                ExportWarningKind::FetchFailed,
+                "https://unpkg.com/f.css",
+                "skipped: nested more than 4 @imports deep"
+            )]
+        );
     }
 
     #[test]
