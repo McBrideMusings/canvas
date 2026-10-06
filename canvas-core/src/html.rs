@@ -1413,8 +1413,9 @@ const BLOCK_TAGS: &[&str] = &[
 ];
 
 /// `html` with every tag removed, the contents of `<script>`, `<style>` and
-/// `<template>` dropped, each block tag starting a new line, and the escapes
-/// [`escape_attr`] writes decoded once.
+/// `<template>` dropped, each block tag starting a new line, and every
+/// character reference decoded once ([`decode_entities`]), each run of text
+/// between two tags on its own, as the parser reads it.
 fn visible_text(html: &str) -> String {
     read_visible(html, &mut tags(html), 0, None).unwrap_or_default()
 }
@@ -1438,13 +1439,13 @@ fn read_visible(
     }) = scan.next()
     {
         if !hidden {
-            out.push_str(&html[pos..start]);
+            out.push_str(&decode_entities(&html[pos..start]));
         }
         pos = end;
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
         if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
-            return Some(decode_entities(&out));
+            return Some(out);
         }
         match name.as_deref() {
             Some("script" | "style") => pos = text_end,
@@ -1457,19 +1458,17 @@ fn read_visible(
         return None;
     }
     if pos < html.len() && !hidden {
-        out.push_str(&html[pos..]);
+        out.push_str(&decode_entities(&html[pos..]));
     }
-    Some(decode_entities(&out))
+    Some(out)
 }
 
-/// `s` with the five entities [`escape_attr`] writes decoded.
+/// `s` with every character reference decoded once, as the HTML parser
+/// decodes text between tags: any named reference (with or without its
+/// semicolon, for the names the spec allows bare) and any decimal or hex
+/// numeric one.
 pub fn decode_entities(s: &str) -> String {
-    // `&amp;` last, so `&amp;lt;` decodes to `&lt;`, not `<`.
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&")
+    htmlize::unescape(s).into_owned()
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -2091,6 +2090,15 @@ mod tests {
         assert_eq!(
             card_label("<p>a &amp;lt; b</p>").as_deref(),
             Some("a &lt; b")
+        );
+        assert_eq!(
+            card_label("<p>&#38; &#x26; &amp &copy x &mdash; &notit; &bogus; &#0;</p>").as_deref(),
+            Some("& & & © x — ¬it; &bogus; \u{fffd}")
+        );
+        // A reference split by a tag is two runs of text, neither decoded.
+        assert_eq!(
+            card_label("<p>&not<b>in;</b> &am<i></i>p; &#<b>65</b>;</p>").as_deref(),
+            Some("¬in; &amp; &#65;")
         );
         assert_eq!(card_label("<p>one</p><p>two</p>").as_deref(), Some("one"));
         assert_eq!(card_label("<img src=x><script>x</script>"), None);

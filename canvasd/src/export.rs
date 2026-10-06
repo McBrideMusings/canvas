@@ -118,7 +118,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     {
         let text = &html[pos..start];
         if markup_style {
-            out.push_str(&cdn.css(text, None, 0, true, warnings));
+            out.push_str(&cdn.markup_css(text, warnings));
         } else {
             out.push_str(text);
         }
@@ -131,7 +131,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     Some(body) => (body, "]]>"),
                     None => (body, ""),
                 };
-                let css = cdn.css(body, None, 0, false, warnings);
+                let css = cdn.css(body, None, 0, warnings);
                 out.push_str("<![CDATA[");
                 // A `]]>` would end the section; split it across two.
                 out.push_str(&css.replace("]]>", "]]]]><![CDATA[>"));
@@ -248,13 +248,8 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     Some(bytes) => {
                         cdn.present.push(url.clone());
                         cdn.importing.push(url.clone());
-                        let css = cdn.css(
-                            &String::from_utf8_lossy(&bytes),
-                            Some(&url),
-                            0,
-                            false,
-                            warnings,
-                        );
+                        let css =
+                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&url), 0, warnings);
                         cdn.importing.pop();
                         match find_attr_value(tag, "media") {
                             Some(media) => out.push_str(&format!(
@@ -277,7 +272,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
             }
             Some("style") => {
                 out.push_str(tag);
-                let css = cdn.css(&html[end..text_end], None, 0, false, warnings);
+                let css = cdn.css(&html[end..text_end], None, 0, warnings);
                 out.push_str(&escape_raw(&css, "style"));
                 pos = text_end;
             }
@@ -286,7 +281,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     }
     let text = &html[pos..];
     if markup_style {
-        out.push_str(&cdn.css(text, None, 0, true, warnings));
+        out.push_str(&cdn.markup_css(text, warnings));
     } else {
         out.push_str(text);
     }
@@ -383,23 +378,33 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
+    /// [`Cdn::css`] of `text` in an SVG or MathML `<style>`, outside CDATA,
+    /// where the browser decodes every character reference before it reads
+    /// the CSS: the scan runs on the decoded text and the result is written
+    /// back with entities, or `text` stays as written when nothing changed.
+    fn markup_css(&mut self, text: &str, warnings: &mut Vec<ExportWarning>) -> String {
+        let css = decode_entities(text);
+        let out = self.css(&css, None, 0, warnings);
+        if out == css {
+            text.to_string()
+        } else {
+            escape_text(&out)
+        }
+    }
+
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
     /// each CDN `url()` by a `data:` URI. A reference relative to `base` that
     /// stays a link is made absolute, since the page no longer sits beside it.
     /// The text is read as the browser tokenizes it: strings, comments and
     /// escapes are copied untouched, and only a whole `url(` or `@import`
-    /// token is a reference. With `in_markup`, `css` is text in SVG or MathML,
-    /// where the browser decodes entities: each reference is decoded before
-    /// it is read, and each replacement is written with entities.
+    /// token is a reference.
     fn css(
         &mut self,
         css: &str,
         base: Option<&str>,
         depth: usize,
-        in_markup: bool,
         warnings: &mut Vec<ExportWarning>,
     ) -> String {
-        let markup = |text: String| if in_markup { escape_text(&text) } else { text };
         let b = css.as_bytes();
         let mut out = String::with_capacity(css.len());
         let mut pos = 0usize;
@@ -410,16 +415,13 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 b'"' | b'\'' => i = string_end(b, i).0,
                 b'\\' => i += escape_len(b, i),
                 b'@' if starts_with_word(b, i, b"@import") => {
-                    let Some(mut import) = parse_import(css, i) else {
+                    let Some(import) = parse_import(css, i) else {
                         i += "@import".len();
                         continue;
                     };
-                    if in_markup {
-                        import.reference = decode_entities(&import.reference);
-                    }
                     out.push_str(&css[pos..i]);
                     match self.import(&import, base, depth, warnings) {
-                        Some(text) => out.push_str(&markup(text)),
+                        Some(text) => out.push_str(&text),
                         None => out.push_str(&css[i..import.end]),
                     }
                     pos = import.end;
@@ -430,15 +432,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 {
                     let (reference, end) = url_token(css, i);
                     out.push_str(&css[pos..i]);
-                    let reference = reference.map(|r| {
-                        if in_markup {
-                            decode_entities(r)
-                        } else {
-                            r.to_string()
-                        }
-                    });
-                    match reference.and_then(|r| self.url(&r, base, warnings)) {
-                        Some(text) => out.push_str(&markup(text)),
+                    match reference.and_then(|r| self.url(r, base, warnings)) {
+                        Some(text) => out.push_str(&text),
                         None => out.push_str(&css[i..end]),
                     }
                     pos = end;
@@ -482,7 +477,6 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                             &String::from_utf8_lossy(&bytes),
                             Some(u),
                             depth + 1,
-                            false,
                             warnings,
                         );
                         self.importing.pop();
@@ -1210,11 +1204,25 @@ mod tests {
         for (html, want) in [
             (
                 r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&amp;b=2";.c{content:"&#169;";src:url(https://cdnjs.cloudflare.com/x/font/f.woff2?v=1)}</style></svg>"#,
-                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.c{content:"&#169;";src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
+                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.c{content:"©";src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
+            ),
+            (
+                // Quotes and parens written as references delimit the CSS.
+                r#"<svg><style>@import &quot;https://cdnjs.cloudflare.com/x/css/b.css&quot;;.f{src:url&#40;&quot;https://cdnjs.cloudflare.com/x/font/f.woff2?v=1&quot;&rpar;}.s{content:"&#x5C;&quot;url(https://cdnjs.cloudflare.com/x/css/b.css)"}</style></svg>"#,
+                r#"<svg><style>.b{}.f{src:url("data:font/woff2;base64,YWI=")}.s{content:"\"url(https://cdnjs.cloudflare.com/x/css/b.css)"}</style></svg>"#,
+            ),
+            (
+                // Nothing to inline: the text stays as written.
+                r#"<svg><style>.c{content:"&#169;&lt;"}</style></svg>"#,
+                r#"<svg><style>.c{content:"&#169;&lt;"}</style></svg>"#,
             ),
             (
                 r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&b=2";.c{content:"&#169;"}]]></style></svg>"#,
                 r#"<svg><style><![CDATA[.m>b{content:"<b>&amp;"}.c{content:"&#169;"}]]></style></svg>"#,
+            ),
+            (
+                r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&#38;b=2";@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&#x26;b=2";@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&ampb=2";.f{src:url(https://cdnjs.cloudflare.com/x/font/f.woff2&#63;v&#x3D;1)}</style></svg>"#,
+                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.f{src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
             ),
             (
                 r#"<svg><style>/*x*/<!--c-->@import "https://cdnjs.cloudflare.com/x/css/b.css";</style></svg>"#,

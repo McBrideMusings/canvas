@@ -185,9 +185,11 @@ beside the terminal all day.
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
-  not raw text: its CSS is its text and CDATA sections, references read with
-  entities decoded and replacements written with entities (`]]>` split inside
-  CDATA). A failure, or an `@import` nested past
+  not raw text: its CSS is its text and CDATA sections, every HTML character
+  reference (named or numeric, `htmlize` via `canvas_core::html::decode_entities`)
+  decoded once per text run outside CDATA before the scan (`Cdn::markup_css`) and replacements
+  written with entities (`]]>` split inside CDATA); a style where nothing was
+  inlined keeps its text exactly as written. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
   since the browser ignores an `@import` inside a block. `export_card` drops a
