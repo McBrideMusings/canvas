@@ -16,8 +16,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    attr_value_is_quoted, escape_attr, escape_text, find_attr_value_range, first_heading,
-    replace_attr_value, tag_name, tags, Tag,
+    attr_value_is_quoted, decode_entities, escape_attr, escape_text, find_attr_value_range,
+    first_heading, replace_attr_value, tag_name, tags, Tag,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -102,6 +102,9 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     // One entry per open <a>: true when its tags are dropped (a local path).
     let mut anchors: Vec<bool> = Vec::new();
     let mut pos = 0usize;
+    // Inside an SVG or MathML `<style>`, whose text holds markup: its text
+    // and CDATA sections are its CSS, up to the first other tag.
+    let mut markup_style = false;
 
     for Tag {
         start,
@@ -109,9 +112,34 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         text_end,
     } in tags(html)
     {
-        out.push_str(&html[pos..start]);
+        let text = &html[pos..start];
+        if markup_style {
+            out.push_str(&cdn.css(text, None, 0, true, warnings));
+        } else {
+            out.push_str(text);
+        }
         let tag = &html[start..end];
         pos = end;
+
+        if markup_style {
+            if let Some(body) = tag.strip_prefix("<![CDATA[") {
+                let (body, close) = match body.strip_suffix("]]>") {
+                    Some(body) => (body, "]]>"),
+                    None => (body, ""),
+                };
+                let css = cdn.css(body, None, 0, false, warnings);
+                out.push_str("<![CDATA[");
+                // A `]]>` would end the section; split it across two.
+                out.push_str(&css.replace("]]>", "]]]]><![CDATA[>"));
+                out.push_str(close);
+                continue;
+            }
+            if tag.starts_with("<!--") {
+                out.push_str(tag);
+                continue;
+            }
+            markup_style = false;
+        }
 
         if tag.starts_with("</") {
             if closing_name(tag) == "a" && anchors.pop() == Some(true) {
@@ -214,8 +242,13 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
                         cdn.importing.push(url.clone());
-                        let css =
-                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&url), 0, warnings);
+                        let css = cdn.css(
+                            &String::from_utf8_lossy(&bytes),
+                            Some(&url),
+                            0,
+                            false,
+                            warnings,
+                        );
                         cdn.importing.pop();
                         match find_attr_value_range(tag, "media") {
                             Some((ms, me)) => out.push_str(&format!(
@@ -230,16 +263,27 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     None => out.push_str(tag),
                 }
             }
+            // The scan reads an HTML `<style>`'s text as raw text and resumes
+            // at its closing tag; an SVG or MathML one's it reads on.
+            Some("style") if text_end == end && !tag.ends_with("/>") => {
+                out.push_str(tag);
+                markup_style = true;
+            }
             Some("style") => {
                 out.push_str(tag);
-                let css = cdn.css(&html[end..text_end], None, 0, warnings);
+                let css = cdn.css(&html[end..text_end], None, 0, false, warnings);
                 out.push_str(&escape_raw(&css, "style"));
                 pos = text_end;
             }
             _ => out.push_str(tag),
         }
     }
-    out.push_str(&html[pos..]);
+    let text = &html[pos..];
+    if markup_style {
+        out.push_str(&cdn.css(text, None, 0, true, warnings));
+    } else {
+        out.push_str(text);
+    }
     out
 }
 
@@ -328,14 +372,18 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
     /// stays a link is made absolute, since the page no longer sits beside it.
     /// The text is read as the browser tokenizes it: strings, comments and
     /// escapes are copied untouched, and only a whole `url(` or `@import`
-    /// token is a reference.
+    /// token is a reference. With `in_markup`, `css` is text in SVG or MathML,
+    /// where the browser decodes entities: each reference is decoded before
+    /// it is read, and each replacement is written with entities.
     fn css(
         &mut self,
         css: &str,
         base: Option<&str>,
         depth: usize,
+        in_markup: bool,
         warnings: &mut Vec<ExportWarning>,
     ) -> String {
+        let markup = |text: String| if in_markup { escape_text(&text) } else { text };
         let b = css.as_bytes();
         let mut out = String::with_capacity(css.len());
         let mut pos = 0usize;
@@ -346,13 +394,18 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 b'"' | b'\'' => i = string_end(b, i).0,
                 b'\\' => i += escape_len(b, i),
                 b'@' if starts_with_word(b, i, b"@import") => {
-                    let Some(import) = parse_import(css, i) else {
+                    let Some(mut import) = parse_import(css, i) else {
                         i += "@import".len();
                         continue;
                     };
+                    if in_markup {
+                        import.reference = decode_entities(&import.reference);
+                    }
                     out.push_str(&css[pos..i]);
-                    let text = self.import(&import, &css[i..import.end], base, depth, warnings);
-                    out.push_str(&text);
+                    match self.import(&import, base, depth, warnings) {
+                        Some(text) => out.push_str(&markup(text)),
+                        None => out.push_str(&css[i..import.end]),
+                    }
                     pos = import.end;
                     i = import.end;
                 }
@@ -361,8 +414,15 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 {
                     let (reference, end) = url_token(css, i);
                     out.push_str(&css[pos..i]);
-                    match reference.and_then(|r| self.url(r, base, warnings)) {
-                        Some(text) => out.push_str(&text),
+                    let reference = reference.map(|r| {
+                        if in_markup {
+                            decode_entities(r)
+                        } else {
+                            r.to_string()
+                        }
+                    });
+                    match reference.and_then(|r| self.url(&r, base, warnings)) {
+                        Some(text) => out.push_str(&markup(text)),
                         None => out.push_str(&css[i..end]),
                     }
                     pos = end;
@@ -375,18 +435,17 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         out
     }
 
-    /// What replaces one `@import`, whose text is `statement`: the stylesheet
-    /// it names under its conditions, or the import itself, made absolute.
-    /// An import of a CDN stylesheet that stays a link warns, except one that
-    /// closes a cycle.
+    /// What replaces one `@import`: the stylesheet it names under its
+    /// conditions, or the import itself, made absolute. None keeps it as
+    /// written. An import of a CDN stylesheet that stays a link warns, except
+    /// one that closes a cycle.
     fn import(
         &mut self,
         import: &Import,
-        statement: &str,
         base: Option<&str>,
         depth: usize,
         warnings: &mut Vec<ExportWarning>,
-    ) -> String {
+    ) -> Option<String> {
         let absolute = cdn::join(base, &import.reference);
         let inlined = match &absolute {
             Some(u) if cdn::allowed(u) && !self.importing.contains(u) => {
@@ -402,6 +461,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                             &String::from_utf8_lossy(&bytes),
                             Some(u),
                             depth + 1,
+                            false,
                             warnings,
                         );
                         self.importing.pop();
@@ -412,20 +472,20 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             _ => None,
         };
         match (inlined, absolute) {
-            (Some(text), _) => import.wrap(text),
+            (Some(text), _) => Some(import.wrap(text)),
             (None, Some(u)) if u != import.reference => {
                 let sep = if import.conditions.is_empty() {
                     ""
                 } else {
                     " "
                 };
-                format!(
+                Some(format!(
                     "@import url(\"{}\"){sep}{};",
                     u.replace('"', "%22"),
                     import.conditions
-                )
+                ))
             }
-            (None, _) => statement.to_string(),
+            (None, _) => None,
         }
     }
 
@@ -979,6 +1039,12 @@ mod tests {
                 Ok(b"@import url('b.css') print;.a{src:url(../font/f.woff2?v=1)}".to_vec())
             }
             "https://cdnjs.cloudflare.com/x/css/b.css" => Ok(b".b{}".to_vec()),
+            "https://cdnjs.cloudflare.com/x/css/end.css" => {
+                Ok(b".e::after{content:\"]]>\"}".to_vec())
+            }
+            "https://cdnjs.cloudflare.com/x/css/m.css?a=1&b=2" => {
+                Ok(b".m>b{content:\"<b>&amp;\"}".to_vec())
+            }
             "https://cdnjs.cloudflare.com/x/font/f.woff2?v=1" => Ok(b"ab".to_vec()),
             "https://unpkg.com/big.js" => Ok(vec![b'x'; MAX_ASSET_BYTES + 1]),
             _ => Err("HTTP 500".into()),
@@ -1059,6 +1125,34 @@ mod tests {
             "{}",
             r.html
         );
+    }
+
+    #[test]
+    fn svg_style_imports_from_a_cdn_written_as_markup() {
+        // Each pair: the card, and what export writes. WebKit reads each
+        // written `<style>` as the CSS the card's did, stylesheets inlined.
+        for (html, want) in [
+            (
+                r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&amp;b=2";.c{content:"&#169;";src:url(https://cdnjs.cloudflare.com/x/font/f.woff2?v=1)}</style></svg>"#,
+                r#"<svg><style>.m&gt;b{content:"&lt;b&gt;&amp;amp;"}.c{content:"&#169;";src:url("data:font/woff2;base64,YWI=")}</style></svg>"#,
+            ),
+            (
+                r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/m.css?a=1&b=2";.c{content:"&#169;"}]]></style></svg>"#,
+                r#"<svg><style><![CDATA[.m>b{content:"<b>&amp;"}.c{content:"&#169;"}]]></style></svg>"#,
+            ),
+            (
+                r#"<svg><style>/*x*/<!--c-->@import "https://cdnjs.cloudflare.com/x/css/b.css";</style></svg>"#,
+                r#"<svg><style>/*x*/<!--c-->.b{}</style></svg>"#,
+            ),
+            (
+                r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/end.css";]]></style></svg>"#,
+                r#"<svg><style><![CDATA[.e::after{content:"]]]]><![CDATA[>"}]]></style></svg>"#,
+            ),
+        ] {
+            let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+            assert!(r.html.contains(want), "{html}\n{}", r.html);
+            assert!(r.warnings.is_empty(), "{html}: {:?}", r.warnings);
+        }
     }
 
     #[test]

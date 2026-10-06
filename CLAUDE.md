@@ -181,7 +181,10 @@ beside the terminal all day.
   cap) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
-  escapes as the browser does. A failure, or an `@import` nested past
+  escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
+  not raw text: its CSS is its text and CDATA sections, references read with
+  entities decoded and replacements written with entities (`]]>` split inside
+  CDATA). A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning, and each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through
   `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build

@@ -73,9 +73,11 @@ enum Tok {
     Quoted(u8),
 }
 
-/// Every tag in `html`, in order. The text of a `<script>`, `<style>`,
+/// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
 /// `<title>` or `<textarea>` element holds no tags, so after its opening tag
-/// the scan resumes at its closing tag, which the tag's `text_end` names.
+/// the scan resumes at its closing tag, which the tag's `text_end` names. In
+/// SVG or MathML those elements hold markup like any other, and a
+/// `<![CDATA[` section there is one tag through its `]]>`.
 pub fn tags(html: &str) -> Tags<'_> {
     Tags {
         html,
@@ -113,6 +115,9 @@ struct Foreign {
     name: String,
     math: bool,
     point: Point,
+    /// The HTML elements open inside this integration point, innermost
+    /// last. While any is, the browser's current node is HTML.
+    html: Vec<String>,
 }
 
 /// Which HTML integration point a [`Foreign`] element is: where the browser
@@ -154,6 +159,11 @@ impl Tags<'_> {
             as_html = true;
         }
         let math = if as_html {
+            if !matches!(name, "svg" | "math") && !VOID_TAGS.contains(&name) {
+                if let Some(top) = self.foreign.last_mut() {
+                    top.html.push(name.to_string());
+                }
+            }
             match name {
                 "svg" => false,
                 "math" => true,
@@ -173,15 +183,27 @@ impl Tags<'_> {
             name: name.to_string(),
             math,
             point: integration_point(tag, name, math),
+            html: Vec::new(),
         });
-        if !as_html && matches!(name, "script" | "style" | "title" | "textarea") {
-            return closing_tag_start(self.html, end, name);
-        }
         end
     }
 
-    /// Closes foreign elements for the end tag `</name>`.
+    /// Whether a `<![CDATA[` here opens a CDATA section, which runs to `]]>`:
+    /// only while the browser's current node is SVG or MathML, as WebKit
+    /// reads it. Elsewhere it is a bogus comment, ending at the first `>`.
+    fn cdata_allowed(&self) -> bool {
+        self.foreign.last().is_some_and(|f| f.html.is_empty())
+    }
+
+    /// Closes foreign elements, or HTML ones open inside the innermost
+    /// integration point, for the end tag `</name>`.
     fn end_tag(&mut self, name: &str) {
+        if let Some(top) = self.foreign.last_mut() {
+            if let Some(i) = top.html.iter().rposition(|n| n == name) {
+                top.html.truncate(i);
+                return;
+            }
+        }
         let in_foreign = self.foreign.last().is_some_and(|f| f.point == Point::None);
         if in_foreign && matches!(name, "p" | "br") {
             while self.foreign.last().is_some_and(|f| f.point == Point::None) {
@@ -270,11 +292,23 @@ const BREAKOUT_TAGS: &[&str] = &[
     "var",
 ];
 
+/// HTML elements that never hold content, so they leave no element open.
+const VOID_TAGS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
+];
+
 impl Iterator for Tags<'_> {
     type Item = Tag;
 
     fn next(&mut self) -> Option<Tag> {
-        let (start, end) = next_tag(self.html, self.pos)?;
+        let (start, mut end) = next_tag(self.html, self.pos)?;
+        if self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed() {
+            let body = start + "<![CDATA[".len();
+            end = self.html[body..]
+                .find("]]>")
+                .map_or(self.html.len(), |e| body + e + "]]>".len());
+        }
         let tag = &self.html[start..end];
         let text_end = if tag.as_bytes()[1].is_ascii_alphabetic() {
             match tag_name(tag) {
@@ -531,7 +565,8 @@ fn visible_text(html: &str) -> String {
     decode_entities(&out)
 }
 
-fn decode_entities(s: &str) -> String {
+/// `s` with the five entities [`escape_attr`] writes decoded.
+pub fn decode_entities(s: &str) -> String {
     // `&amp;` last, so `&amp;lt;` decodes to `&lt;`, not `<`.
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -669,6 +704,95 @@ mod tests {
                 "</math>"
             ]
         );
+    }
+
+    #[test]
+    fn raw_text_elements_hold_markup_inside_svg_and_math() {
+        let html = "<svg><style><b>x</b></style></svg>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(
+            names,
+            ["<svg>", "<style>", "<b>", "</b>", "</style>", "</svg>"]
+        );
+        // How many `<b>` elements Chromium builds from each.
+        for (html, bs) in [
+            ("<svg><script><b>x</b></script></svg>", 1),
+            ("<svg><textarea><b>x</b></textarea></svg>", 1),
+            ("<math><style><b>x</b></style></math>", 1),
+            ("<svg><g><style><b>x</b></style></g></svg><b>y</b>", 2),
+            // An svg `<title>` is an HTML island, so its start tags are HTML.
+            ("<svg><title><b>x</b></title></svg>", 1),
+            ("<svg><title><style/><b>x</b></style></title></svg>", 0),
+            ("<math><mtext><title><b>x</b></title></mtext></math>", 0),
+            (
+                "<svg><style>.a{fill:red}</style><rect/></svg><style/><b>x</b></style>",
+                0,
+            ),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cdata_section_is_text_while_the_current_node_is_foreign() {
+        let html = "<svg><script><![CDATA[if(a>b){s='<b>x</b>'}]]></script></svg>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(
+            names,
+            [
+                "<svg>",
+                "<script>",
+                "<![CDATA[if(a>b){s='<b>x</b>'}]]>",
+                "</script>",
+                "</svg>"
+            ]
+        );
+        // How many `<b>` elements WebKit builds from each. Chromium reads a
+        // CDATA section at any integration point as a bogus comment.
+        for (html, bs) in [
+            ("<svg><style><![CDATA[a>b]]><b>x</b></style></svg>", 1),
+            ("<svg><![CDATA[x>y<b>z</b>", 0),
+            (
+                "<math><annotation-xml><![CDATA[x>y<b>z</b>]]></annotation-xml></math>",
+                0,
+            ),
+            (
+                "<svg><foreignObject><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
+                0,
+            ),
+            ("<math><mi><![CDATA[x>y<b>z</b>]]></mi></math>", 0),
+            (
+                "<svg><foreignObject><div></div><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
+                0,
+            ),
+            (
+                "<svg><foreignObject><br><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
+                0,
+            ),
+            (
+                "<svg><title><style/>a</style><![CDATA[x>y<b>z</b>]]></title></svg>",
+                0,
+            ),
+            // A bogus comment, ending at the first `>`, where the current
+            // node is HTML.
+            ("<p><![CDATA[x>y<b>z</b>]]>", 1),
+            (
+                "<svg><foreignObject><div><![CDATA[x>y<b>z</b>]]></div></foreignObject></svg>",
+                1,
+            ),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
     }
 
     #[test]
