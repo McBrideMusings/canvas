@@ -82,7 +82,7 @@ pub fn tags(html: &str) -> Tags<'_> {
     Tags {
         html,
         pos: 0,
-        foreign: Vec::new(),
+        open: Vec::new(),
     }
 }
 
@@ -100,27 +100,95 @@ pub struct Tag {
 pub struct Tags<'a> {
     html: &'a str,
     pos: usize,
-    /// The open SVG and MathML elements, innermost last, as the browser's
-    /// tree builder keeps them. A tag is read as foreign content (where `/>`
-    /// closes an element) while the innermost is not an integration point;
-    /// at one, a start tag is HTML again. A breakout tag such as `<p>` closes
-    /// every foreign element down to the nearest integration point, and an end
-    /// tag closes the innermost element of its name. HTML elements are not
-    /// kept, so an end tag for one opened before an `<svg>` leaves it open.
-    foreign: Vec<Foreign>,
+    /// The open elements, innermost last, as the browser's tree builder keeps
+    /// them. A tag is read as foreign content (where `/>` closes an element)
+    /// while the innermost is SVG or MathML and not an integration point; at
+    /// one, a start tag is HTML again. A breakout tag such as `<p>` closes
+    /// every foreign element down to the nearest integration point. An end
+    /// tag closes elements by the tree builder's rules for it, so an HTML end
+    /// tag can close the SVG opened inside its element. Implied end tags and
+    /// the adoption agency are not modelled.
+    open: Vec<Element>,
 }
 
-/// One open element in SVG or MathML.
-struct Foreign {
+/// One open element.
+struct Element {
     name: String,
-    math: bool,
+    ns: Ns,
     point: Point,
-    /// The HTML elements open inside this integration point, innermost
-    /// last. While any is, the browser's current node is HTML.
-    html: Vec<String>,
 }
 
-/// Which HTML integration point a [`Foreign`] element is: where the browser
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    Html,
+    Svg,
+    Math,
+}
+
+impl Element {
+    fn is_foreign(&self) -> bool {
+        self.ns != Ns::Html
+    }
+
+    /// Whether the tree builder counts this element as special: an end tag
+    /// for another element never closes past it.
+    fn is_special(&self) -> bool {
+        match self.ns {
+            Ns::Html => SPECIAL_TAGS.contains(&self.name.as_str()),
+            _ => self.ends_foreign_scope(),
+        }
+    }
+
+    /// The SVG and MathML elements that bound every scope but table scope.
+    fn ends_foreign_scope(&self) -> bool {
+        match self.ns {
+            Ns::Html => false,
+            Ns::Svg => matches!(self.name.as_str(), "foreignobject" | "desc" | "title"),
+            Ns::Math => matches!(
+                self.name.as_str(),
+                "mi" | "mo" | "mn" | "ms" | "mtext" | "annotation-xml"
+            ),
+        }
+    }
+
+    /// Whether this element bounds `scope`, so a search for an element in
+    /// scope stops here.
+    fn ends_scope(&self, scope: Scope) -> bool {
+        let name = self.name.as_str();
+        match (self.ns, scope) {
+            (Ns::Html, Scope::Table) => matches!(name, "html" | "table" | "template"),
+            (Ns::Html, _) => {
+                matches!(
+                    name,
+                    "applet"
+                        | "caption"
+                        | "html"
+                        | "table"
+                        | "td"
+                        | "th"
+                        | "marquee"
+                        | "object"
+                        | "template"
+                ) || (scope == Scope::ListItem && matches!(name, "ol" | "ul"))
+                    || (scope == Scope::Button && name == "button")
+            }
+            (_, Scope::Table) => false,
+            _ => self.ends_foreign_scope(),
+        }
+    }
+}
+
+/// The tree builder's element scopes, each bounded by its own set of
+/// elements.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Default,
+    ListItem,
+    Button,
+    Table,
+}
+
+/// Which HTML integration point a foreign [`Element`] is: where the browser
 /// reads a start tag as HTML.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Point {
@@ -139,81 +207,304 @@ impl Tags<'_> {
         self.pos = self.pos.max(pos);
     }
 
-    /// Updates the open foreign elements for the start tag `tag`, and
-    /// returns where the scan resumes.
+    /// Updates the open elements for the start tag `tag`, and returns where
+    /// the scan resumes.
     fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> usize {
         let self_closing = tag.ends_with("/>");
-        let mut as_html = match self.foreign.last() {
+        let mut as_html = match self.open.last() {
             None => true,
+            Some(top) if !top.is_foreign() => true,
             Some(top) => match top.point {
                 // Any `<annotation-xml>` holds an `<svg>` as HTML would.
-                Point::None => top.math && top.name == "annotation-xml" && name == "svg",
+                Point::None => top.ns == Ns::Math && top.name == "annotation-xml" && name == "svg",
                 Point::Html => true,
                 Point::MathText => !matches!(name, "mglyph" | "malignmark"),
             },
         };
         if !as_html && breaks_out(tag, name) {
-            while self.foreign.last().is_some_and(|f| f.point == Point::None) {
-                self.foreign.pop();
-            }
+            self.pop_foreign_to_point();
             as_html = true;
         }
-        let math = if as_html {
-            if !matches!(name, "svg" | "math") && !VOID_TAGS.contains(&name) {
-                if let Some(top) = self.foreign.last_mut() {
-                    top.html.push(name.to_string());
-                }
-            }
+        let ns = if as_html {
             match name {
-                "svg" => false,
-                "math" => true,
-                // In HTML `<style/>` still opens its text.
-                "script" | "style" | "title" | "textarea" => {
-                    return closing_tag_start(self.html, end, name);
+                "svg" => Ns::Svg,
+                "math" => Ns::Math,
+                _ => {
+                    if !VOID_TAGS.contains(&name) {
+                        self.open.push(Element {
+                            name: name.to_string(),
+                            ns: Ns::Html,
+                            point: Point::None,
+                        });
+                    }
+                    return match name {
+                        // In HTML `<style/>` still opens its text.
+                        "script" | "style" | "title" | "textarea" => {
+                            closing_tag_start(self.html, end, name)
+                        }
+                        _ => end,
+                    };
                 }
-                _ => return end,
             }
+        } else if self.open.last().is_some_and(|e| e.ns == Ns::Math) {
+            Ns::Math
         } else {
-            self.foreign.last().is_some_and(|f| f.math)
+            Ns::Svg
         };
         if self_closing {
             return end;
         }
-        self.foreign.push(Foreign {
+        self.open.push(Element {
             name: name.to_string(),
-            math,
-            point: integration_point(tag, name, math),
-            html: Vec::new(),
+            ns,
+            point: integration_point(tag, name, ns == Ns::Math),
         });
         end
+    }
+
+    /// Pops foreign elements until the innermost is HTML or an integration
+    /// point.
+    fn pop_foreign_to_point(&mut self) {
+        while self
+            .open
+            .last()
+            .is_some_and(|e| e.is_foreign() && e.point == Point::None)
+        {
+            self.open.pop();
+        }
     }
 
     /// Whether a `<![CDATA[` here opens a CDATA section, which runs to `]]>`:
     /// only while the browser's current node is SVG or MathML, as WebKit
     /// reads it. Elsewhere it is a bogus comment, ending at the first `>`.
     fn cdata_allowed(&self) -> bool {
-        self.foreign.last().is_some_and(|f| f.html.is_empty())
+        self.open.last().is_some_and(Element::is_foreign)
     }
 
-    /// Closes foreign elements, or HTML ones open inside the innermost
-    /// integration point, for the end tag `</name>`.
+    /// Closes elements for the end tag `</name>`. While the innermost element
+    /// is foreign, the tag closes the innermost foreign element of its name
+    /// above the nearest HTML one; failing that, it is read as HTML, which can
+    /// close foreign elements opened inside the HTML element it ends.
     fn end_tag(&mut self, name: &str) {
-        if let Some(top) = self.foreign.last_mut() {
-            if let Some(i) = top.html.iter().rposition(|n| n == name) {
-                top.html.truncate(i);
+        if self.open.last().is_some_and(Element::is_foreign) {
+            if matches!(name, "p" | "br") {
+                self.pop_foreign_to_point();
+            } else {
+                let html = self.open.iter().rposition(|e| !e.is_foreign());
+                let from = html.map_or(0, |i| i + 1);
+                if let Some(i) = self.open[from..].iter().rposition(|e| e.name == name) {
+                    self.open.truncate(from + i);
+                    return;
+                }
+                if html.is_none() {
+                    return;
+                }
+            }
+        }
+        self.html_end_tag(name);
+    }
+
+    /// Closes elements for the end tag `</name>` as the tree builder's "in
+    /// body" rules do.
+    fn html_end_tag(&mut self, name: &str) {
+        let scope = match name {
+            "br" | "body" | "html" => return,
+            "p" => Scope::Button,
+            "li" => Scope::ListItem,
+            "table" | "caption" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th" => Scope::Table,
+            "form" => {
+                // `</form>` removes the form alone, leaving open what it holds.
+                if let Some(i) = self.in_scope(name, Scope::Default) {
+                    self.open.remove(i);
+                }
                 return;
             }
-        }
-        let in_foreign = self.foreign.last().is_some_and(|f| f.point == Point::None);
-        if in_foreign && matches!(name, "p" | "br") {
-            while self.foreign.last().is_some_and(|f| f.point == Point::None) {
-                self.foreign.pop();
+            _ if SCOPED_END_TAGS.contains(&name)
+                || FORMATTING_TAGS.contains(&name)
+                || is_heading(name) =>
+            {
+                Scope::Default
             }
-        } else if let Some(i) = self.foreign.iter().rposition(|f| f.name == name) {
-            self.foreign.truncate(i);
+            _ => {
+                for i in (0..self.open.len()).rev() {
+                    let e = &self.open[i];
+                    if !e.is_foreign() && e.name == name {
+                        self.open.truncate(i);
+                        return;
+                    }
+                    if e.is_special() {
+                        return;
+                    }
+                }
+                return;
+            }
+        };
+        let Some(i) = self.in_scope(name, scope) else {
+            return;
+        };
+        // A formatting element with a special element open inside it goes
+        // through the adoption agency's rounds, which are not modelled: the
+        // stack is left as it was.
+        if FORMATTING_TAGS.contains(&name) && self.open[i + 1..].iter().any(Element::is_special) {
+            return;
         }
+        self.open.truncate(i);
+    }
+
+    /// The index of the innermost HTML element `</name>` ends, when it is in
+    /// `scope`. A heading's end tag ends any heading.
+    fn in_scope(&self, name: &str, scope: Scope) -> Option<usize> {
+        for i in (0..self.open.len()).rev() {
+            let e = &self.open[i];
+            let ends = !e.is_foreign()
+                && if is_heading(name) {
+                    is_heading(&e.name)
+                } else {
+                    e.name == name
+                };
+            if ends {
+                return Some(i);
+            }
+            if e.ends_scope(scope) {
+                return None;
+            }
+        }
+        None
     }
 }
+
+fn is_heading(name: &str) -> bool {
+    matches!(name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+}
+
+/// HTML end tags the "in body" rules close only when their element is in
+/// scope, besides `p`, `li`, headings, formatting elements and tables.
+const SCOPED_END_TAGS: &[&str] = &[
+    "address",
+    "applet",
+    "article",
+    "aside",
+    "blockquote",
+    "button",
+    "center",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "header",
+    "hgroup",
+    "listing",
+    "main",
+    "marquee",
+    "menu",
+    "nav",
+    "object",
+    "ol",
+    "pre",
+    "search",
+    "section",
+    "summary",
+    "ul",
+];
+
+/// HTML formatting elements, whose end tags run the adoption agency.
+const FORMATTING_TAGS: &[&str] = &[
+    "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u",
+];
+
+/// The tree builder's special HTML elements.
+const SPECIAL_TAGS: &[&str] = &[
+    "address",
+    "applet",
+    "area",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "bgsound",
+    "blockquote",
+    "body",
+    "br",
+    "button",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "embed",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "iframe",
+    "img",
+    "input",
+    "keygen",
+    "li",
+    "link",
+    "listing",
+    "main",
+    "marquee",
+    "menu",
+    "meta",
+    "nav",
+    "noembed",
+    "noframes",
+    "noscript",
+    "object",
+    "ol",
+    "p",
+    "param",
+    "plaintext",
+    "pre",
+    "script",
+    "search",
+    "section",
+    "select",
+    "source",
+    "style",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+    "wbr",
+    "xmp",
+];
 
 /// Whether the foreign element `name` (opened by `tag`) is an integration
 /// point.
@@ -833,6 +1124,75 @@ mod tests {
         let html = "<svg><font><title/></font></svg>";
         let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert_eq!(names, ["<svg>", "<font>", "<title/>", "</font>", "</svg>"]);
+    }
+
+    #[test]
+    fn an_html_end_tag_closes_the_foreign_content_inside_it() {
+        // How many `<b>` elements WebKit builds from each.
+        for (html, bs) in [
+            ("<div><svg></div><style/><b>x</b></style>", 0),
+            ("<div><svg><g></div><style/><b>x</b></style>", 0),
+            ("<span><svg></span><style/><b>x</b></style>", 0),
+            ("<b><svg></b><style/><b>x</b></style>", 1),
+            ("<a><svg></a><style/><b>x</b></style>", 0),
+            ("<li><svg></li><style/><b>x</b></style>", 0),
+            ("<ul><li><svg></ul><style/><b>x</b></style>", 0),
+            ("<h1><svg></h2><style/><b>x</b></style>", 0),
+            ("<button><p><svg></button><style/><b>x</b></style>", 0),
+            (
+                "<table><tr><td><svg></td></tr></table><style/><b>x</b></style>",
+                0,
+            ),
+            ("<div><form><svg></div><style/><b>x</b></style>", 0),
+            ("<form><div><svg></form></div><style/><b>x</b></style>", 0),
+            ("<svg><foreignObject></svg><style/><b>x</b></style>", 0),
+            // `</p>` and `</br>` close the foreign elements, then read as
+            // HTML.
+            ("<p><svg><g></p><style/><b>x</b></style>", 0),
+            ("<div><svg><g></br><style/><b>x</b></style>", 0),
+            // An end tag that names no open element, or one outside its
+            // scope, leaves the svg open.
+            ("<div><svg></span><style/><b>x</b></style>", 1),
+            ("<div><svg></foo><style/><b>x</b></style>", 1),
+            ("<li><ol><svg></li><style/><b>x</b></style>", 1),
+            // `</form>` removes the form alone.
+            ("<form><svg></form><style/><b>x</b></style>", 1),
+            // An integration point bounds the scope.
+            (
+                "<div><svg><foreignObject></div></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            ("<div><math><mi></div></mi><style/><b>x</b></style>", 1),
+            (
+                "<div><math><annotation-xml></div><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<p><svg><foreignObject><div></p></div></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<math><annotation-xml></div></annotation-xml></math><style/><b>x</b></style>",
+                0,
+            ),
+            // `</svg>` stops at the special element open in the island.
+            (
+                "<svg><foreignObject><div></svg></div></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<svg><foreignObject><span></svg></span></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            ("<svg><foreignObject><div></svg><title/><b>y</b>", 0),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
     }
 
     #[test]
