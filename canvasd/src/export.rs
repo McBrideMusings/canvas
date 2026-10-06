@@ -298,7 +298,7 @@ struct Cdn<F> {
     warned: HashSet<String>,
     inlined: usize,
     /// The stylesheets being expanded, outermost first, so an `@import`
-    /// cycle stays an import.
+    /// that closes a cycle is dropped.
     importing: Vec<String>,
 }
 
@@ -437,8 +437,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
 
     /// What replaces one `@import`: the stylesheet it names under its
     /// conditions, or the import itself, made absolute. None keeps it as
-    /// written. An import of a CDN stylesheet that stays a link warns, except
-    /// one that closes a cycle.
+    /// written. An import of a CDN stylesheet that stays a link warns. One
+    /// that closes a cycle is dropped, as the browser ignores it.
     fn import(
         &mut self,
         import: &Import,
@@ -448,7 +448,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
     ) -> Option<String> {
         let absolute = cdn::join(base, &import.reference);
         let inlined = match &absolute {
-            Some(u) if cdn::allowed(u) && !self.importing.contains(u) => {
+            Some(u) if self.importing.contains(u) => return Some(String::new()),
+            Some(u) if cdn::allowed(u) => {
                 if depth >= MAX_IMPORT_DEPTH {
                     let reason =
                         format!("skipped: nested more than {MAX_IMPORT_DEPTH} @imports deep");
@@ -1210,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_cycle_stays_an_import() {
+    fn an_import_closing_a_cycle_is_dropped() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
             &[],
@@ -1218,13 +1219,15 @@ mod tests {
         );
         let fetch = |url: &str, _: Duration| match url {
             "https://unpkg.com/a.css" => {
-                Ok(b"@import \"a.css\";/* @import \"x.css\"; */.a{}".to_vec())
+                Ok(b"@import \"b.css\";@import \"a.css\";/* @import \"x.css\"; */.a{}".to_vec())
             }
+            "https://unpkg.com/b.css" => Ok(b"@import url(a.css) screen;.b{}".to_vec()),
             _ => Err("HTTP 404".to_string()),
         };
         let r = export_card(&c, None, files, fetch);
         assert!(
-            r.html.contains(r#"<style>@import url("https://unpkg.com/a.css");/* @import "x.css"; */.a{}</style>"#),
+            r.html
+                .contains(r#"<style>.b{}/* @import "x.css"; */.a{}</style>"#),
             "{}",
             r.html
         );
