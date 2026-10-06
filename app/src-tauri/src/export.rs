@@ -1,28 +1,16 @@
 //! The card menu's "Export post…". canvasd's `GET /api/cards/:id/export`
-//! builds the page; this only fetches it over the socket, asks where to save
+//! builds the page; this only fetches it (`canvas_core::export::fetch`), asks where to save
 //! it and writes it there.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
+use canvas_core::export::{self, Exported};
 use tauri_plugin_dialog::DialogExt;
-
-/// The route's CDN downloads (bounded by `EXPORT_DOWNLOAD_SECS`) plus reading
-/// and encoding the card's images, as the CLI waits.
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(canvas_core::EXPORT_DOWNLOAD_SECS + 15);
 
 /// Returns the written path, `None` when the dialog was cancelled, or a
 /// one-line reason.
 #[tauri::command]
 pub async fn export_card(app: tauri::AppHandle, card_id: String) -> Result<Option<String>, String> {
-    // It goes into a request path, so nothing but a card id's characters.
-    if card_id.is_empty()
-        || !card_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("not a post id".to_string());
-    }
     tauri::async_runtime::spawn_blocking(move || {
         save(&app, &card_id).inspect_err(|error| {
             canvas_core::log::warn(
@@ -36,7 +24,11 @@ pub async fn export_card(app: tauri::AppHandle, card_id: String) -> Result<Optio
 }
 
 fn save(app: &tauri::AppHandle, card_id: &str) -> Result<Option<String>, String> {
-    let page = fetch(card_id)?;
+    let page = match export::fetch(card_id)? {
+        Exported::Page(page) => page,
+        Exported::Gone => return Err("canvasd has no post with that id".to_string()),
+        Exported::Failed(error) => return Err(error),
+    };
     let Some(path) = choose_path(app, card_id)? else {
         canvas_core::log::info("post export cancelled", &[("card", &card_id)]);
         return Ok(None);
@@ -54,26 +46,6 @@ fn save(app: &tauri::AppHandle, card_id: &str) -> Result<Option<String>, String>
         ],
     );
     Ok(Some(path))
-}
-
-fn fetch(card_id: &str) -> Result<canvas_core::ExportResult, String> {
-    let socket = canvas_core::paths::socket_path().ok_or("no HOME to place the socket")?;
-    let response = canvas_core::unix_http::request(
-        &socket,
-        "GET",
-        &format!("/api/cards/{card_id}/export"),
-        &[],
-        &[],
-        Some(EXPORT_TIMEOUT),
-    )
-    .map_err(|e| format!("canvasd unreachable: {e}"))?;
-    match response.status {
-        200..=299 => serde_json::from_slice(&response.body)
-            .map_err(|e| format!("canvasd sent an unreadable export: {e}")),
-        404 => Err("canvasd has no post with that id".to_string()),
-        status => Err(canvas_core::log::error_text(&response.body)
-            .unwrap_or_else(|| format!("canvasd returned HTTP {status}"))),
-    }
 }
 
 /// The save dialog, or in a debug build the path `debug::save_path` supplies.

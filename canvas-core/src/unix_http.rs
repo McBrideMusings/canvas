@@ -122,6 +122,62 @@ pub fn request(
     })
 }
 
+/// One request to canvasd's socket ([`crate::paths::socket_path`]), read to
+/// EOF and logged: its status and duration, the daemon's error text for a 4xx
+/// or 5xx, or why canvasd was unreachable.
+pub fn call(
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+    timeout: Duration,
+) -> io::Result<Response> {
+    let socket = crate::paths::socket_path()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no HOME to place the socket"))?;
+    let started = std::time::Instant::now();
+    let result = request(&socket, method, path, headers, body, Some(timeout));
+    log_call(method, path, started.elapsed().as_millis(), &result);
+    result
+}
+
+fn log_call(method: &str, path: &str, ms: u128, result: &io::Result<Response>) {
+    use crate::log;
+    let request = format!("{method} {path}");
+    match result {
+        Ok(response) if response.status < 400 => {
+            log::info(&request, &[("status", &response.status), ("ms", &ms)])
+        }
+        Ok(response) => {
+            let text = log::error_text(&response.body);
+            let mut fields: Vec<(&str, &dyn std::fmt::Display)> =
+                vec![("status", &response.status), ("ms", &ms)];
+            if let Some(text) = &text {
+                fields.push(("error", text));
+            }
+            log::warn(&request, &fields)
+        }
+        Err(e) => log::warn(
+            "canvasd unreachable",
+            &[("request", &request), ("ms", &ms), ("error", e)],
+        ),
+    }
+}
+
+/// Percent-encodes everything but unreserved characters, for a path segment
+/// or a query value.
+pub fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// A GET whose body stays open; the caller reads lines from `body`.
 /// `timeout` bounds each read, so a stream that goes quiet for longer than
 /// that ends with an error instead of blocking forever.

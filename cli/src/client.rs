@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use canvas_core::unix_http::{self, Response};
+use canvas_core::unix_http::{self, percent_encode, Response};
 use canvas_core::{
     AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile, PostRequest,
     ProfilesState, Session, SetProfileTextRequest, UpdateCardRequest,
@@ -70,42 +70,13 @@ fn call_with_headers(
     extra: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Response, Failure> {
-    let socket = canvas_core::paths::socket_path()
-        .ok_or_else(|| Failure::Transport("no HOME to place the socket".to_string()))?;
     let payload = body.map(|b| b.to_string().into_bytes()).unwrap_or_default();
     let mut headers: Vec<(&str, &str)> = extra.to_vec();
     if body.is_some() {
         headers.push(("Content-Type", "application/json"));
     }
-    let started = std::time::Instant::now();
-    let result = unix_http::request(&socket, method, path, &headers, &payload, Some(timeout));
-    log_call(method, path, started.elapsed().as_millis(), &result);
-    result.map_err(|e| Failure::Transport(e.to_string()))
-}
-
-/// One line per request: its status and duration, the daemon's error text for
-/// a 4xx or 5xx, or why canvasd was unreachable.
-fn log_call(method: &str, path: &str, ms: u128, result: &std::io::Result<Response>) {
-    use canvas_core::log;
-    let request = format!("{method} {path}");
-    match result {
-        Ok(response) if response.status < 400 => {
-            log::info(&request, &[("status", &response.status), ("ms", &ms)])
-        }
-        Ok(response) => {
-            let text = log::error_text(&response.body);
-            let mut fields: Vec<(&str, &dyn std::fmt::Display)> =
-                vec![("status", &response.status), ("ms", &ms)];
-            if let Some(text) = &text {
-                fields.push(("error", text));
-            }
-            log::warn(&request, &fields)
-        }
-        Err(e) => log::warn(
-            "canvasd unreachable",
-            &[("request", &request), ("ms", &ms), ("error", e)],
-        ),
-    }
+    unix_http::call(method, path, &headers, &payload, timeout)
+        .map_err(|e| Failure::Transport(e.to_string()))
 }
 
 /// Serialize `body` and POST it to `path`. A body that fails to serialize
@@ -406,35 +377,6 @@ pub fn get_card(card_id: &str) -> Result<Card, String> {
     handle_card_response(call("GET", &format!("/api/cards/{card_id}"), None))
 }
 
-/// CDN downloads (bounded by `EXPORT_DOWNLOAD_SECS`) plus reading and
-/// encoding a card's images.
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(canvas_core::EXPORT_DOWNLOAD_SECS + 15);
-
-/// What canvasd answered for one card's export.
-pub enum Exported {
-    Page(canvas_core::ExportResult),
-    /// canvasd holds no card with that id.
-    Gone,
-    /// canvasd answered with this error.
-    Failed(String),
-}
-
-/// `canvas export`: the card as a standalone page, plus its warnings. `Err`
-/// only when canvasd can't be reached or its answer can't be read.
-pub fn export_card(card_id: &str) -> Result<Exported, String> {
-    let path = format!("/api/cards/{}/export", percent_encode(card_id));
-    let response =
-        call_any_status("GET", &path, None, EXPORT_TIMEOUT).map_err(|e| e.to_string())?;
-    match response.status {
-        200..=299 => into_json(response).map(Exported::Page),
-        404 => Ok(Exported::Gone),
-        status => Ok(Exported::Failed(
-            canvas_core::log::error_text(&response.body)
-                .unwrap_or_else(|| Failure::Status(status).to_string()),
-        )),
-    }
-}
-
 /// Every session and card canvasd holds, cards oldest first.
 #[derive(Debug, serde::Deserialize)]
 pub struct Stream {
@@ -510,18 +452,4 @@ pub fn artifact_call(
     } else {
         format!("canvasd returned HTTP {} ({text})", response.status)
     })
-}
-
-/// Percent-encodes everything but unreserved characters, for a query value.
-pub fn percent_encode(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
 }

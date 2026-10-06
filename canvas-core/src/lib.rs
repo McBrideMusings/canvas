@@ -456,6 +456,7 @@ pub struct PutArtifactRequest {
     pub extras: ArtifactExtras,
 }
 
+pub mod export;
 pub mod html;
 pub mod log;
 pub mod paths;
