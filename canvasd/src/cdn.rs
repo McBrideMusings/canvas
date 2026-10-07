@@ -5,7 +5,8 @@
 //! outbound only; canvasd still listens on nothing but its Unix socket.
 
 use std::io::Read;
-use std::sync::{Arc, OnceLock};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use canvas_core::MAX_ASSET_BYTES;
@@ -141,6 +142,7 @@ pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
         timeout,
         |u| request_url(u, origin.as_deref(), HONOR_OVERRIDE),
         &tls_config(),
+        &system_lookup(),
     );
     let ms = started.elapsed().as_millis();
     match &result {
@@ -233,17 +235,68 @@ fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
     })
 }
 
+/// Looks up a `host:port`'s addresses: the system resolver, or a test's
+/// stand-in.
+type Lookup = Arc<dyn Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
+
+fn system_lookup() -> Lookup {
+    Arc::new(|netloc| netloc.to_socket_addrs().map(Iterator::collect))
+}
+
+/// Looks up `url`'s host by `deadline`. ureq's own lookup has no deadline and
+/// runs after its connect timeout has started, so a slow resolver would spend
+/// both the request's time and an attempt's setup window. The lookup runs on
+/// a thread of its own, left to finish there when it outlasts the deadline.
+/// Only a timeout or a URL with no host is an `Err`; the lookup's own result,
+/// failure included, is handed to ureq to report as it would its own.
+fn resolve(
+    url: &str,
+    deadline: Instant,
+    lookup: &Lookup,
+) -> Result<std::io::Result<Vec<SocketAddr>>, Box<ureq::Error>> {
+    let fail = |kind, message: String| Box::new(std::io::Error::new(kind, message).into());
+    let parsed = url::Url::parse(url)
+        .map_err(|e| fail(std::io::ErrorKind::InvalidInput, format!("{url}: {e}")))?;
+    let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
+        return Err(fail(
+            std::io::ErrorKind::InvalidInput,
+            format!("{url}: no host"),
+        ));
+    };
+    let netloc = format!("{host}:{port}");
+    let (send, receive) = mpsc::channel();
+    let lookup = lookup.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(lookup(&netloc));
+    });
+    receive
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => fail(
+                std::io::ErrorKind::TimedOut,
+                format!("looking up {host} timed out"),
+            ),
+            mpsc::RecvTimeoutError::Disconnected => fail(
+                std::io::ErrorKind::Other,
+                format!("looking up {host} failed"),
+            ),
+        })
+}
+
 fn first_line(message: String) -> String {
     message.lines().next().unwrap_or(&message).to_string()
 }
 
 /// GETs `url` by `deadline`, opening a fresh connection when one stalls in
-/// its TCP connect or TLS handshake (see `SETUP_ATTEMPTS`).
+/// its TCP connect or TLS handshake (see `SETUP_ATTEMPTS`). The host is
+/// looked up once per request, before the first attempt's setup window starts.
 fn get(
     url: &str,
     deadline: Instant,
     tls: &Arc<rustls::ClientConfig>,
+    lookup: &Lookup,
 ) -> Result<ureq::Response, Box<ureq::Error>> {
+    let found = Arc::new(resolve(url, deadline, lookup)?);
     let mut attempt = 1;
     loop {
         let started = Instant::now();
@@ -258,8 +311,14 @@ fn get(
         } else {
             left / 2
         };
+        let found = found.clone();
         let agent = ureq::AgentBuilder::new()
             .redirects(0)
+            // With no redirects and no proxy, ureq asks only for `url`'s host.
+            .resolver(move |_: &str| match &*found {
+                Ok(addrs) => Ok(addrs.clone()),
+                Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
+            })
             .timeout_connect(setup)
             .tls_connector(Arc::new(SetupLimit {
                 tls: tls.clone(),
@@ -297,12 +356,13 @@ fn download(
     timeout: Duration,
     route: impl Fn(&str) -> String,
     tls: &Arc<rustls::ClientConfig>,
+    lookup: &Lookup,
 ) -> Result<Vec<u8>, String> {
     let deadline = Instant::now() + timeout;
     let timed_out = || format!("timed out after {}s", timeout.as_secs_f32().ceil());
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        let response = get(&route(&current), deadline, tls).map_err(|e| match *e {
+        let response = get(&route(&current), deadline, tls, lookup).map_err(|e| match *e {
             ureq::Error::Status(code, _) => format!("HTTP {code}"),
             ureq::Error::Transport(t) if std::error::Error::source(&t).is_some_and(is_timeout) => {
                 timed_out()
@@ -465,7 +525,13 @@ mod tests {
     fn a_stalled_handshake_is_dropped_for_a_fresh_connection() {
         let (url, tls, seen) = tls_server(|n| n > 1);
         let started = Instant::now();
-        let body = download(&url, Duration::from_secs(4), |u| u.to_string(), &tls);
+        let body = download(
+            &url,
+            Duration::from_secs(4),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        );
         assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
         // The first connection gets half the 4s to shake hands.
         let ms = started.elapsed().as_millis();
@@ -477,10 +543,86 @@ mod tests {
     fn a_handshake_that_never_finishes_is_a_timeout() {
         let (url, tls, seen) = tls_server(|_| false);
         let started = Instant::now();
-        let body = download(&url, Duration::from_millis(1500), |u| u.to_string(), &tls);
+        let body = download(
+            &url,
+            Duration::from_millis(1500),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        );
         assert_eq!(body, Err("timed out after 2s".to_string()));
         let ms = started.elapsed().as_millis();
         assert!((1400..2000).contains(&ms), "took {ms}ms");
         assert_eq!(seen.load(Ordering::SeqCst), SETUP_ATTEMPTS as usize);
+    }
+
+    /// The system lookup after `delay`, counting its calls.
+    fn slow_lookup(delay: Duration) -> (Lookup, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let lookup: Lookup = Arc::new(move |netloc| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(delay);
+            system_lookup()(netloc)
+        });
+        (lookup, calls)
+    }
+
+    #[test]
+    fn a_lookup_that_outlasts_the_deadline_is_a_timeout() {
+        let (url, tls, seen) = tls_server(|_| true);
+        let (lookup, _) = slow_lookup(Duration::from_secs(5));
+        let started = Instant::now();
+        let body = download(
+            &url,
+            Duration::from_secs(1),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        );
+        assert_eq!(body, Err("timed out after 1s".to_string()));
+        let ms = started.elapsed().as_millis();
+        assert!((950..1500).contains(&ms), "took {ms}ms");
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_slow_lookup_leaves_the_handshake_its_own_window() {
+        let (url, tls, seen) = tls_server(|_| true);
+        // Longer than the first attempt's half of the 2s, were it counted.
+        let (lookup, calls) = slow_lookup(Duration::from_millis(1200));
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        );
+        assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_lookup_reads_as_ureqs_own() {
+        let (url, tls, seen) = tls_server(|_| true);
+        let lookup: Lookup = Arc::new(|_| Err(std::io::Error::other("no such host")));
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        );
+        let port = url
+            .trim_start_matches("https://localhost:")
+            .trim_end_matches('/');
+        assert_eq!(
+            body,
+            Err(format!(
+                "{url}: Dns Failed: resolve dns name 'localhost:{port}': no such host"
+            ))
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
 }

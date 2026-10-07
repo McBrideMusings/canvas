@@ -186,6 +186,7 @@ dependencies = [
  "tokio-stream",
  "tower",
  "ureq",
+ "url",
  "uuid",
  "webpki-roots 0.26.11",
 ]
