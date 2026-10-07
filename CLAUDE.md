@@ -205,7 +205,8 @@ beside the terminal all day.
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
   since the browser ignores an `@import` inside a block, and every `@import` inlined
   as rules ahead of a later one in its sheet that writes a link, since the browser
-  ignores an `@import` after rules. `export_card` drops a
+  ignores an `@import` after rules; for the same reason an `@import` after its
+  sheet's own rules stays as written, never fetched. `export_card` drops a
   `fetch-failed` warning whose URL's content went into the page through another
   reference (`Cdn`'s list of inlined URLs). Each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through

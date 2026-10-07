@@ -529,6 +529,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
     /// each CDN `url()` by a `data:` URI. A reference relative to `base` that
     /// stays a link is made absolute, since the page no longer sits beside it.
+    /// An `@import` after the sheet's own rules, which the browser ignores,
+    /// stays as written and is never fetched.
     /// The text is read as the browser tokenizes it: strings, comments and
     /// escapes are copied untouched, and only a whole `url(` or `@import`
     /// token is a reference.
@@ -546,6 +548,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         // The inlined imports that wrote rules, which turn back into links
         // when a later import writes a link.
         let mut ruled: Vec<Inlined> = Vec::new();
+        // Whether a rule of the sheet's own came before the current `@import`.
+        let mut after_rules = false;
         while i < b.len() {
             match b[i] {
                 b'/' if b.get(i + 1) == Some(&b'*') => i = comment_end(b, i),
@@ -557,12 +561,16 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                         continue;
                     };
                     // A rule of the sheet's own before this import leaves it
-                    // ignored however the ones before it are written.
-                    if prelude(&css[pos..i]).1 {
-                        ruled.clear();
-                    }
+                    // ignored, so it stays as written and fetches nothing.
+                    after_rules = after_rules || prelude(&css[pos..i]).1;
                     out.push_str(&css[pos..i]);
                     let written = &css[i..import.end];
+                    if after_rules {
+                        out.push_str(written);
+                        pos = import.end;
+                        i = import.end;
+                        continue;
+                    }
                     let mut tried = self.import_making_room(
                         &import, base, depth, written, &mut out, &mut ruled, warnings,
                     );
@@ -1944,6 +1952,46 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn an_import_after_the_sheets_own_rules_stays_as_written_unfetched() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css"><link rel="stylesheet" href="https://unpkg.com/m.css">"#,
+            &[],
+            &[],
+        );
+        let fetched = std::cell::RefCell::new(Vec::new());
+        let fetch = |url: &str, _: Duration| {
+            fetched.borrow_mut().push(url.to_string());
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => "@import \"e.css\";.a{}@import \"b.css\"; @import \"c.css\";",
+                Some("m.css") => "@import \"k.css\" screen;",
+                Some("k.css") => ".k{}@import \"b.css\";",
+                Some("e.css") => ".e{}",
+                Some("b.css") => ".b{color:red}",
+                Some("c.css") => ".c{color:red}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        for want in [
+            r#"<style>.e{}.a{}@import "b.css"; @import "c.css";</style>"#,
+            r#"<style>@media screen{.k{}@import "b.css";}</style>"#,
+        ] {
+            assert!(r.html.contains(want), "{want}\n{}", r.html);
+        }
+        assert_eq!(
+            *fetched.borrow(),
+            [
+                "https://unpkg.com/a.css",
+                "https://unpkg.com/e.css",
+                "https://unpkg.com/m.css",
+                "https://unpkg.com/k.css",
+            ]
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     }
 
     #[test]
