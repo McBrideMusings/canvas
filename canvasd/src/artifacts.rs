@@ -188,6 +188,14 @@ impl Artifacts {
         view
     }
 
+    /// Drops what `id`'s page left behind (`canvas artifact reset`): its held
+    /// `data` value, which every reload would re-post into it, and the errors
+    /// it threw.
+    pub fn reset(&mut self, id: &str) {
+        self.data.remove(id);
+        self.script_errors.remove(id);
+    }
+
     /// Forgets everything kept in memory for `id`, once its record is gone.
     pub fn forget(&mut self, id: &str) {
         self.fingerprints.remove(id);

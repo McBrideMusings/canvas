@@ -677,6 +677,9 @@ pub async fn events(
         Ok(CanvasEvent::ArtifactFocus(id)) => Some(Ok(SseEvent::default()
             .event("artifact-focus")
             .data(serde_json::json!({ "id": id }).to_string()))),
+        Ok(CanvasEvent::ArtifactReset(id)) => Some(Ok(SseEvent::default()
+            .event("artifact-reset")
+            .data(serde_json::json!({ "id": id }).to_string()))),
         Ok(CanvasEvent::ArtifactSnapshot { id, request }) => Some(Ok(SseEvent::default()
             .event("artifact-snapshot")
             .data(serde_json::json!({ "id": id, "request": request }).to_string()))),

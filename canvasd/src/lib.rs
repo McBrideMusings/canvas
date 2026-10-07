@@ -110,6 +110,10 @@ pub fn build_router(state: AppState) -> Router {
             post(artifact_routes::focus_artifact),
         )
         .route(
+            "/api/artifacts/:id/reset",
+            post(artifact_routes::reset_artifact),
+        )
+        .route(
             "/api/artifacts/:id/snapshot",
             post(artifact_routes::snapshot_artifact),
         )

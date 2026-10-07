@@ -471,6 +471,23 @@ pub async fn focus_artifact(State(state): State<AppState>, Path(id): Path<String
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
+/// `canvas artifact reset` and the pane menu's Reset: drops the artifact's
+/// held `data` and `scriptErrors`, then asks every open viewer to rebuild its
+/// pane at the entry page. Its files, pane size and full window stay. Answers
+/// how many viewers the event reached.
+pub async fn reset_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    {
+        let mut artifacts = state.artifacts.write().await;
+        if !artifacts.records.contains_key(&id) {
+            return not_found();
+        }
+        artifacts.reset(&id);
+    }
+    let viewers = state.publish(CanvasEvent::ArtifactReset(id.clone()));
+    canvas_core::log::info("artifact reset", &[("id", &id), ("viewers", &viewers)]);
+    Json(serde_json::json!({ "viewers": viewers })).into_response()
+}
+
 /// `canvas snapshot art-…`: asks the open viewers to capture the artifact's
 /// pane as rendered, answered like a card's snapshot. 404 for an unknown id.
 pub async fn snapshot_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {

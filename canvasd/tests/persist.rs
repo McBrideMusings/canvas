@@ -401,6 +401,63 @@ async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
 }
 
 #[tokio::test]
+async fn artifact_reset_drops_data_and_errors_and_tells_viewers() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let created = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await;
+        ids.push(created["id"].as_str().unwrap().to_string());
+    }
+    let (a, b) = (&ids[0], &ids[1]);
+    for id in [a, b] {
+        send(
+            &app,
+            "PUT",
+            &format!("/api/artifacts/{id}/data"),
+            Some(json!({ "n": 1 })),
+        )
+        .await;
+        send(
+            &app,
+            "POST",
+            &format!("/api/artifacts/{id}/errors"),
+            Some(json!({ "kind": "error", "message": "boom" })),
+        )
+        .await;
+    }
+    let mut events = state.events.subscribe();
+
+    let answer: Value = serde_json::from_slice(
+        &send(&app, "POST", &format!("/api/artifacts/{a}/reset"), None).await,
+    )
+    .unwrap();
+    assert_eq!(answer, json!({ "viewers": 1 }));
+    match events.try_recv() {
+        Ok(canvasd::state::CanvasEvent::ArtifactReset(id)) => assert_eq!(&id, a),
+        other => panic!("expected artifact-reset, got {other:?}"),
+    }
+
+    let shown: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{a}"), None).await)
+            .unwrap();
+    assert_eq!(shown.get("data"), None);
+    assert_eq!(shown.get("scriptErrors"), None);
+    let other: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{b}"), None).await)
+            .unwrap();
+    assert_eq!(other["data"], json!({ "n": 1 }));
+    assert_eq!(other["scriptErrors"].as_array().map(Vec::len), Some(1));
+
+    let unknown = send(&app, "POST", "/api/artifacts/art-0000000000/reset", None).await;
+    assert_eq!(
+        String::from_utf8_lossy(&unknown),
+        "no artifact with that id"
+    );
+}
+
+#[tokio::test]
 async fn script_errors_list_per_artifact_and_keep_the_newest_50() {
     let dir = temp_dir();
     let app = build_router(AppState::open(&dir).await);

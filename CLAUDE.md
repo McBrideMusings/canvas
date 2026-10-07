@@ -472,6 +472,15 @@ beside the terminal all day.
   when no open viewer reports one. A chosen size is kept as asked and clamped
   to the window only on screen. Escape reaches the viewer only while focus is
   outside the page's iframe; entering full window focuses the exit button.
+  The menu's "Reset artifact" and `canvas artifact reset <id>` (`POST
+  /api/artifacts/:id/reset`, 404 for an unknown id) take one path: canvasd
+  drops the artifact's held `data` and `scriptErrors`, logs `artifact reset`
+  and publishes the viewer-only `artifact-reset` event, and every viewer
+  rebuilds that pane's frame at the entry page, forgetting its remembered
+  address and unacknowledged change stamp. Files, the chosen size and full
+  window stay; a refresh's next run brings `data` back. It prints `{"viewers":
+  N}`; zero viewers is a stderr note, not a failure, since the held state is
+  gone either way.
 - Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
   key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
   `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and

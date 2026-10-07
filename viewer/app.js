@@ -89,6 +89,10 @@
         svg.appendChild(svgEl("path", { d: "M7 11l5 5 5-5" }));
         svg.appendChild(svgEl("path", { d: "M4 20.5h16" }));
         break;
+      case "reset":
+        svg.appendChild(svgEl("path", { d: "M4 12a8 8 0 1 0 2.4-5.7" }));
+        svg.appendChild(svgEl("path", { d: "M4 3.5v4h4" }));
+        break;
       case "warning":
         svg.appendChild(svgEl("path", { d: "M12 3.5L2.5 20h19z" }));
         svg.appendChild(svgEl("path", { d: "M12 10v4.5" }));
@@ -3289,6 +3293,20 @@
     if (page === "artifacts") renderArtifacts();
   }
 
+  // `canvas artifact reset` or the menu's Reset: a page wedged by a value or
+  // a state it reloads into starts over. The pane's frame is rebuilt at the
+  // entry page with no remembered address, unacknowledged change or held
+  // data to re-post; the chosen size and full window stay.
+  function resetArtifact(id) {
+    const artifact = artifacts.get(id);
+    if (!artifact) return;
+    delete artifact.data;
+    artifactChanges.delete(id);
+    artifactLocations.delete(id);
+    if (artifactFrameId === id) dropArtifactFrame();
+    if (page === "artifacts") renderArtifacts();
+  }
+
   function removeArtifact(id) {
     artifacts.delete(id);
     artifactChanges.delete(id);
@@ -3333,6 +3351,18 @@
       buildMenuItem("copy", `Copy ${what} path`, () =>
         copyText(artifact.path, `Copied ${what} path`, `Couldn't copy ${what} path`)
       )
+    );
+    // The same route as `canvas artifact reset`: canvasd drops the held data
+    // and errors, and its artifact-reset event rebuilds the pane here.
+    menu.appendChild(
+      buildMenuItem("reset", "Reset artifact", () => {
+        closeMenu();
+        fetch(`/api/artifacts/${encodeURIComponent(artifact.id)}/reset`, { method: "POST" })
+          .then((res) => {
+            if (!res.ok) throw new Error(String(res.status));
+          })
+          .catch(() => toast("Couldn't reset the artifact"));
+      })
     );
     const divider = document.createElement("div");
     divider.className = "menu-divider";
@@ -3711,6 +3741,8 @@
 
     // `canvas focus art-…`: switch to the Artifacts page and open it.
     handlers["artifact-focus"] = ({ id }) => focusArtifact(id);
+
+    handlers["artifact-reset"] = ({ id }) => resetArtifact(id);
 
     handlers["artifact-pane"] = (request) => paneCommand(request);
 
