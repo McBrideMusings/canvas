@@ -661,7 +661,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
                         let text = self.css(
-                            &String::from_utf8_lossy(&bytes),
+                            &closed_at_end(&String::from_utf8_lossy(&bytes)),
                             Some(u),
                             depth + 1,
                             warnings,
@@ -977,6 +977,166 @@ fn statement_end(b: &[u8], at: usize) -> Option<usize> {
         }
     }
     Some(b.len())
+}
+
+/// `css` as its own end of file leaves it, written so more text can follow:
+/// an open string, comment or `url(` closed, an escape cut by the end read
+/// as U+FFFD, every open bracket and block closed, and an at-rule statement
+/// ended with `;`. A rule's selector with no block is dropped, as the browser
+/// drops it, since any `;` would leave it reading on into the next rule.
+fn closed_at_end(css: &str) -> String {
+    /// The statement under way at the top level.
+    struct Statement {
+        at_rule: bool,
+        start: usize,
+        block: bool,
+    }
+    let b = css.as_bytes();
+    let mut statement: Option<Statement> = None;
+    let mut open: Vec<u8> = Vec::new();
+    let mut tail = String::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if is_space(c as char) {
+            i += 1;
+            continue;
+        }
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            let end = comment_end(b, i);
+            if end == b.len() && (end < i + 4 || !css.ends_with("*/")) {
+                tail.push_str("*/");
+            }
+            i = end;
+            continue;
+        }
+        if statement.is_none() && open.is_empty() {
+            if b[i..].starts_with(b"<!--") {
+                i += 4;
+                continue;
+            }
+            if b[i..].starts_with(b"-->") {
+                i += 3;
+                continue;
+            }
+            statement = Some(Statement {
+                at_rule: c == b'@' && starts_ident(b, i + 1),
+                start: i,
+                block: false,
+            });
+        }
+        match c {
+            b'"' | b'\'' => {
+                let (end, closed) = string_end(b, i);
+                if !closed && end == b.len() {
+                    // An escape cut by the end adds nothing to a string.
+                    if escape_cut(b, i + 1) {
+                        tail.push('\n');
+                    }
+                    tail.push(c as char);
+                }
+                i = end;
+            }
+            b'\\' => {
+                if i + 1 == b.len() {
+                    tail.push('\u{FFFD}');
+                }
+                i += escape_len(b, i);
+            }
+            b'u' | b'U'
+                if (i == 0 || !ident_byte(b[i - 1]))
+                    && starts_with_ci(b, i, b"url(")
+                    && !matches!(b.get(skip_space(b, i + 4)), Some(b'"' | b'\'')) =>
+            {
+                match first_close(b, i + 4) {
+                    Some(end) => i = end,
+                    None => {
+                        if escape_cut(b, i + 4) {
+                            tail.push('\u{FFFD}');
+                        }
+                        tail.push(')');
+                        i = b.len();
+                    }
+                }
+            }
+            b'(' | b'[' | b'{' => {
+                if open.is_empty() && c == b'{' {
+                    if let Some(s) = statement.as_mut() {
+                        s.block = true;
+                    }
+                }
+                open.push(match c {
+                    b'(' => b')',
+                    b'[' => b']',
+                    _ => b'}',
+                });
+                i += 1;
+            }
+            b')' | b']' | b'}' => {
+                if open.last() == Some(&c) {
+                    open.pop();
+                    if open.is_empty() && c == b'}' && statement.as_ref().is_some_and(|s| s.block) {
+                        statement = None;
+                    }
+                }
+                i += 1;
+            }
+            b';' if open.is_empty() && statement.as_ref().is_some_and(|s| s.at_rule) => {
+                statement = None;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    match statement {
+        Some(Statement {
+            at_rule: false,
+            start,
+            block: false,
+        }) => css[..start].to_string(),
+        statement => {
+            let mut out = String::with_capacity(css.len() + tail.len() + open.len() + 1);
+            out.push_str(css);
+            out.push_str(&tail);
+            out.extend(open.iter().rev().map(|&c| c as char));
+            if statement.is_some_and(|s| !s.block) {
+                out.push(';');
+            }
+            out
+        }
+    }
+}
+
+/// Whether an identifier starts at `i`, as the browser reads an at-keyword's
+/// name: a letter, `_` or non-ASCII character, an escape, or `-` before one
+/// of those or another `-`.
+fn starts_ident(b: &[u8], i: usize) -> bool {
+    let start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c >= 0x80;
+    let escape = |j: usize| {
+        b.get(j) == Some(&b'\\') && !matches!(b.get(j + 1), Some(b'\n' | b'\r' | b'\x0c'))
+    };
+    match b.get(i) {
+        Some(&b'-') => b.get(i + 1).is_some_and(|&c| start(c) || c == b'-') || escape(i + 1),
+        Some(&c) => start(c) || escape(i),
+        None => false,
+    }
+}
+
+/// Whether the text from `from` to the end closes on an escape the end cut:
+/// a backslash with nothing after it.
+fn escape_cut(b: &[u8], from: usize) -> bool {
+    let mut i = from;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            if i + 1 == b.len() {
+                return true;
+            }
+            i += escape_len(b, i);
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// The `@import` at `at`, or None when it doesn't parse: no string or
@@ -1995,6 +2155,84 @@ mod tests {
     }
 
     #[test]
+    fn an_inlined_sheet_ends_as_its_own_end_of_file_ends_it() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css"><link rel="stylesheet" href="https://unpkg.com/m.css"><link rel="stylesheet" href="https://unpkg.com/n.css"><link rel="stylesheet" href="https://unpkg.com/p.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("m.css") => "@import \"l.css\";@import \"https://example.com/z.css\";",
+                Some("a.css") => {
+                    "@import \"l.css\";@import \"o.css\";@import \"s.css\";@import \"r.css\";.z{}"
+                }
+                Some("n.css") => "@import \"o.css\" screen;.n{}",
+                Some("p.css") => "@import \"d.css\";@import \"https://example.com/z.css\";",
+                Some("d.css") => ".d",
+                Some("l.css") => "@media screen",
+                Some("o.css") => ".o{color:red",
+                Some("s.css") => ".s{content:\"x",
+                Some("r.css") => ".r{}.dangling",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        for want in [
+            r#"<style>@media screen;.o{color:red}.s{content:"x"}.r{}.z{}</style>"#,
+            r#"<style>@media screen;@import "https://example.com/z.css";</style>"#,
+            r#"<style>@media screen{.o{color:red}}.n{}</style>"#,
+            // A selector with no block is no rule, so the link after it
+            // leaves nothing to turn back into a link.
+            r#"<style>@import "https://example.com/z.css";</style>"#,
+        ] {
+            assert!(r.html.contains(want), "{want}\n{}", r.html);
+        }
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn closed_at_end_closes_what_the_end_of_file_closes() {
+        for (css, want) in [
+            ("", ""),
+            (".a{}@import \"x\";", ".a{}@import \"x\";"),
+            ("@media screen", "@media screen;"),
+            ("@supports (display:grid", "@supports (display:grid);"),
+            ("@media x{.a{color:red", "@media x{.a{color:red}}"),
+            (".a{}.b", ".a{}"),
+            (".a{};.b{}", ".a{};.b{}"),
+            (".a{}.b:is(", ".a{}"),
+            ("/* open", "/* open*/"),
+            ("/*/", "/*/*/"),
+            ("/**/", "/**/"),
+            (".a{background:url(a.png", ".a{background:url(a.png)}"),
+            (".a{background:url(a\\", ".a{background:url(a\\\u{FFFD})}"),
+            (".a{content:'x", ".a{content:'x'}"),
+            (".a{content:\"x\\", ".a{content:\"x\\\n\"}"),
+            ("@x a\\", "@x a\\\u{FFFD};"),
+            ("<!-- @import \"x\"", "<!-- @import \"x\";"),
+            (".a{content:\"}\"", ".a{content:\"}\"}"),
+            (".a{b:c}/* .b{ */", ".a{b:c}/* .b{ */"),
+            ("@1x .a", ""),
+            ("@-1 .a", ""),
+            ("@-x a", "@-x a;"),
+            ("@\\31 x a", "@\\31 x a;"),
+            ("@x \"a\\\r\n", "@x \"a\\\r\n\";"),
+            ("@x \"é", "@x \"é\";"),
+            ("@x \\é", "@x \\é;"),
+            ("@x URL(a", "@x URL(a);"),
+            ("@x url( \"a", "@x url( \"a\");"),
+            ("@media x{ ( }", "@media x{ ( })}"),
+            ("@x ) ] a", "@x ) ] a;"),
+            ("--> .a{}", "--> .a{}"),
+            ("@media x{.a{}.b", "@media x{.a{}.b}"),
+        ] {
+            assert_eq!(closed_at_end(css), want, "{css:?}");
+        }
+    }
+
+    #[test]
     fn a_sheet_that_turned_others_back_into_links_can_turn_back_too() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
@@ -2221,7 +2459,7 @@ mod tests {
         let a: String = (0..40).map(|n| format!("@import \"b{n}.css\";")).collect();
         // a.css counts toward the total too.
         let fit = (MAX_INLINED_BYTES - a.len()) / MAX_ASSET_BYTES;
-        let b = vec![b'x'; MAX_ASSET_BYTES];
+        let b = format!(".b{{}}/*{}*/", "x".repeat(MAX_ASSET_BYTES - 8)).into_bytes();
         let fetch = move |url: &str, _: Duration| match url {
             "https://unpkg.com/a.css" => Ok(a.clone().into_bytes()),
             u if u.starts_with("https://unpkg.com/b") => Ok(b.clone()),

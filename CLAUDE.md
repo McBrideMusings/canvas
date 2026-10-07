@@ -191,7 +191,10 @@ beside the terminal all day.
   stalled`) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
-  escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
+  escapes as the browser does. An imported sheet is first closed as its own end
+  of file closes it (`closed_at_end`: open strings, comments, `url(`, brackets
+  and blocks, an at-rule's `;`; a selector with no block dropped), so it can't
+  run into the text after it. A `<style>` inside SVG or MathML holds markup,
   not raw text: its CSS is every text run and CDATA section joined, comments
   (bogus ones too) dropped, every HTML character reference (named or numeric,
   `htmlize` via `canvas_core::html::decode_entities`) decoded once per text run
