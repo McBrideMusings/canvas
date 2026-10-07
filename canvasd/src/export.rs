@@ -108,8 +108,9 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     let mut anchors: Vec<bool> = Vec::new();
     let mut pos = 0usize;
     // Inside an SVG or MathML `<style>`, whose text holds markup: its text
-    // and CDATA sections are its CSS, up to the first other tag.
-    let mut markup_style = false;
+    // runs, CDATA sections and comments up to the first other tag, kept
+    // until that tag so its CSS is read whole.
+    let mut markup_style: Option<Vec<StylePiece>> = None;
 
     for Tag {
         start,
@@ -119,32 +120,21 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     } in tags(html)
     {
         let text = &html[pos..start];
-        if markup_style {
-            out.push_str(&cdn.markup_css(text, warnings));
-        } else {
-            out.push_str(text);
-        }
         let tag = &html[start..end];
         pos = end;
 
-        if markup_style {
-            if let Some(body) = tag.strip_prefix("<![CDATA[") {
-                let (body, close) = match body.strip_suffix("]]>") {
-                    Some(body) => (body, "]]>"),
-                    None => (body, ""),
-                };
-                let css = cdn.css(body, None, 0, warnings);
-                out.push_str("<![CDATA[");
-                // A `]]>` would end the section; split it across two.
-                out.push_str(&css.replace("]]>", "]]]]><![CDATA[>"));
-                out.push_str(close);
+        if let Some(pieces) = markup_style.as_mut() {
+            if !text.is_empty() {
+                pieces.push(StylePiece::Text(text));
+            }
+            if let Some(piece) = StylePiece::of_tag(tag) {
+                pieces.push(piece);
                 continue;
             }
-            if tag.starts_with("<!--") {
-                out.push_str(tag);
-                continue;
-            }
-            markup_style = false;
+            let pieces = markup_style.take().unwrap_or_default();
+            out.push_str(&cdn.markup_css(&pieces, warnings));
+        } else {
+            out.push_str(text);
         }
 
         if tag.starts_with("</") {
@@ -278,19 +268,69 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                         pos = text_end;
                     }
                     // Its CSS follows unless it closed itself.
-                    None => markup_style = !tag.ends_with("/>"),
+                    None if !tag.ends_with("/>") => markup_style = Some(Vec::new()),
+                    None => {}
                 }
             }
             _ => out.push_str(tag),
         }
     }
     let text = &html[pos..];
-    if markup_style {
-        out.push_str(&cdn.markup_css(text, warnings));
-    } else {
-        out.push_str(text);
+    match markup_style {
+        Some(mut pieces) => {
+            if !text.is_empty() {
+                pieces.push(StylePiece::Text(text));
+            }
+            out.push_str(&cdn.markup_css(&pieces, warnings));
+        }
+        None => out.push_str(text),
     }
     out
+}
+
+/// One node of an SVG or MathML `<style>`, as written.
+enum StylePiece<'a> {
+    /// A text run, character references and all.
+    Text(&'a str),
+    /// A `<![CDATA[` section, through its `]]>` when it has one.
+    Cdata(&'a str),
+    /// A comment, bogus or not, or a doctype: nothing the CSS reads.
+    Comment(&'a str),
+}
+
+impl<'a> StylePiece<'a> {
+    /// What `tag` is inside a foreign `<style>`, or None when the tag ends
+    /// its CSS.
+    fn of_tag(tag: &'a str) -> Option<Self> {
+        if tag.starts_with("<![CDATA[") {
+            return Some(StylePiece::Cdata(tag));
+        }
+        let b = tag.as_bytes();
+        let bogus = match b.get(1) {
+            Some(b'!' | b'?') => true,
+            Some(b'/') => !b.get(2).is_some_and(u8::is_ascii_alphabetic),
+            _ => false,
+        };
+        bogus.then_some(StylePiece::Comment(tag))
+    }
+
+    fn raw(&self) -> &'a str {
+        match self {
+            StylePiece::Text(raw) | StylePiece::Cdata(raw) | StylePiece::Comment(raw) => raw,
+        }
+    }
+
+    /// What the browser reads from the piece as CSS.
+    fn css(&self) -> String {
+        match self {
+            StylePiece::Text(text) => decode_entities(text),
+            StylePiece::Cdata(tag) => {
+                let body = &tag["<![CDATA[".len()..];
+                body.strip_suffix("]]>").unwrap_or(body).to_string()
+            }
+            StylePiece::Comment(_) => String::new(),
+        }
+    }
 }
 
 /// Downloads for one export: each URL fetched once, all of them within one
@@ -412,18 +452,70 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
-    /// [`Cdn::css`] of `text` in an SVG or MathML `<style>`, outside CDATA,
-    /// where the browser decodes every character reference before it reads
-    /// the CSS: the scan runs on the decoded text and the result is written
-    /// back with entities, or `text` stays as written when nothing changed.
-    fn markup_css(&mut self, text: &str, warnings: &mut Vec<ExportWarning>) -> String {
-        let css = decode_entities(text);
-        let out = self.css(&css, None, 0, warnings);
-        if out == css {
-            text.to_string()
-        } else {
-            escape_text(&out)
+    /// [`Cdn::css`] of an SVG or MathML `<style>` written as `pieces`. The
+    /// browser reads its CSS from every text run, character references
+    /// decoded, and CDATA section joined, comments dropped, so the scan runs
+    /// on that. Pieces before the first change and after the last stay as
+    /// written; the ones between become one run of the result, in the form
+    /// of the first of them: text written with entities, or a CDATA section
+    /// with any `]]>` split across two.
+    fn markup_css(&mut self, pieces: &[StylePiece], warnings: &mut Vec<ExportWarning>) -> String {
+        let mut css = String::new();
+        let mut spans = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            let start = css.len();
+            css.push_str(&piece.css());
+            spans.push(start..css.len());
         }
+        let out = self.css(&css, None, 0, warnings);
+        let written: String = pieces.iter().map(StylePiece::raw).collect();
+        if out == css {
+            return written;
+        }
+        let same_start = css
+            .bytes()
+            .zip(out.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let same_end = css
+            .bytes()
+            .rev()
+            .zip(out.bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(css.len().min(out.len()) - same_start);
+        let read: Vec<usize> = (0..pieces.len())
+            .filter(|&i| !spans[i].is_empty())
+            .collect();
+        // The pieces holding the change: from the first ending past the
+        // shared start to the last starting before the shared end.
+        let first = read.iter().copied().find(|&i| spans[i].end > same_start);
+        let last = read
+            .iter()
+            .copied()
+            .rev()
+            .find(|&i| spans[i].start < css.len() - same_end);
+        let (first, last) = match (first, last) {
+            (Some(first), Some(last)) => (first.min(last), first.max(last)),
+            (Some(i), None) | (None, Some(i)) => (i, i),
+            // Nothing read, so nothing changed.
+            (None, None) => return written,
+        };
+        let from = spans[first].start;
+        let to = out.len() - (css.len() - spans[last].end);
+        let changed = &out[from..to];
+        let mut result: String = pieces[..first].iter().map(StylePiece::raw).collect();
+        match pieces[first] {
+            StylePiece::Cdata(_) => {
+                result.push_str("<![CDATA[");
+                // A `]]>` would end the section; split it across two.
+                result.push_str(&changed.replace("]]>", "]]]]><![CDATA[>"));
+                result.push_str("]]>");
+            }
+            _ => result.push_str(&escape_text(changed)),
+        }
+        result.extend(pieces[last + 1..].iter().map(StylePiece::raw));
+        result
     }
 
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
@@ -1423,6 +1515,47 @@ mod tests {
             (
                 r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/end.css";]]></style></svg>"#,
                 r#"<svg><style><![CDATA[.e::after{content:"]]]]><![CDATA[>"}]]></style></svg>"#,
+            ),
+        ] {
+            let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+            assert!(r.html.contains(want), "{html}\n{}", r.html);
+            assert!(r.warnings.is_empty(), "{html}: {:?}", r.warnings);
+        }
+    }
+
+    #[test]
+    fn svg_style_css_split_by_comments_and_cdata_is_read_whole() {
+        // Each pair: the card, and what export writes. The browser joins a
+        // style's text runs and CDATA sections and drops its comments, so a
+        // reference split across them is still one reference; the pieces
+        // before and after the change stay as written.
+        for (html, want) in [
+            (
+                r#"<svg><style>/*k*/<!--a-->@import "https://cdnjs.cloudflare.com/x/<!--c-->css/b.css";.z{}<!--d-->.y{}</style></svg>"#,
+                r#"<svg><style>/*k*/<!--a-->.b{}.z{}<!--d-->.y{}</style></svg>"#,
+            ),
+            (
+                r#"<svg><style><![CDATA[@import "https://cdnjs.cloudflare.com/x/css/]]>m.css?a=1&amp;b=2";.c{}</style></svg>"#,
+                r#"<svg><style><![CDATA[.m>b{content:"<b>&amp;"}.c{}]]></style></svg>"#,
+            ),
+            (
+                r#"<svg><style>@import "https://cdnjs.cloudflare.com/x/css/<![CDATA[end.css";]]></style></svg>"#,
+                r#"<svg><style>.e::after{content:"]]&gt;"}</style></svg>"#,
+            ),
+            (
+                // Multi-byte text on both sides of the change.
+                r#"<svg><style>/*é*/<!--a-->@import "https://cdnjs.cloudflare.com/x/<!--c-->css/b.css";.é{}</style></svg>"#,
+                r#"<svg><style>/*é*/<!--a-->.b{}.é{}</style></svg>"#,
+            ),
+            (
+                // A bogus comment and an ignored doctype split it too.
+                r#"<math><style>.f{src:url(https://cdnjs.cloudflare.com/x/font/<?p?>f.woff2</ x>?v=1<!doctype x>)}</style></math>"#,
+                r#"<math><style>.f{src:url("data:font/woff2;base64,YWI="<!doctype x>)}</style></math>"#,
+            ),
+            (
+                // Nothing to inline: every piece stays as written.
+                r#"<svg><style>.c{content:"&#169;"}<!--x--><![CDATA[.d{}]]><?p></style></svg>"#,
+                r#"<svg><style>.c{content:"&#169;"}<!--x--><![CDATA[.d{}]]><?p></style></svg>"#,
             ),
         ] {
             let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
