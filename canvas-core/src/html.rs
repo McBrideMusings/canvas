@@ -79,10 +79,12 @@ enum Tok {
 }
 
 /// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
-/// `<title>`, `<textarea>`, `<xmp>`, `<iframe>`, `<noembed>` or `<noframes>`
-/// element holds no tags, so after its opening tag the scan resumes at its
-/// closing tag, which the tag's `text_end` holds; after `<plaintext>` the
-/// rest of the HTML is its text. In
+/// `<title>`, `<textarea>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>` or
+/// `<noscript>` element holds no tags, so after its opening tag the scan
+/// resumes at its closing tag, which the tag's `text_end` holds; after
+/// `<plaintext>` the rest of the HTML is its text. The scan reads HTML as a
+/// document with scripting on, as a card frame, an artifact and an exported
+/// page all run, which is what makes `<noscript>` raw text. In
 /// SVG or MathML those elements hold markup like any other, and a
 /// `<![CDATA[` section there is one tag through its `]]>`, except at an
 /// integration point such as `<foreignObject>`.
@@ -467,8 +469,8 @@ impl Tags<'_> {
         }
         match name {
             // In HTML `<style/>` still opens its text.
-            "iframe" | "noembed" | "noframes" | "script" | "style" | "textarea" | "title"
-            | "xmp" => Some(closing_tag_start(self.html, end, name)),
+            "iframe" | "noembed" | "noframes" | "noscript" | "script" | "style" | "textarea"
+            | "title" | "xmp" => Some(closing_tag_start(self.html, end, name)),
             // Nothing after `<plaintext>` is a tag, its own end tag included.
             "plaintext" => Some(self.html.len()),
             _ => None,
@@ -1960,8 +1962,8 @@ const BLOCK_TAGS: &[&str] = &[
 ];
 
 /// `html` with every tag removed, the contents of `<script>`, `<style>`,
-/// `<iframe>`, `<noembed>`, `<noframes>` and `<template>` dropped, each block
-/// tag starting a new line, and every character reference decoded once
+/// `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>` and `<template>`
+/// dropped, each block tag starting a new line, and every character reference decoded once
 /// ([`decode_entities`]), each run of text between two tags on its own, as
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
 /// written, since the parser decodes nothing there.
@@ -2002,7 +2004,7 @@ fn read_visible(html: &str, scan: &mut Tags, close: Option<&str>) -> (String, bo
             return (out, true);
         }
         match name.as_deref() {
-            Some("script" | "style" | "iframe" | "noembed" | "noframes") => {
+            Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
                 pos = text_end.unwrap_or(end)
             }
             // Both open and close a block; the opening tag's raw text follows.
@@ -2102,7 +2104,8 @@ mod tests {
         // image for any of these: `</scriptx>` is not `</script>`, nor is a
         // vertical tab or no-break space after the name.
         for el in [
-            "iframe", "noembed", "noframes", "script", "style", "textarea", "title", "xmp",
+            "iframe", "noembed", "noframes", "noscript", "script", "style", "textarea", "title",
+            "xmp",
         ] {
             for tail in ["x>", "\u{b}>", "\u{a0}>"] {
                 let html = format!("<{el}>x</{el}{tail}<img src=a.png>");
@@ -2517,7 +2520,7 @@ mod tests {
     }
 
     #[test]
-    fn xmp_iframe_noembed_noframes_and_plaintext_hold_text() {
+    fn raw_text_elements_and_plaintext_hold_text() {
         let html = "<plaintext><b>x</b></plaintext>";
         let ends: Vec<(&str, Option<usize>)> = tags(html)
             .map(|t| (&html[t.start..t.end], t.text_end))
@@ -2533,6 +2536,13 @@ mod tests {
             ("<iframe><b>x</b></iframe>", 0),
             ("<noembed><b>x</b></noembed>", 0),
             ("<noframes><b>x</b></noframes>", 0),
+            // A card frame runs scripts, so `<noscript>` is raw text too:
+            // DOMParser, with scripting off, would build the `<b>`.
+            ("<noscript><b>x</b></noscript>", 0),
+            ("<noscript></noscript ><b>x</b>", 1),
+            ("<p>Hi<noscript><p>No JS</p></noscript></p>", 0),
+            ("<table><tr><td>x</td></tr><noscript><b>x</b></noscript></table>", 0),
+            ("<svg><noscript><b>x</b></noscript></svg>", 1),
             ("<iframe><b>x</b>", 0),
             ("<plaintext><b>x</b></plaintext><b>y</b>", 0),
             ("<xmp></xmp><b>x</b>", 1),
@@ -2564,6 +2574,11 @@ mod tests {
                 "<svg><foreignObject><xmp><div></xmp></foreignObject><style/><b>x</b></style>",
                 1,
             ),
+            (
+                "<svg><foreignObject><noscript><div></noscript></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            ("<math><mi><noscript><b>x</b></noscript></mi></math>", 0),
             // `<xmp>` reopens the closed `<strong>` before it opens; nothing
             // reopens it inside an `<iframe>`.
             (
@@ -3198,6 +3213,7 @@ mod tests {
             ("<iframe src=x><p>fallback</p></iframe><p>Real</p>", "Real"),
             ("<noembed>no &amp; embed</noembed><p>Real</p>", "Real"),
             ("<noframes><p>no</p></noframes><p>Real</p>", "Real"),
+            ("<noscript><p>Enable JS</p></noscript><p>Real</p>", "Real"),
             ("<xmp><b>&lt;</b></xmp>", "<b>&lt;</b>"),
             ("<plaintext>a &amp; <b>", "a &amp; <b>"),
             ("<template><xmp>x</xmp></template><p>Real</p>", "Real"),
