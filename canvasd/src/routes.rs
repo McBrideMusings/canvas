@@ -141,22 +141,13 @@ fn resolve_image_placeholders(html: &str, card_id: &str) -> String {
 }
 
 /// A 400 naming the end tag, when `html` holds one that would freeze
-/// Canvas.app's WebKit (`canvas_core::html::webkit_freeze`): a card that
-/// reached a viewer would pin it at 100% CPU, and come back on every reload.
+/// Canvas.app's WebKit (`canvas_core::html::webkit_freeze_reason`): a card
+/// that reached a viewer would pin it at 100% CPU, and come back on every
+/// reload.
 fn refuse_freezing(html: &str) -> Option<Response> {
-    let at = canvas_core::html::webkit_freeze(html)?;
-    let end = canvas_core::html::next_tag(html, at).map_or(html.len(), |(_, end)| end);
-    // An end tag may hold newlines before its `>`; the reason stays one line.
-    let tag = html[at..end]
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    canvas_core::log::warn("card refused", &[("tag", &tag), ("byte", &at)]);
-    let message = format!(
-        "card refused: its {tag} at byte {at} closes a table cell nested past \
-         WebKit's 512-element limit, which freezes Canvas.app; nest the table less deeply"
-    );
-    Some((StatusCode::BAD_REQUEST, message).into_response())
+    let reason = canvas_core::html::webkit_freeze_reason(html)?;
+    canvas_core::log::warn("card refused", &[("reason", &reason)]);
+    Some((StatusCode::BAD_REQUEST, format!("card refused: {reason}")).into_response())
 }
 
 /// Every post creates its own card — no open/closed lifecycle, no merging

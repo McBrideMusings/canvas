@@ -70,7 +70,7 @@ pub struct Artifacts {
 
 impl Artifacts {
     pub async fn load(dir: &Path) -> Self {
-        let records = match tokio::fs::read(dir.join(ARTIFACTS_FILE)).await {
+        let mut records = match tokio::fs::read(dir.join(ARTIFACTS_FILE)).await {
             Ok(bytes) => match serde_json::from_slice::<ArtifactsFile>(&bytes) {
                 Ok(file) => file.artifacts,
                 Err(e) => {
@@ -90,6 +90,22 @@ impl Artifacts {
             },
             Err(_) => BTreeMap::new(),
         };
+        // A widget stored before canvasd refused HTML that freezes
+        // Canvas.app's WebKit would freeze every viewer on each start; the
+        // artifact keeps its page and loses only the widget.
+        for record in records.values_mut() {
+            let reason = record
+                .widget_html
+                .as_deref()
+                .and_then(canvas_core::html::webkit_freeze_reason);
+            if let Some(reason) = reason {
+                canvas_core::log::warn(
+                    "widget dropped on load",
+                    &[("id", &record.id), ("reason", &reason)],
+                );
+                record.widget_html = None;
+            }
+        }
         Artifacts {
             records,
             fingerprints: HashMap::new(),
@@ -315,6 +331,10 @@ pub fn apply_extras(
                 "a widget is at most {} KB of HTML",
                 MAX_WIDGET_BYTES / 1024
             ));
+        }
+        // The viewer frames a widget as it does a card.
+        if let Some(reason) = canvas_core::html::webkit_freeze_reason(&widget) {
+            return Err(format!("widget refused: {reason}"));
         }
         record.widget_html = Some(widget);
     }

@@ -1692,6 +1692,24 @@ pub fn webkit_freeze(html: &str) -> Option<usize> {
     None
 }
 
+/// Why Canvas.app's WebKit freezes on `html` framed as a card or widget, as
+/// one line naming the end tag [`webkit_freeze`] finds and its offset; the
+/// tag's attributes are left out, so the line stays short whatever the tag
+/// holds. `None` when it holds none.
+pub fn webkit_freeze_reason(html: &str) -> Option<String> {
+    let at = webkit_freeze(html)?;
+    // Past the `</`, which the scan only reads as an end tag before a letter.
+    let rest = &html[at + 2..];
+    let len = rest
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(rest.len());
+    let name = rest[..len].to_ascii_lowercase();
+    Some(format!(
+        "its </{name}> at byte {at} closes a table cell nested past WebKit's \
+         512-element limit, which freezes Canvas.app; nest the table less deeply"
+    ))
+}
+
 /// The offset of the first end tag for `name` at or after `from`, any case,
 /// or the end of the HTML: `</name` followed by a space, tab, line feed, form
 /// feed, carriage return, `/` or `>`, as the tokenizer's appropriate end tag
@@ -2265,6 +2283,22 @@ mod tests {
         ] {
             assert_eq!(webkit_freeze(&deep(k, tail)), None, "{k} {tail}");
         }
+        // The reason names the tag alone, however much the tag holds.
+        let padded = deep(
+            505,
+            &format!("<table><tr><td><svg></TABLE\n{}>", "x ".repeat(5_000)),
+        );
+        assert_eq!(
+            webkit_freeze_reason(&padded).as_deref(),
+            Some(
+                "its </table> at byte 2545 closes a table cell nested past WebKit's \
+                 512-element limit, which freezes Canvas.app; nest the table less deeply"
+            )
+        );
+        assert_eq!(
+            webkit_freeze_reason(&deep(504, "<table><tr><td><svg></table>")),
+            None
+        );
     }
 
     #[test]
