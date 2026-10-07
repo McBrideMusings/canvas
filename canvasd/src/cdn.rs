@@ -132,9 +132,42 @@ fn request_url(url: &str, origin: Option<&str>, honor: bool) -> String {
 /// Most redirects one download follows, each to an allowed host.
 const MAX_REDIRECTS: usize = 5;
 
-/// Downloads `url`, which `allowed` has passed, within `timeout`. Errors are
-/// one line naming why, for an export warning's `reason`.
-pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+/// A download's body and the URL it came from after any redirects, which is
+/// what the body's own relative references resolve against.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub body: Vec<u8>,
+    pub url: String,
+}
+
+/// How an export downloads one URL within a timeout. Errors are one line
+/// naming why, for an export warning's `reason`.
+pub trait Fetch {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String>;
+}
+
+/// A downloader that answers with bodies alone, so each comes from the URL
+/// asked for, as a test's stand-in does.
+impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Fetch for F {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String> {
+        self(url, timeout).map(|body| Fetched {
+            body,
+            url: url.to_string(),
+        })
+    }
+}
+
+/// Downloads from the CDN hosts themselves (`fetch`).
+pub struct Network;
+
+impl Fetch for Network {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String> {
+        fetch(url, timeout)
+    }
+}
+
+/// Downloads `url`, which `allowed` has passed, within `timeout`.
+pub fn fetch(url: &str, timeout: Duration) -> Result<Fetched, String> {
     let origin = std::env::var(OVERRIDE_ENV).ok();
     let started = Instant::now();
     let result = download(
@@ -146,9 +179,14 @@ pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     );
     let ms = started.elapsed().as_millis();
     match &result {
-        Ok(bytes) => canvas_core::log::info(
+        Ok(fetched) => canvas_core::log::info(
             "export fetch",
-            &[("url", &url), ("bytes", &bytes.len()), ("ms", &ms)],
+            &[
+                ("url", &url),
+                ("from", &fetched.url),
+                ("bytes", &fetched.body.len()),
+                ("ms", &ms),
+            ],
         ),
         Err(reason) => canvas_core::log::warn(
             "export fetch failed",
@@ -357,7 +395,7 @@ fn download(
     route: impl Fn(&str) -> String,
     tls: &Arc<rustls::ClientConfig>,
     lookup: &Lookup,
-) -> Result<Vec<u8>, String> {
+) -> Result<Fetched, String> {
     let deadline = Instant::now() + timeout;
     let timed_out = || format!("timed out after {}s", timeout.as_secs_f32().ceil());
     let mut current = url.to_string();
@@ -392,7 +430,10 @@ fn download(
                     first_line(e.to_string())
                 }
             })?;
-        return Ok(bytes);
+        return Ok(Fetched {
+            body: bytes,
+            url: current,
+        });
     }
     Err(format!("more than {MAX_REDIRECTS} redirects"))
 }
@@ -579,7 +620,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &system_lookup(),
-        );
+        )
+        .map(|f| f.body);
         assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
@@ -594,7 +636,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &system_lookup(),
-        );
+        )
+        .map(|f| f.body);
         assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
         // The first connection gets half the 4s to shake hands.
         let ms = started.elapsed().as_millis();
@@ -612,7 +655,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &system_lookup(),
-        );
+        )
+        .map(|f| f.body);
         assert_eq!(body, Err("timed out after 2s".to_string()));
         let ms = started.elapsed().as_millis();
         assert!((1400..2000).contains(&ms), "took {ms}ms");
@@ -642,7 +686,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &lookup,
-        );
+        )
+        .map(|f| f.body);
         assert_eq!(body, Err("timed out after 1s".to_string()));
         let ms = started.elapsed().as_millis();
         assert!((950..1500).contains(&ms), "took {ms}ms");
@@ -660,7 +705,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &lookup,
-        );
+        )
+        .map(|f| f.body);
         assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -676,7 +722,8 @@ mod tests {
             |u| u.to_string(),
             &tls,
             &lookup,
-        );
+        )
+        .map(|f| f.body);
         let port = url
             .trim_start_matches("https://localhost:")
             .trim_end_matches('/');

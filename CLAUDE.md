@@ -193,7 +193,15 @@ beside the terminal all day.
   cap; each request looks its host up once within that limit, before any connection's
   setup time starts; a connection whose TCP connect or TLS handshake outlasts half the time
   left is dropped for a fresh one, at most three, logging `export fetch setup
-  stalled`) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
+  stalled`; a module's specifiers and a stylesheet's `@import`s and `url()`s resolve
+  from the URL its download landed on after redirects, `cdn::Fetched`) and inlined —
+  classic scripts and styles as blocks, fonts as `data:` URIs,
+  a `<script type="module" src>` and every module it reaches on those hosts as
+  `data:` URIs in one `<script type="importmap">` in the head (each module's
+  specifiers read by oxc, `canvasd/src/esm.rs`, each one naming an http(s) URL
+  written as that absolute URL; the element becomes `import "<url>";`; the card's own
+  import maps merge into that one, theirs winning, a module that can't be fetched
+  or parsed staying on the network with a `fetch-failed` warning), an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. An imported sheet is first closed as its own end
@@ -220,7 +228,7 @@ beside the terminal all day.
   sheet's own rules stays as written, never fetched. `export_card` drops a
   `fetch-failed` warning whose URL's content went into the page through another
   reference (`Cdn`'s list of inlined URLs). Each download
-  logs `export fetch` or `export fetch failed`. A debug build fetches through
+  logs `export fetch` (with `from`, the URL it landed on) or `export fetch failed`. A debug build fetches through
   `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build
   ignores it. None of `buildIframeDoc`'s theming, sizing or sandbox is
   carried; `prefers-color-scheme` rules stay, so the reader's system picks.

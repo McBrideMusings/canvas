@@ -227,7 +227,7 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
                     .read_to_end(&mut bytes)?;
                 Ok(bytes)
             },
-            crate::cdn::fetch,
+            crate::cdn::Network,
         )
     })
     .await;

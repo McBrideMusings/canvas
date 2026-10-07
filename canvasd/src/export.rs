@@ -10,7 +10,7 @@
 //! network; one that can't be fetched stays a link and warns. Pure apart from
 //! the injected file reader and downloader, which are the test seams.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::ops::Range;
 use std::path::Path;
@@ -25,7 +25,10 @@ use canvas_core::{
     MAX_ASSET_BYTES, MAX_MEDIA_BYTES, MEDIA_EXTS,
 };
 
-use crate::cdn;
+use serde_json::{Map, Value};
+
+use crate::cdn::{self, Fetched};
+use crate::esm;
 
 /// How many `@import`s deep a CDN stylesheet is followed.
 const MAX_IMPORT_DEPTH: usize = 4;
@@ -42,11 +45,11 @@ pub fn export_card(
     card: &Card,
     data: Option<&serde_json::Value>,
     read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
-    fetch: impl Fn(&str, Duration) -> Result<Vec<u8>, String>,
+    fetch: impl cdn::Fetch,
 ) -> ExportResult {
     let mut warnings = Vec::new();
     let mut cdn = Cdn::new(fetch, Duration::from_secs(EXPORT_DOWNLOAD_SECS));
-    let body = rewrite(card, &read, &mut cdn, &mut warnings);
+    let (body, card_maps) = rewrite(card, &read, &mut cdn, &mut warnings);
     // A file one reference left as a link while another put it in the page
     // isn't missing from the page.
     warnings
@@ -56,6 +59,9 @@ pub fn export_card(
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     html.push_str(&format!("<title>{title}</title>"));
+    if let Some(map) = import_map(&card_maps, &cdn.modules) {
+        html.push_str(&format!("<script type=\"importmap\">{map}</script>"));
+    }
     // A post replies to the viewer with parent.postMessage; at the top level
     // parent is this window, so the reply is stopped here before the page's
     // own listeners see it.
@@ -97,12 +103,12 @@ fn data_shim(value: &serde_json::Value) -> String {
     )
 }
 
-fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
+fn rewrite<F: cdn::Fetch>(
     card: &Card,
     read: &impl Fn(&str, u64) -> io::Result<Vec<u8>>,
     cdn: &mut Cdn<F>,
     warnings: &mut Vec<ExportWarning>,
-) -> String {
+) -> (String, Vec<Map<String, Value>>) {
     let html = card.html.as_str();
     let image_prefix = format!("/api/cards/{}/images/", card.id);
     let mut out = String::with_capacity(html.len());
@@ -116,6 +122,10 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     // tag that closes it so its CSS is read whole. WebKit reads that CSS from
     // every text node inside the style, child elements' included.
     let mut markup_style: Option<(usize, Vec<StylePiece>)> = None;
+    // The card's own import maps, in order, and whether the next tag is
+    // the end tag of one just taken.
+    let mut card_maps = Vec::new();
+    let mut drop_end_tag = false;
 
     let mut scan = tags(html);
     while let Some(Tag {
@@ -149,6 +159,13 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         }
 
         if tag.starts_with("</") {
+            // The end tag of a card import map moved to the head.
+            if drop_end_tag {
+                drop_end_tag = false;
+                if closing_name(tag) == "script" {
+                    continue;
+                }
+            }
             if closing_name(tag) == "a" && anchors.pop() == Some(true) {
                 continue;
             }
@@ -234,6 +251,25 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
             // stays as written.
             Some("script" | "link") if foreign => out.push_str(tag),
             Some("script") => {
+                let kind = script_type(tag);
+                // The card's import map joins the page's one, in the head.
+                if kind == "importmap" && find_attr_value(tag, "src").is_none() {
+                    let map = text_end.and_then(|text_end| {
+                        match serde_json::from_str(&html[end..text_end]) {
+                            Ok(Value::Object(map)) => Some((map, text_end)),
+                            _ => None,
+                        }
+                    });
+                    match map {
+                        Some((map, text_end)) => {
+                            card_maps.push(map);
+                            pos = text_end;
+                            drop_end_tag = true;
+                        }
+                        None => out.push_str(tag),
+                    }
+                    continue;
+                }
                 let src = find_attr_value(tag, "src")
                     .and_then(|src| Some((src, cdn::join(None, &attr_url(&tag[src.range()]))?)))
                     .filter(|(_, url)| cdn::allowed(url));
@@ -241,6 +277,24 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     out.push_str(tag);
                     continue;
                 };
+                // A module's own imports resolve against its URL, which an
+                // inlined body would lose: the import map serves it and
+                // the modules it reaches, and the element imports it.
+                if kind == "module" {
+                    match cdn.module_graph(&url, warnings) {
+                        Some(key) => {
+                            out.push_str(&without_attr(tag, "src", src));
+                            let import = format!(
+                                "import {};",
+                                serde_json::to_string(&key).unwrap_or_default()
+                            );
+                            out.push_str(&escape_raw(&import, "script"));
+                            pos = text_end.unwrap_or(end);
+                        }
+                        None => out.push_str(tag),
+                    }
+                    continue;
+                }
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
                         out.push_str(&without_attr(tag, "src", src));
@@ -259,8 +313,9 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
                         cdn.importing.push(url.clone());
+                        let from = cdn.source_url(&url);
                         let css =
-                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&url), 0, warnings);
+                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&from), 0, warnings);
                         cdn.importing.pop();
                         match find_attr_value(tag, "media") {
                             Some(media) => out.push_str(&format!(
@@ -305,7 +360,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         }
         None => out.push_str(text),
     }
-    out
+    (out, card_maps)
 }
 
 /// One node of an SVG or MathML `<style>`, as written.
@@ -383,7 +438,7 @@ struct Cdn<F> {
     fetch: F,
     budget: Duration,
     deadline: Instant,
-    cache: HashMap<String, Result<Vec<u8>, String>>,
+    cache: HashMap<String, Result<Fetched, String>>,
     warned: HashSet<String>,
     /// Every URL whose content went into the page, in order, so a
     /// stylesheet's expansion that is thrown away can drop its own.
@@ -399,9 +454,15 @@ struct Cdn<F> {
     /// Every `@import` written out as a link, in order, so a stylesheet
     /// about to be wrapped in a block can tell whether it holds one.
     linked: Vec<String>,
+    /// Every module a module script reaches on the CDN hosts, in the order
+    /// fetched, as its URL and its source with each URL-like specifier
+    /// written absolute, for the page's import map.
+    modules: Vec<(String, String)>,
+    /// Every module URL `module_graph` has taken up, so each is read once.
+    module_seen: HashSet<String>,
 }
 
-impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
+impl<F: cdn::Fetch> Cdn<F> {
     fn new(fetch: F, budget: Duration) -> Self {
         Cdn {
             fetch,
@@ -414,6 +475,8 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             refused: 0,
             importing: Vec::new(),
             linked: Vec::new(),
+            modules: Vec::new(),
+            module_seen: HashSet::new(),
         }
     }
 
@@ -443,6 +506,15 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         self.linked.drain(added.linked.clone());
     }
 
+    /// The URL `url`'s body came from after any redirects, which its own
+    /// relative references resolve against; `url` itself until it is fetched.
+    fn source_url(&self, url: &str) -> String {
+        match self.cache.get(url) {
+            Some(Ok(fetched)) => fetched.url.clone(),
+            _ => url.to_string(),
+        }
+    }
+
     /// The body of `url`, recorded as in the page, or None after a
     /// `fetch-failed` warning naming it. Every caller puts the body in the
     /// page, or undoes the record ([`Cdn::undo`]) when it throws it away.
@@ -455,25 +527,27 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     self.budget.as_secs()
                 ))
             } else {
-                (self.fetch)(url, left.min(cdn::TIMEOUT)).and_then(|bytes| {
-                    if bytes.len() > MAX_ASSET_BYTES {
-                        Err(format!("over {} KB", MAX_ASSET_BYTES / 1024))
-                    } else {
-                        Ok(bytes)
-                    }
-                })
+                self.fetch
+                    .fetch(url, left.min(cdn::TIMEOUT))
+                    .and_then(|fetched| {
+                        if fetched.body.len() > MAX_ASSET_BYTES {
+                            Err(format!("over {} KB", MAX_ASSET_BYTES / 1024))
+                        } else {
+                            Ok(fetched)
+                        }
+                    })
             };
             self.cache.insert(url.to_string(), result);
         }
         let result = match self.cache.get(url) {
-            Some(Ok(bytes)) if self.inlined + bytes.len() > MAX_INLINED_BYTES => {
-                self.refused += bytes.len();
+            Some(Ok(fetched)) if self.inlined + fetched.body.len() > MAX_INLINED_BYTES => {
+                self.refused += fetched.body.len();
                 Err(format!(
                     "skipped: the export already inlined {} MB",
                     MAX_INLINED_BYTES / (1024 * 1024)
                 ))
             }
-            Some(Ok(bytes)) => Ok(bytes.clone()),
+            Some(Ok(fetched)) => Ok(fetched.body.clone()),
             Some(Err(reason)) => Err(reason.clone()),
             None => return None,
         };
@@ -500,6 +574,59 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                 reason,
             });
         }
+    }
+
+    /// Fetches the module at `url` and every module on the CDN hosts it
+    /// reaches, each kept in `modules` with every specifier that names an
+    /// http(s) URL written as that absolute URL, resolved from its own URL,
+    /// since the import map serves it from a `data:` URI with no path to
+    /// resolve a relative one against. Answers the key `url` is kept under, or None
+    /// when it can't be fetched or read (after a `fetch-failed` warning
+    /// naming it). A module it reaches that can't stays out of the map, so
+    /// its absolute URL loads from the network.
+    fn module_graph(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<String> {
+        let key = module_url(url::Url::parse(url).ok()?)?;
+        let mut queue = VecDeque::new();
+        if self.module_seen.insert(key.clone()) {
+            queue.push_back(key.clone());
+        }
+        while let Some(next) = queue.pop_front() {
+            let mark = self.mark();
+            let Some(bytes) = self.get(&next, warnings) else {
+                continue;
+            };
+            let source = String::from_utf8_lossy(&bytes);
+            match esm::specifiers(&source) {
+                Ok(specifiers) => {
+                    let base = url::Url::parse(&self.source_url(&next)).ok();
+                    let mut text = String::with_capacity(source.len());
+                    let mut copied = 0;
+                    for s in specifiers {
+                        let Some(target) = resolve_specifier(&s.value, base.as_ref()) else {
+                            continue;
+                        };
+                        if cdn::allowed(&target) && self.module_seen.insert(target.clone()) {
+                            queue.push_back(target.clone());
+                        }
+                        text.push_str(&source[copied..s.range.start]);
+                        text.push_str(&serde_json::to_string(&target).unwrap_or_default());
+                        copied = s.range.end;
+                    }
+                    text.push_str(&source[copied..]);
+                    self.modules.push((next, text));
+                }
+                Err(e) => {
+                    let added = self.since(mark);
+                    self.undo(&added);
+                    self.warn(
+                        &next,
+                        format!("not a module the export can read: {e}"),
+                        warnings,
+                    );
+                }
+            }
+        }
+        self.modules.iter().any(|(k, _)| *k == key).then_some(key)
     }
 
     /// [`Cdn::css`] of an SVG or MathML `<style>` written as `pieces`. The
@@ -715,9 +842,10 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     let start = self.mark();
                     self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
+                        let from = self.source_url(u);
                         let text = self.css(
                             &closed_at_end(&String::from_utf8_lossy(&bytes)),
-                            Some(u),
+                            Some(&from),
                             depth + 1,
                             warnings,
                         );
@@ -1405,6 +1533,76 @@ fn attr_url(value: &str) -> String {
     value.trim().replace("&amp;", "&")
 }
 
+/// The http(s) URL `specifier` names from a module at `base`, resolved the
+/// way the browser resolves it, or None for a bare specifier (left to an
+/// import map) or any other scheme.
+fn resolve_specifier(specifier: &str, base: Option<&url::Url>) -> Option<String> {
+    let relative = ["/", "./", "../"].iter().any(|p| specifier.starts_with(p));
+    let url = if relative {
+        base?.join(specifier).ok()?
+    } else {
+        url::Url::parse(specifier).ok()?
+    };
+    module_url(url)
+}
+
+/// `url` serialized, when it is http(s).
+fn module_url(url: url::Url) -> Option<String> {
+    matches!(url.scheme(), "http" | "https").then(|| url.to_string())
+}
+
+/// The page's one import map: the card's own maps merged, the first to name
+/// an entry keeping it, then each fetched module under its URL as a `data:`
+/// URI wherever the card's maps don't already name that URL. None when there
+/// is nothing to map.
+fn import_map(card_maps: &[Map<String, Value>], modules: &[(String, String)]) -> Option<String> {
+    if card_maps.is_empty() && modules.is_empty() {
+        return None;
+    }
+    let mut merged = Map::new();
+    for map in card_maps {
+        for (key, value) in map {
+            match (merged.get_mut(key), value) {
+                (None, _) => {
+                    merged.insert(key.clone(), value.clone());
+                }
+                (Some(Value::Object(have)), Value::Object(add)) => {
+                    for (k, v) in add {
+                        have.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if !modules.is_empty() {
+        let imports = merged
+            .entry("imports")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Value::Object(imports) = imports {
+            for (url, source) in modules {
+                imports.entry(url.clone()).or_insert_with(|| {
+                    Value::String(format!(
+                        "data:text/javascript;base64,{}",
+                        base64(source.as_bytes())
+                    ))
+                });
+            }
+        }
+    }
+    // `<` escaped so the map can't close its script element.
+    serde_json::to_string(&Value::Object(merged))
+        .ok()
+        .map(|json| json.replace('<', "\\u003c"))
+}
+
+/// A `<script>`'s `type`, trimmed and lowercased; empty when it has none.
+fn script_type(tag: &str) -> String {
+    find_attr_value(tag, "type")
+        .map(|t| decode_entities(&tag[t.range()]).trim().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 /// `tag` with its `name="…"` (or unquoted `name=…`) attribute, whose value
 /// is `value`, removed.
 fn without_attr(tag: &str, name: &str, value: AttrValue) -> String {
@@ -2041,6 +2239,144 @@ mod tests {
             .html
             .contains(r#"<style>.a{background:url("https://unpkg.com/p/i.png")}</style>"#));
         assert_eq!(r.warnings.len(), 1);
+    }
+
+    /// The page's import map, parsed.
+    fn page_map(html: &str) -> serde_json::Value {
+        let start = html
+            .find("<script type=\"importmap\">")
+            .expect("an import map")
+            + 25;
+        let end = start + html[start..].find("</script>").unwrap();
+        serde_json::from_str(&html[start..end]).unwrap()
+    }
+
+    fn js_data(source: &str) -> serde_json::Value {
+        format!("data:text/javascript;base64,{}", base64(source.as_bytes())).into()
+    }
+
+    const LIT: &str = "https://cdn.jsdelivr.net/npm/lit@3/+esm";
+
+    #[test]
+    fn a_module_and_every_module_it_reaches_go_in_the_import_map() {
+        let c = card(
+            &format!(r#"<script type="module" async src="{LIT}"></script><p>x</p>"#),
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            match url {
+            LIT => Ok(br#"import"/npm/a@1/+esm";export*from"./b.js";import{c}from"lit";import"https://example.com/x.js";const r=/import"\/npm\/x"/;"#.to_vec()),
+            "https://cdn.jsdelivr.net/npm/a@1/+esm" => {
+                Ok(br#"export default 1;import("/npm/lazy/+esm");import"/npm/lit@3/+esm";"#.to_vec())
+            }
+            "https://cdn.jsdelivr.net/npm/lit@3/b.js" => Ok(b"export const b=2;".to_vec()),
+            "https://cdn.jsdelivr.net/npm/lazy/+esm" => Ok(b"export const z=3;".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        }
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert_eq!(r.warnings, []);
+        assert!(
+            r.html.contains(&format!(
+                r#"<script type="module" async>import "{LIT}";</script><p>x</p>"#
+            )),
+            "{}",
+            r.html
+        );
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({"imports": {
+                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/a@1/+esm";export*from"https://cdn.jsdelivr.net/npm/lit@3/b.js";import{c}from"lit";import"https://example.com/x.js";const r=/import"\/npm\/x"/;"#),
+                "https://cdn.jsdelivr.net/npm/a@1/+esm": js_data(r#"export default 1;import("https://cdn.jsdelivr.net/npm/lazy/+esm");import"https://cdn.jsdelivr.net/npm/lit@3/+esm";"#),
+                "https://cdn.jsdelivr.net/npm/lit@3/b.js": js_data("export const b=2;"),
+                "https://cdn.jsdelivr.net/npm/lazy/+esm": js_data("export const z=3;"),
+            }})
+        );
+        // Ahead of every script in the page.
+        assert!(r.html.find("importmap").unwrap() < r.html.find("<script>").unwrap());
+    }
+
+    #[test]
+    fn a_module_reached_that_cant_be_fetched_or_read_stays_on_the_network() {
+        let c = card(
+            &format!(r#"<script type="module" src="{LIT}"></script>"#),
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            LIT => Ok(br#"import"/npm/gone/+esm";import"/npm/bad/+esm";"#.to_vec()),
+            "https://cdn.jsdelivr.net/npm/bad/+esm" => Ok(b"import { from".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let targets: Vec<_> = r.warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                "https://cdn.jsdelivr.net/npm/gone/+esm",
+                "https://cdn.jsdelivr.net/npm/bad/+esm"
+            ]
+        );
+        assert!(r.warnings[1]
+            .reason
+            .starts_with("not a module the export can read: "));
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({"imports": {
+                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/gone/+esm";import"https://cdn.jsdelivr.net/npm/bad/+esm";"#),
+            }})
+        );
+    }
+
+    #[test]
+    fn a_module_that_cant_be_read_stays_a_link() {
+        let tag = format!(r#"<script type="module" src="{LIT}"></script>"#);
+        let c = card(&tag, &[], &[]);
+        let fetch = |_: &str, _: Duration| Ok(b"export {".to_vec());
+        let r = export_card(&c, None, files, fetch);
+        assert!(r.html.contains(&tag));
+        assert!(!r.html.contains("importmap"));
+        assert_eq!(r.warnings.len(), 1);
+        assert_eq!(r.warnings[0].target, LIT);
+    }
+
+    #[test]
+    fn the_cards_import_maps_merge_into_the_pages_one() {
+        let c = card(
+            &format!(
+                r#"<script type="importmap">{{"imports":{{"lit":"{LIT}","https://cdn.jsdelivr.net/npm/b/+esm":"./mine.js"}},"scopes":{{"/s/":{{"x":"./x.js"}}}}}}</script><script type="importmap">{{"imports":{{"lit":"./other.js","y":"./y.js"}}}}</script><script type="importmap">not json</script><script type="module" src="{LIT}"></script>"#
+            ),
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            LIT => Ok(br#"import"/npm/b/+esm";"#.to_vec()),
+            "https://cdn.jsdelivr.net/npm/b/+esm" => Ok(b"export{}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({
+                "imports": {
+                    "lit": LIT,
+                    "https://cdn.jsdelivr.net/npm/b/+esm": "./mine.js",
+                    "y": "./y.js",
+                    LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/b/+esm";"#),
+                },
+                "scopes": {"/s/": {"x": "./x.js"}},
+            })
+        );
+        assert_eq!(r.html.matches("<script type=\"importmap\">").count(), 2);
+        // Both taken whole, end tags included; the one that isn't JSON stays.
+        assert!(
+            r.html.contains(
+                r#"<div class="canvas-export"><script type="importmap">not json</script><script type="module">"#
+            ),
+            "{}",
+            r.html
+        );
     }
 
     #[test]

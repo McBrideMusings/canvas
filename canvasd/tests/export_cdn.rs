@@ -45,6 +45,9 @@ fn serve(mut stream: std::net::TcpStream) {
     let location = match path {
         "/unpkg.com/moved.js" => Some("/cdnjs.cloudflare.com/ajax/libs/lib/1.0/lib.min.js"),
         "/unpkg.com/away.js" => Some("https://example.com/x.js"),
+        "/unpkg.com/lit" => Some("https://unpkg.com/lit@3/index.js"),
+        "/unpkg.com/theme" => Some("https://unpkg.com/theme@2/a.css"),
+        "/unpkg.com/sub" => Some("https://unpkg.com/theme@2/sub/s.css"),
         _ => None,
     };
     if let Some(location) = location {
@@ -66,6 +69,18 @@ fn serve(mut stream: std::net::TcpStream) {
                 .to_vec(),
         ),
         "/fonts.gstatic.com/s/f/v1/f.woff2" => ("200 OK", b"wOF2".to_vec()),
+        "/unpkg.com/lit@3/index.js" => (
+            "200 OK",
+            b"import\"./lit-html.js\";export const v=1;".to_vec(),
+        ),
+        "/unpkg.com/lit@3/lit-html.js" => ("200 OK", b"export const h=2;".to_vec()),
+        "/unpkg.com/theme@2/a.css" => (
+            "200 OK",
+            b"@import \"b.css\";@import \"https://unpkg.com/sub\";.a{color:red}".to_vec(),
+        ),
+        "/unpkg.com/theme@2/sub/s.css" => ("200 OK", b"@import \"c.css\";.s{}".to_vec()),
+        "/unpkg.com/theme@2/sub/c.css" => ("200 OK", b".c{color:green}".to_vec()),
+        "/unpkg.com/theme@2/b.css" => ("200 OK", b".b{color:blue}".to_vec()),
         "/unpkg.com/big.js" => ("200 OK", vec![b'x'; MAX_ASSET_BYTES + 100]),
         "/unpkg.com/slow.js" => {
             std::thread::sleep(Duration::from_secs(12));
@@ -120,6 +135,37 @@ async fn scripts_stylesheets_imports_and_fonts_are_inlined() {
     assert!(r.html.contains(
         r#"<style>@font-face{font-family:F;src:url("data:font/woff2;base64,d09GMg==") format('woff2')}.a{color:red}</style>"#
     ), "{}", r.html);
+}
+
+#[tokio::test]
+async fn references_in_a_redirected_download_resolve_from_where_it_landed() {
+    let r = export(
+        r#"<link rel="stylesheet" href="https://unpkg.com/theme"><script type="module" src="https://unpkg.com/lit"></script>"#,
+    )
+    .await;
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert!(
+        r.html
+            .contains("<style>.b{color:blue}.c{color:green}.s{}.a{color:red}</style>"),
+        "{}",
+        r.html
+    );
+    let start = r.html.find(r#"<script type="importmap">"#).unwrap() + 25;
+    let end = start + r.html[start..].find("</script>").unwrap();
+    let map: serde_json::Value = serde_json::from_str(&r.html[start..end]).unwrap();
+    let data = |js: &str| {
+        format!(
+            "data:text/javascript;base64,{}",
+            canvas_core::base64(js.as_bytes())
+        )
+    };
+    assert_eq!(
+        map,
+        json!({"imports": {
+            "https://unpkg.com/lit": data(r#"import"https://unpkg.com/lit@3/lit-html.js";export const v=1;"#),
+            "https://unpkg.com/lit@3/lit-html.js": data("export const h=2;"),
+        }})
+    );
 }
 
 #[tokio::test]
