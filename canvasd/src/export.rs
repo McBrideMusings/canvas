@@ -435,6 +435,14 @@ impl<'a> StylePiece<'a> {
 
 use record::Cdn;
 
+/// The warning's reason for a URL refused for the inlining total.
+fn over_total_reason() -> String {
+    format!(
+        "skipped: the export already inlined {} MB",
+        MAX_INLINED_BYTES / (1024 * 1024)
+    )
+}
+
 /// The part of [`Cdn`] that keeps the record of the page. A body comes out
 /// of it only inside [`Cdn::inline`], which takes the body's record back
 /// out when the caller throws the body away, so outside this module nothing
@@ -519,6 +527,19 @@ mod record {
             }
         }
 
+        /// Counts `extra` bytes a body grows by on its way into the page
+        /// toward the inlining total, inside the `put` of [`Cdn::inline`] so
+        /// they come back out with the body. False, counting them as
+        /// refused instead, when they would pass `MAX_INLINED_BYTES`.
+        pub(super) fn charge(&mut self, extra: usize) -> bool {
+            if self.inlined + extra > MAX_INLINED_BYTES {
+                self.refused += extra;
+                return false;
+            }
+            self.inlined += extra;
+            true
+        }
+
         /// Where the record of the page stands now, for [`Cdn::since`].
         pub(super) fn mark(&self) -> Mark {
             Mark {
@@ -600,10 +621,7 @@ mod record {
             let result = match self.cache.get(url) {
                 Some(Ok(fetched)) if self.over_total(url).is_some() => {
                     self.refused += fetched.body.len();
-                    Err(format!(
-                        "skipped: the export already inlined {} MB",
-                        MAX_INLINED_BYTES / (1024 * 1024)
-                    ))
+                    Err(over_total_reason())
                 }
                 Some(Ok(fetched)) => Ok(fetched.body.clone()),
                 Some(Err(reason)) => Err(reason.clone()),
@@ -897,11 +915,20 @@ impl<F: cdn::Fetch> Cdn<F> {
                 } else {
                     let (mut blocked, before) = (None, self.inlined());
                     let text = self.inline(u, warnings, |cdn, bytes, warnings| {
+                        let closed = closed_at_end(&String::from_utf8_lossy(&bytes));
+                        // The closers, and any U+FFFD read for a byte that
+                        // isn't UTF-8, count toward the total like its bytes.
+                        let extra = closed.len().saturating_sub(bytes.len());
+                        if !cdn.charge(extra) {
+                            blocked = Some(Some(bytes.len() + extra));
+                            cdn.warn(u, over_total_reason(), warnings);
+                            return None;
+                        }
                         let linked = cdn.linked.len();
                         cdn.importing.push(u.clone());
                         let from = cdn.source_url(u);
                         let text = cdn.css(
-                            &closed_at_end(&String::from_utf8_lossy(&bytes)),
+                            &closed,
                             Some(&from),
                             depth + 1,
                             warnings,
@@ -3476,6 +3503,91 @@ mod tests {
             warnings[0].reason,
             "skipped: the export's 0s download time ran out"
         );
+    }
+
+    #[test]
+    fn the_closers_an_imported_sheet_needs_count_toward_the_total() {
+        // p.css, a block left open on MAX_ASSET_BYTES - 2 `(`, reads as one
+        // byte short of twice its size once closed, so after 14 big sheets
+        // it fits the total with a byte to spare, and after 15 it stays a
+        // link though its own bytes would fit.
+        let mut p = b"a{".to_vec();
+        p.resize(MAX_ASSET_BYTES, b'(');
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/p.css" => Ok(p.clone()),
+            u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let fill = MAX_INLINED_BYTES / MAX_ASSET_BYTES - 2;
+        for big in [fill, fill + 1] {
+            let mut cdn = Cdn::new(fetch.clone(), Duration::from_secs(10));
+            let mut warnings = Vec::new();
+            for n in 0..big {
+                let url = format!("https://unpkg.com/big{n}.css");
+                assert!(keep(&mut cdn, &url, &mut warnings).is_some());
+            }
+            let out = cdn.css(
+                "@import \"p.css\";",
+                Some("https://unpkg.com/a.css"),
+                0,
+                &mut warnings,
+            );
+            if big == fill {
+                assert_eq!(out.len(), 2 * MAX_ASSET_BYTES - 1);
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert_eq!(cdn.inlined(), MAX_INLINED_BYTES - 1);
+            } else {
+                assert_eq!(out, r#"@import url("https://unpkg.com/p.css");"#);
+                let got: Vec<_> = warnings
+                    .iter()
+                    .map(|w| (w.target.as_str(), w.reason.as_str()))
+                    .collect();
+                assert_eq!(
+                    got,
+                    [(
+                        "https://unpkg.com/p.css",
+                        "skipped: the export already inlined 8 MB"
+                    )]
+                );
+                assert_eq!(cdn.inlined(), (fill + 1) * MAX_ASSET_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn a_sheet_short_of_room_for_its_closers_frees_just_enough() {
+        // After 13 big sheets, s1.css and s2.css leave p.css, closed, one
+        // byte over the total; s1.css alone gives that byte back.
+        let mut p = b"a{".to_vec();
+        p.resize(MAX_ASSET_BYTES, b'(');
+        let s1 = format!("p{{}}/*{}*/", "x".repeat(MAX_ASSET_BYTES - 8));
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/p.css" => Ok(p.clone()),
+            "https://unpkg.com/s1.css" => Ok(s1.clone().into_bytes()),
+            "https://unpkg.com/s2.css" => Ok(b"q{}".to_vec()),
+            u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 3 {
+            let url = format!("https://unpkg.com/big{n}.css");
+            assert!(keep(&mut cdn, &url, &mut warnings).is_some());
+        }
+        let out = cdn.css(
+            "@import \"s1.css\";@import \"s2.css\";@import \"p.css\";",
+            Some("https://unpkg.com/a.css"),
+            0,
+            &mut warnings,
+        );
+        assert!(
+            out.starts_with(r#"@import url("https://unpkg.com/s1.css");q{}a{(("#),
+            "{}",
+            &out[..80]
+        );
+        let got: Vec<_> = warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(got, ["https://unpkg.com/s1.css"]);
+        assert_eq!(cdn.inlined(), MAX_INLINED_BYTES - MAX_ASSET_BYTES + 2);
     }
 
     /// The body of `url`, kept in the page.
