@@ -90,7 +90,7 @@ pub fn tags(html: &str) -> Tags<'_> {
     Tags {
         html,
         pos: 0,
-        open: Vec::new(),
+        open: OpenElements::default(),
         formatting: Vec::new(),
         next_id: 0,
         form: None,
@@ -131,7 +131,7 @@ pub struct Tags<'a> {
     /// block, a sibling list item or cell), and a formatting end tag runs the
     /// adoption agency's rounds. Like WebKit's, the stack holds at most
     /// [`MAX_OPEN`] elements: see [`Tags::insert`].
-    open: Vec<Element>,
+    open: OpenElements,
     /// The tree builder's list of active formatting elements, oldest first,
     /// `None` for a marker. An entry outlives its element's place on the
     /// stack: text, and most start tags, first reopen every entry since the
@@ -169,6 +169,66 @@ pub struct Tags<'a> {
 /// wrapper `<div>` that the viewer's card frame and an exported page both put
 /// around a card.
 const MAX_OPEN: usize = 512 - 3;
+
+/// The stack of open elements, innermost last, and how many of them are HTML
+/// `<template>`s, kept as it changes so asking whether the scan is inside one
+/// costs nothing: card_label asks after every tag. Reads go through the
+/// slice; every change goes through a method here, which keeps the count.
+#[derive(Default)]
+struct OpenElements {
+    elements: Vec<Element>,
+    templates: usize,
+}
+
+impl std::ops::Deref for OpenElements {
+    type Target = [Element];
+
+    fn deref(&self) -> &[Element] {
+        &self.elements
+    }
+}
+
+impl OpenElements {
+    fn push(&mut self, element: Element) {
+        self.insert(self.elements.len(), element);
+    }
+
+    fn insert(&mut self, i: usize, element: Element) {
+        self.templates += usize::from(element.is_template());
+        self.elements.insert(i, element);
+    }
+
+    fn pop(&mut self) -> Option<Element> {
+        let element = self.elements.pop()?;
+        self.templates -= usize::from(element.is_template());
+        Some(element)
+    }
+
+    fn remove(&mut self, i: usize) -> Element {
+        let element = self.elements.remove(i);
+        self.templates -= usize::from(element.is_template());
+        element
+    }
+
+    fn truncate(&mut self, len: usize) {
+        while self.elements.len() > len {
+            self.pop();
+        }
+    }
+
+    fn retain(&mut self, keep: impl Fn(&Element) -> bool) {
+        let templates = &mut self.templates;
+        self.elements.retain(|e| {
+            let kept = keep(e);
+            *templates -= usize::from(!kept && e.is_template());
+            kept
+        });
+    }
+
+    fn set_id(&mut self, i: usize, id: usize) {
+        self.elements[i].id = id;
+    }
+}
 
 /// One open element. `id` tells it from a copy the adoption agency or a
 /// reopening made of it. `special` is whether the tree builder counts it as
@@ -208,6 +268,10 @@ impl Element {
     /// node, as foreign content: it is SVG or MathML and no integration point.
     fn holds_foreign_content(&self) -> bool {
         self.is_foreign() && self.point == Point::None
+    }
+
+    fn is_template(&self) -> bool {
+        !self.is_foreign() && self.name == "template"
     }
 
     fn is_special(&self) -> bool {
@@ -1076,7 +1140,7 @@ impl Tags<'_> {
                 };
                 let copy = self.next_id;
                 self.next_id += 1;
-                self.open[node].id = copy;
+                self.open.set_id(node, copy);
                 if let Some(f) = &mut self.formatting[j] {
                     f.id = copy;
                 }
@@ -1112,15 +1176,13 @@ impl Tags<'_> {
 
     /// The index of the innermost open HTML `<template>`.
     fn template_index(&self) -> Option<usize> {
-        self.open
-            .iter()
-            .rposition(|e| !e.is_foreign() && e.name == "template")
+        self.open.iter().rposition(Element::is_template)
     }
 
     /// Whether the scan is inside an HTML `<template>`, whose contents the
     /// browser never shows.
     fn in_template(&self) -> bool {
-        self.template_index().is_some()
+        self.open.templates > 0
     }
 
     /// Pops foreign elements until the innermost is HTML or an integration
@@ -2036,6 +2098,81 @@ mod tests {
                 assert!(scan.open.len() <= MAX_OPEN, "{unit}: {}", scan.open.len());
             }
         }
+    }
+
+    #[test]
+    fn card_label_costs_about_one_scan_on_a_deep_stack() {
+        // Asking whether the scan is inside a template after each tag reads
+        // a count, not the 509 open elements: card_label on a capped stack
+        // takes about as long as the scan itself. Each side takes its
+        // fastest of three runs, so a busy machine slows both.
+        let html = format!("<svg>{}<h2>end</h2>", "<g>".repeat(20_000));
+        let fastest = |f: &dyn Fn()| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let scan = fastest(&|| assert_eq!(tags(&html).count(), 20_003));
+        let label = fastest(&|| assert_eq!(card_label(&html).as_deref(), Some("end")));
+        // The heading ends the page, so card_label scans it once. A walk of
+        // the stack after each tag takes it past six times the scan.
+        assert!(label < scan * 3, "card_label {label:?}, scan {scan:?}");
+    }
+
+    #[test]
+    fn the_template_count_matches_the_open_elements() {
+        for html in [
+            "<template><div><template><b>x</template></div></template>y",
+            "<div><template><table><tr><td>x</template></div>",
+            "<template><b><p>x</b>y</p></template>z",
+            "<template><a>x<div><a>y</a></div></template>z",
+            "<template><form><div>x</form></div></template><form>y</form>",
+            "<svg><template><foreignObject><template>x</svg></template>",
+            &format!("{}<template>x</div></template>", "<div>".repeat(600)),
+            &format!("<template>{}</template>x", "<b><i>".repeat(400)),
+            &format!(
+                "{}{}",
+                "<template><div>".repeat(400),
+                "</template>".repeat(400)
+            ),
+        ] {
+            let mut scan = tags(html);
+            while scan.next().is_some() {
+                let walked = scan.open.iter().filter(|e| e.is_template()).count();
+                assert_eq!(scan.open.templates, walked, "{html:.60}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_change_to_the_open_elements_keeps_the_template_count() {
+        // Each change, on a stack holding HTML and SVG templates, whether or
+        // not a tag can make it remove one.
+        let element = |id, name: &str, ns| Element {
+            id,
+            name: name.to_string(),
+            ns,
+            point: Point::None,
+            special: false,
+        };
+        let mut open = OpenElements::default();
+        open.push(element(0, "template", Ns::Html));
+        open.push(element(1, "template", Ns::Svg));
+        open.insert(1, element(2, "template", Ns::Html));
+        open.push(element(3, "div", Ns::Html));
+        assert_eq!(open.templates, 2);
+        open.remove(1);
+        assert_eq!(open.templates, 1);
+        open.retain(|e| e.id != 0);
+        assert_eq!(open.templates, 0);
+        open.push(element(4, "template", Ns::Html));
+        open.truncate(1);
+        assert_eq!((open.len(), open.templates), (1, 0));
     }
 
     #[test]
