@@ -1184,18 +1184,28 @@
   // files", or "" when it left nothing out. A missing-image or
   // media-too-large warning is an image or video the card names; a
   // fetch-failed one a CDN script, stylesheet or font that stays a network
-  // link.
+  // link. A computed-import one is a module that is in the page, so it is no
+  // gap: exportBroken names those.
   function exportGaps(warnings) {
     const count = (kind) => warnings.filter((w) => w.kind === kind).length;
     const images = count("missing-image") + count("media-too-large");
     const cdn = count("fetch-failed");
-    const other = warnings.length - images - cdn;
+    const other = warnings.length - images - cdn - count("computed-import");
     const parts = [];
     if (images) parts.push(`${images} ${images === 1 ? "image" : "images"}`);
     if (cdn) parts.push(`${cdn} CDN ${cdn === 1 ? "file" : "files"}`);
     if (other) parts.push(`${other} other ${other === 1 ? "item" : "items"}`);
     if (parts.length < 2) return parts.join("");
     return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  }
+
+  // "; 1 module's computed imports will fail" for an export whose
+  // computed-import warnings name modules that import from their own address,
+  // or "".
+  function exportBroken(warnings) {
+    const n = warnings.filter((w) => w.kind === "computed-import").length;
+    if (!n) return "";
+    return `; ${n} ${n === 1 ? "module's" : "modules'"} computed imports will fail`;
   }
 
   // The app's export_card fetches canvasd's export of the post, asks where to
@@ -1222,7 +1232,8 @@
       if (saved) {
         const missing = exportGaps(saved.warnings);
         const name = saved.path.split("/").pop();
-        toast(missing ? `Exported to ${name} without ${missing}` : `Exported to ${name}`);
+        const exported = missing ? `Exported to ${name} without ${missing}` : `Exported to ${name}`;
+        toast(exported + exportBroken(saved.warnings));
       }
       return;
     }

@@ -16,12 +16,25 @@ pub struct Specifier {
     pub value: String,
 }
 
-/// Every specifier `source` names as a string: `import … from "x"`,
-/// `import "x"`, `export … from "x"`, and `import("x")` or
-/// `` import(`x`) `` with a plain string. An `import()` of any other
-/// expression names nothing that can be read. In source order. `Err` with
-/// the parser's first message when `source` isn't a module it can read.
-pub fn specifiers(source: &str) -> Result<Vec<Specifier>, String> {
+/// What an ES module names: the imports it writes as strings, and where it
+/// computes one from its own address instead.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Module {
+    /// Every specifier the module names as a string, in source order.
+    pub specifiers: Vec<Specifier>,
+    /// The byte range of each place the module resolves an import against
+    /// its own URL at run time, in source order: an `import()` of anything
+    /// but a plain string, `import.meta.url`, `import.meta.resolve`, and any
+    /// other use of `import.meta` than reading a named property.
+    pub computed: Vec<Range<usize>>,
+}
+
+/// Reads `source` as a module: every specifier it names as a string
+/// (`import … from "x"`, `import "x"`, `export … from "x"`, and
+/// `import("x")` or `` import(`x`) `` with a plain string) and every import
+/// it computes. `Err` with the parser's first message when `source` isn't a
+/// module it can read.
+pub fn module(source: &str) -> Result<Module, String> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, SourceType::mjs()).parse();
     if !parsed.diagnostics.is_empty() {
@@ -34,7 +47,7 @@ pub fn specifiers(source: &str) -> Result<Vec<Specifier>, String> {
         return Err(message);
     }
     let record = &parsed.module_record;
-    let mut found: Vec<Specifier> = record
+    let mut specifiers: Vec<Specifier> = record
         .requested_modules
         .iter()
         .flat_map(|(value, requests)| {
@@ -44,18 +57,44 @@ pub fn specifiers(source: &str) -> Result<Vec<Specifier>, String> {
             })
         })
         .collect();
+    let mut computed = Vec::new();
     for dynamic in record.dynamic_imports.iter() {
         let range = dynamic.module_request.start as usize..dynamic.module_request.end as usize;
-        if let Some(value) = plain_string(&source[range.clone()]) {
-            found.push(Specifier {
+        match plain_string(&source[range.clone()]) {
+            Some(value) => specifiers.push(Specifier {
                 range,
                 value: value.to_string(),
-            });
+            }),
+            None => computed.push(range),
         }
     }
-    found.sort_by_key(|s| s.range.start);
-    found.dedup_by_key(|s| s.range.start);
-    Ok(found)
+    for meta in record.import_metas.iter() {
+        // Only `import.meta.<name>` for another name is known not to read
+        // the address; `?.`, `[…]`, destructuring or passing it on might.
+        let end = meta.end as usize;
+        let rest = source[end..].trim_start();
+        let name = rest.strip_prefix('.').map(|r| {
+            let r = r.trim_start();
+            let len = r
+                .find(|c: char| !(c == '_' || c == '$' || c.is_alphanumeric()))
+                .unwrap_or(r.len());
+            (&r[..len], source.len() - r.len() + len)
+        });
+        match name {
+            Some((name, _)) if !name.is_empty() && name != "url" && name != "resolve" => {}
+            Some((name, name_end)) if !name.is_empty() => {
+                computed.push(meta.start as usize..name_end)
+            }
+            _ => computed.push(meta.start as usize..end),
+        }
+    }
+    specifiers.sort_by_key(|s| s.range.start);
+    specifiers.dedup_by_key(|s| s.range.start);
+    computed.sort_by_key(|r| r.start);
+    Ok(Module {
+        specifiers,
+        computed,
+    })
 }
 
 /// The text of a string or template literal holding no escape and no
@@ -74,8 +113,9 @@ mod tests {
     use super::*;
 
     fn values(source: &str) -> Vec<(String, String)> {
-        specifiers(source)
+        module(source)
             .unwrap()
+            .specifiers
             .into_iter()
             .map(|s| (source[s.range].to_string(), s.value))
             .collect()
@@ -133,6 +173,38 @@ import"/npm/real";"#;
 
     #[test]
     fn source_that_isnt_a_module_is_an_error() {
-        assert!(specifiers("import { from").is_err());
+        assert!(module("import { from").is_err());
+    }
+
+    #[test]
+    fn computed_imports_are_every_unread_import_and_meta_address() {
+        let src = "import('/npm/a');import(name);import(`./${n}.js`);import('\\x2fc');\
+new URL('./w.wasm', import.meta.url);import.meta.resolve('./x');import . meta . url;\
+import.meta.env;import.meta.urls;import.meta?.url;import.meta['url'];const {url}=import.meta;import.meta.\\u0075rl;";
+        let m = module(src).unwrap();
+        let computed: Vec<_> = m.computed.iter().map(|r| &src[r.clone()]).collect();
+        assert_eq!(
+            computed,
+            [
+                "name",
+                "`./${n}.js`",
+                "'\\x2fc'",
+                "import.meta.url",
+                "import.meta.resolve",
+                "import . meta . url",
+                "import.meta",
+                "import.meta",
+                "import.meta",
+                "import.meta"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_module_naming_only_strings_computes_nothing() {
+        assert_eq!(
+            module("import'/npm/a';import('/npm/b');").unwrap().computed,
+            []
+        );
     }
 }

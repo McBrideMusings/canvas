@@ -133,6 +133,11 @@ pub enum ExportWarningKind {
     MediaTooLarge,
     /// A CDN asset that couldn't be downloaded.
     FetchFailed,
+    /// A CDN module inlined as a `data:` URI that computes an import from its
+    /// own address (`import(name)`, `import.meta.url`,
+    /// `import.meta.resolve`), which no longer
+    /// leads anywhere, so that import fails when the page runs.
+    ComputedImport,
     /// `export --all`: the card left canvasd between the listing and its
     /// export (evicted or deleted), so the zip has no page for it.
     CardGone,

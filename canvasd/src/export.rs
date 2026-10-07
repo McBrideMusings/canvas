@@ -361,10 +361,10 @@ fn inline_module<F: cdn::Fetch>(
     aliases: &mut Vec<(String, String)>,
     warnings: &mut Vec<ExportWarning>,
 ) {
-    let Ok(specifiers) = esm::specifiers(source) else {
+    let Ok(module) = esm::module(source) else {
         return;
     };
-    for s in specifiers {
+    for s in module.specifiers {
         let Some(url) = cdn.import_map.resolve(&s.value, None).and_then(module_url) else {
             continue;
         };
@@ -908,12 +908,19 @@ impl<F: cdn::Fetch> Cdn<F> {
         while let Some(next) = queue.pop_front() {
             self.inline(&next, warnings, |cdn, bytes, warnings| {
                 let source = String::from_utf8_lossy(&bytes);
-                match esm::specifiers(&source) {
-                    Ok(specifiers) => {
+                match esm::module(&source) {
+                    Ok(module) => {
+                        if let Some(reason) = computed_reason(&source, &module.computed) {
+                            warnings.push(ExportWarning {
+                                kind: ExportWarningKind::ComputedImport,
+                                target: next.clone(),
+                                reason,
+                            });
+                        }
                         let base = url::Url::parse(&cdn.source_url(&next)).ok();
                         let mut text = String::with_capacity(source.len());
                         let mut copied = 0;
-                        for s in specifiers {
+                        for s in module.specifiers {
                             // Resolved here, scopes and all: from a `data:`
                             // URI no scope would match.
                             let target = cdn
@@ -1948,6 +1955,29 @@ fn module_url(url: url::Url) -> Option<String> {
     matches!(url.scheme(), "http" | "https").then(|| url.to_string())
 }
 
+/// The `computed-import` reason for a fetched module whose `source` computes
+/// imports at `computed` ([`esm::Module::computed`]): how many, and where
+/// the first is, with its text cut to 60 characters. None when there are none.
+fn computed_reason(source: &str, computed: &[Range<usize>]) -> Option<String> {
+    let first = computed.first()?;
+    let before = &source[..first.start];
+    let line = before.matches('\n').count() + 1;
+    let column = before[before.rfind('\n').map_or(0, |i| i + 1)..]
+        .chars()
+        .count()
+        + 1;
+    let text: String = source[first.clone()].chars().take(60).collect();
+    let more = match computed.len() {
+        1 => String::new(),
+        n => format!(" (and {} more)", n - 1),
+    };
+    Some(format!(
+        "computes an import from its own address, which the export makes a \
+         data: URI, so it fails when the page runs: {text} at line {line}, \
+         column {column}{more}"
+    ))
+}
+
 /// The page's one import map: the card's own maps merged
 /// ([`import_map::merge`]), each of their addresses that names a fetched
 /// module rewritten to its `data:` URI (an import map maps a name once, so
@@ -2957,6 +2987,46 @@ mod tests {
         assert!(!r.html.contains("importmap"));
         assert_eq!(r.warnings.len(), 1);
         assert_eq!(r.warnings[0].target, LIT);
+    }
+
+    #[test]
+    fn a_module_that_computes_an_import_is_inlined_with_one_warning() {
+        let c = card(
+            &format!(r#"<script type="module" src="{LIT}"></script>"#),
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            LIT => Ok("import\"/npm/a/+esm\";\nexport const \u{e9}=n=>import(n);"
+                .as_bytes()
+                .to_vec()),
+            _ => Ok(b"new URL('./w.wasm',import.meta.url);import(x);".to_vec()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let warnings: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        let reason = "computes an import from its own address, which the export makes a \
+                      data: URI, so it fails when the page runs: ";
+        assert_eq!(
+            warnings,
+            [
+                (
+                    ExportWarningKind::ComputedImport,
+                    LIT,
+                    &*format!("{reason}n at line 2, column 26")
+                ),
+                (
+                    ExportWarningKind::ComputedImport,
+                    "https://cdn.jsdelivr.net/npm/a/+esm",
+                    &*format!("{reason}import.meta.url at line 1, column 20 (and 1 more)")
+                ),
+            ]
+        );
+        let map = page_map(&r.html);
+        assert_eq!(map["imports"].as_object().unwrap().len(), 2);
     }
 
     #[test]

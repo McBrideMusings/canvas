@@ -210,7 +210,13 @@ beside the terminal all day.
   every module those maps name, and every one the card's inline `<script
   type="module">` imports, is fetched too, a name the inline module used getting
   its own entry; a module that can't be fetched
-  or parsed staying on the network with a `fetch-failed` warning), an
+  or parsed staying on the network with a `fetch-failed` warning; a fetched
+  module that computes an import from its own address — `import()` of anything
+  but a plain string, `import.meta.url`, `import.meta.resolve`, or `import.meta`
+  used any way but reading another named property — is still
+  inlined, with one `computed-import` warning naming it and the first place,
+  since that import fails from a `data:` URI; the viewer's toast adds "1
+  module's computed imports will fail"), an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. An imported sheet is first closed as its own end
