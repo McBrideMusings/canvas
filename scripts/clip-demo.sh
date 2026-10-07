@@ -22,6 +22,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 verify="${repo_root}/scripts/verify-app.sh"
 work=/tmp/canvas-clip-demo
+export CANVAS_VERIFY_DIR=/tmp/canvas-clip
 canvas="${repo_root}/target/debug/canvas"
 PERIOD=5.6
 sessions=(demo-storefront demo-billing demo-web demo-docs)
@@ -167,6 +168,7 @@ clear_stream() {
 # Hide the "Canvas was updated" banner a dev build can show.
 bash "${verify}" eval - <<'JS'
 document.getElementById("update-banner-dismiss")?.click();
+document.querySelector(".page-switch-btn[data-page=timeline]")?.click();
 JS
 sleep 1
 

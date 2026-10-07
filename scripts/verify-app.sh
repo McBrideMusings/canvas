@@ -19,7 +19,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-dir=/tmp/canvas-verify
+dir="${CANVAS_VERIFY_DIR:-/tmp/canvas-verify}"
 socket="${dir}/canvasd.sock"
 
 case "${1:-}" in
