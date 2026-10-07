@@ -528,7 +528,8 @@ beside the terminal all day.
   plain text, shown in the pane, says why (`artifact page refused`), and leaves
   the file as it is. The reason
   (`webkit_freeze_reason`) names the tag and its byte offset, never the
-  tag's attributes.
+  tag's attributes, or "the end of the page" when the text after the last tag
+  is what reopens them.
 - An artifact's page is never themed, width-capped or sized to its content by
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without
   `allow-same-origin`. canvasd serves its files only from inside its folder

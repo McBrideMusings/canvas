@@ -17,49 +17,51 @@ use std::ops::Range;
 /// `None` past the last tag or if a tag is left unterminated.
 pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = html.as_bytes();
-    let mut i = from;
-    while i < bytes.len() {
-        if bytes[i] == b'<'
+    let i = tag_open(html, from)?;
+    if html[i..].starts_with("<!--") {
+        // From the opener's dashes, so `<!-->` and `<!--->` end at once.
+        let end = html[i + 2..]
+            .find("-->")
+            .map_or(html.len(), |e| i + 2 + e + 3);
+        return Some((i, end));
+    }
+    if matches!(bytes[i + 1], b'!' | b'?') {
+        return html[i..].find('>').map(|e| (i, i + e + 1));
+    }
+    let mut state = Tok::Name;
+    for (j, &c) in bytes.iter().enumerate().skip(i + 1) {
+        let space = c.is_ascii_whitespace();
+        state = match (state, c) {
+            (Tok::Quoted(q), _) if c == q => Tok::BeforeAttr,
+            (Tok::Quoted(q), _) => Tok::Quoted(q),
+            (_, b'>') => return Some((i, j + 1)),
+            (Tok::Name, b'/') => Tok::BeforeAttr,
+            (Tok::Name | Tok::Unquoted, _) if space => Tok::BeforeAttr,
+            (Tok::Name | Tok::Unquoted, _) => state,
+            (Tok::BeforeAttr, b'/') => Tok::BeforeAttr,
+            (Tok::BeforeAttr, _) if space => Tok::BeforeAttr,
+            (Tok::BeforeAttr, _) => Tok::AttrName,
+            (Tok::AttrName, b'=') => Tok::BeforeValue,
+            (Tok::AttrName, b'/') => Tok::BeforeAttr,
+            (Tok::AttrName, _) => Tok::AttrName,
+            (Tok::BeforeValue, b'"' | b'\'') => Tok::Quoted(c),
+            (Tok::BeforeValue, _) if space => Tok::BeforeValue,
+            (Tok::BeforeValue, _) => Tok::Unquoted,
+        };
+    }
+    None
+}
+
+/// The offset of the first `<` at or after `from` that opens a tag, one
+/// before a letter, `/`, `!` or `?`, terminated or not.
+fn tag_open(html: &str, from: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    (from..bytes.len()).find(|&i| {
+        bytes[i] == b'<'
             && bytes
                 .get(i + 1)
                 .is_some_and(|&c| c.is_ascii_alphabetic() || matches!(c, b'/' | b'!' | b'?'))
-        {
-            if html[i..].starts_with("<!--") {
-                // From the opener's dashes, so `<!-->` and `<!--->` end at once.
-                let end = html[i + 2..]
-                    .find("-->")
-                    .map_or(html.len(), |e| i + 2 + e + 3);
-                return Some((i, end));
-            }
-            if matches!(bytes[i + 1], b'!' | b'?') {
-                return html[i..].find('>').map(|e| (i, i + e + 1));
-            }
-            let mut state = Tok::Name;
-            for (j, &c) in bytes.iter().enumerate().skip(i + 1) {
-                let space = c.is_ascii_whitespace();
-                state = match (state, c) {
-                    (Tok::Quoted(q), _) if c == q => Tok::BeforeAttr,
-                    (Tok::Quoted(q), _) => Tok::Quoted(q),
-                    (_, b'>') => return Some((i, j + 1)),
-                    (Tok::Name, b'/') => Tok::BeforeAttr,
-                    (Tok::Name | Tok::Unquoted, _) if space => Tok::BeforeAttr,
-                    (Tok::Name | Tok::Unquoted, _) => state,
-                    (Tok::BeforeAttr, b'/') => Tok::BeforeAttr,
-                    (Tok::BeforeAttr, _) if space => Tok::BeforeAttr,
-                    (Tok::BeforeAttr, _) => Tok::AttrName,
-                    (Tok::AttrName, b'=') => Tok::BeforeValue,
-                    (Tok::AttrName, b'/') => Tok::BeforeAttr,
-                    (Tok::AttrName, _) => Tok::AttrName,
-                    (Tok::BeforeValue, b'"' | b'\'') => Tok::Quoted(c),
-                    (Tok::BeforeValue, _) if space => Tok::BeforeValue,
-                    (Tok::BeforeValue, _) => Tok::Unquoted,
-                };
-            }
-            return None;
-        }
-        i += 1;
-    }
-    None
+    })
 }
 
 /// Where [`next_tag`] stands inside a tag: the tokenizer's states, merged
@@ -2114,7 +2116,14 @@ impl Iterator for Tags<'_> {
     type Item = Tag;
 
     fn next(&mut self) -> Option<Tag> {
-        let (start, mut end) = next_tag(self.html, self.pos)?;
+        let Some((start, mut end)) = next_tag(self.html, self.pos) else {
+            // The text after the last tag is applied once, when the input
+            // ends; an unterminated tag there is dropped, as in the browser.
+            self.begin_token();
+            self.text(tag_open(self.html, self.pos).unwrap_or(self.html.len()));
+            self.pos = self.html.len();
+            return None;
+        };
         self.begin_token();
         self.text(start);
         let cdata = self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed();
@@ -2173,20 +2182,22 @@ impl Iterator for Tags<'_> {
 }
 
 /// The offset of the first tag in `html` that freezes Canvas.app's WebKit
-/// (see [`Freeze`]): a card holding one must never reach a viewer, and `None`
-/// when it holds none.
+/// (see [`Freeze`]), or the HTML's length when the text after its last tag
+/// does: a card holding one must never reach a viewer, and `None` when it
+/// holds none.
 pub fn webkit_freeze(html: &str) -> Option<usize> {
     first_freeze(tags(html)).map(|(at, _)| at)
 }
 
-/// The offset of the first tag that freezes Canvas.app's WebKit, and why.
+/// The offset of the first tag that freezes Canvas.app's WebKit, or the end
+/// of the HTML when the text after the last tag does, and why.
 fn first_freeze(mut scan: Tags<'_>) -> Option<(usize, Freeze)> {
     while let Some(tag) = scan.next() {
         if let Some(freeze) = scan.freeze {
             return Some((tag.start, freeze));
         }
     }
-    None
+    scan.freeze.map(|freeze| (scan.html.len(), freeze))
 }
 
 /// Why Canvas.app's WebKit freezes on `html` framed as a card or widget, as
@@ -2205,23 +2216,28 @@ pub fn webkit_freeze_page_reason(html: &str) -> Option<String> {
 
 fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
     let (at, freeze) = first_freeze(scan)?;
-    // Past the `<` or `</`, which the scan only reads as a tag before a letter.
-    let slash = if html[at + 1..].starts_with('/') {
-        "/"
+    let what = if at == html.len() {
+        // Only text reopening formatting elements freezes at the end.
+        "the end of the page".to_string()
     } else {
-        ""
+        // Past the `<` or `</`, which the scan only reads as a tag before a letter.
+        let slash = if html[at + 1..].starts_with('/') {
+            "/"
+        } else {
+            ""
+        };
+        let rest = &html[at + 1 + slash.len()..];
+        let len = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(rest.len());
+        format!("its <{slash}{}>", rest[..len].to_ascii_lowercase())
     };
-    let rest = &html[at + 1 + slash.len()..];
-    let len = rest
-        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-        .unwrap_or(rest.len());
-    let name = rest[..len].to_ascii_lowercase();
     let (closes, nest) = match freeze {
         Freeze::Cell => ("closes a table cell", "the table"),
         Freeze::Select => ("closes a select in a table", "the select"),
         Freeze::Reopen(budget) => {
             return Some(format!(
-                "by its <{slash}{name}> at byte {at}, WebKit has reopened more than \
+                "by {what} at byte {at}, WebKit has reopened more than \
                  {budget} closed formatting elements such as <b>, {REOPEN_FLOOR} plus \
                  one per {BYTES_PER_REOPEN} bytes before them, which stalls Canvas.app; \
                  close each formatting element where it should end"
@@ -2229,7 +2245,7 @@ fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
         }
     };
     Some(format!(
-        "its <{slash}{name}> at byte {at} {closes} nested past WebKit's \
+        "{what} at byte {at} {closes} nested past WebKit's \
          512-element limit, which freezes Canvas.app; nest {nest} less deeply"
     ))
 }
@@ -3218,6 +3234,31 @@ mod tests {
                  closed formatting elements such as <b>, 100000 plus one per 3 bytes \
                  before them, which stalls Canvas.app; close each formatting element \
                  where it should end"
+            ))
+        );
+    }
+
+    #[test]
+    fn text_after_the_last_tag_reopens_formatting_elements() {
+        // The 256th run is the page's last text, with no tag after it: it
+        // reopens the 102,400th `<b>`, past 100,000 plus a third of the
+        // 6,957 bytes before it.
+        let bs: String = (0..400).map(|i| format!("<b id={i}>")).collect();
+        let runs = format!("<p>{bs}</p>{}", "<div>x</div>".repeat(255));
+        assert_eq!(runs.len(), 6_957);
+        assert_eq!(webkit_freeze(&runs), None);
+        // An unterminated tag at the end is dropped, not read as text.
+        assert_eq!(webkit_freeze(&format!("{runs}<i")), None);
+        let html = format!("{runs}x");
+        assert_eq!(webkit_freeze(&html), Some(html.len()));
+        assert_eq!(
+            webkit_freeze_reason(&html),
+            Some(format!(
+                "by the end of the page at byte {}, WebKit has reopened more than \
+                 102319 closed formatting elements such as <b>, 100000 plus one per \
+                 3 bytes before them, which stalls Canvas.app; close each formatting \
+                 element where it should end",
+                html.len()
             ))
         );
     }
