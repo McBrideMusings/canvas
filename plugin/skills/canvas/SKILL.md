@@ -260,12 +260,30 @@ canvas artifact list | show <id> | delete <id>
   it. `canvas artifact pane <id> --size WxH|--reset|--full|--exit` does the
   same in every open viewer, and bare `canvas artifact pane` prints the frame
   size the viewer shows, so a page can be checked at a given width.
-- Every open viewer reloads the pane after a `put`, or when a file in the
-  folder is saved.
+- A `put`, or a file saved into the folder, reaches every open page without
+  the viewer rebuilding the pane. A change only to stylesheets the page links
+  swaps them in place. Any other change reloads the page at the address it
+  shows, hash and path included, so a page that routes by hash keeps its
+  screen; reopening the artifact also returns there. A page that keeps state
+  worth more than a reload handles the change itself:
+
+  ```js
+  window.addEventListener('canvas-artifact-changed', (e) => {
+    // e.detail.paths: changed files relative to the folder, or null (unknown)
+    if (e.detail.paths?.every((p) => p.startsWith('modules/'))) {
+      e.preventDefault();               // no reload; apply it yourself
+      for (const p of e.detail.paths) import(`./${p}?v=${Date.now()}`).then(swapIn);
+    }
+  });
+  ```
+
+  Keep code you want to swap this way in modules whose exports the page
+  re-reads, and state in one object those modules don't own.
 - When the person wants the files in their own repo, under git, link instead:
   `canvas artifact new --link ./web --title "Tower dash"` records that folder
   (or one `.html` file, served alone) rather than making one. Edit the files
-  in place, never with `put`; a save reloads the pane. Delete keeps the files.
+  in place, never with `put`; a save reaches the open page as above. Delete
+  keeps the files.
   If the folder moves, the pane says "Source missing" and `show` reports
   `"sourceMissing": true`; `canvas artifact relink <id> <new path>` repoints it
   and keeps the id.

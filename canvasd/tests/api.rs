@@ -220,6 +220,60 @@ async fn turns_endpoint_is_gone() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+/// A table cell nested so deep that WebKit's depth cap closes it, then an
+/// end tag that loops Canvas.app's WebKit forever.
+fn freezing_html() -> String {
+    format!(
+        "<p>deep</p>\n{}<table><tr><td><svg></table>",
+        "<div>".repeat(505)
+    )
+}
+
+#[tokio::test]
+async fn a_post_that_would_freeze_the_viewer_is_refused() {
+    let app = app();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": freezing_html()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        String::from_utf8_lossy(&bytes),
+        "card refused: its </table> at byte 2557 closes a table cell nested past \
+         WebKit's 512-element limit, which freezes Canvas.app; nest the table less deeply"
+    );
+
+    let response = app.clone().oneshot(get("/api/state")).await.unwrap();
+    let state: StateResponse = json_body(response).await;
+    assert!(state.cards.is_empty());
+    assert!(state.sessions.is_empty());
+
+    // An update to that HTML is refused too, and the card keeps its own.
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", card.id),
+            json!({"html": freezing_html()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}", card.id)))
+        .await
+        .unwrap();
+    let kept: Card = json_body(response).await;
+    assert_eq!(kept.html, card.html);
+    assert_eq!(kept.updated_at, None);
+}
+
 #[tokio::test]
 async fn each_post_creates_its_own_card() {
     let app = app();

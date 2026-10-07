@@ -169,7 +169,8 @@ beside the terminal all day.
   it); the viewer's lightbox skips those entries and the card CSP carries
   `media-src`. A local `<link rel="stylesheet" href="/abs/x.css">` is replaced
   by a `<style>` block with its `url()` assets as data URIs, before the scan
-  (`cli/src/inline_css.rs`). Hook
+  (`cli/src/inline_css.rs`); one inside SVG or MathML, which the browser never
+  loads, stays as written. Hook
   dispatch never starts a tokio runtime; only `canvas daemon` does.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
@@ -185,18 +186,26 @@ beside the terminal all day.
   `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
   and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
   unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
-  cap) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
+  cap; a connection whose TCP connect or TLS handshake outlasts half the time
+  left is dropped for a fresh one, at most three, logging `export fetch setup
+  stalled`) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
-  not raw text: its CSS is its text and CDATA sections, every HTML character
-  reference (named or numeric, `htmlize` via `canvas_core::html::decode_entities`)
-  decoded once per text run outside CDATA before the scan (`Cdn::markup_css`) and replacements
-  written with entities (`]]>` split inside CDATA); a style where nothing was
-  inlined keeps its text exactly as written. A failure, or an `@import` nested past
+  not raw text: its CSS is every text run and CDATA section joined, comments
+  (bogus ones too) dropped, every HTML character reference (named or numeric,
+  `htmlize` via `canvas_core::html::decode_entities`) decoded once per text run
+  outside CDATA, and the scan reads it whole (`Cdn::markup_css`), so a reference
+  split by a comment or a CDATA boundary is still one. The pieces before the
+  first replacement and after the last stay as written; those between become one
+  run in the form of the first of them, text written with entities or CDATA with
+  `]]>` split; a style where nothing was inlined keeps its text exactly as
+  written. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
-  since the browser ignores an `@import` inside a block. `export_card` drops a
+  since the browser ignores an `@import` inside a block, and every `@import` inlined
+  as rules ahead of a later one in its sheet that writes a link, since the browser
+  ignores an `@import` after rules. `export_card` drops a
   `fetch-failed` warning whose URL's content went into the page through another
   reference (`Cdn`'s list of inlined URLs). Each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through
@@ -205,14 +214,14 @@ beside the terminal all day.
   carried; `prefers-color-scheme` rules stay, so the reader's system picks.
   The route answers `{html, warnings}` (`ExportResult` in `canvas-core`,
   which also holds the shared `base64` and the `html` tag scanner, with
-  `card_label`: a card's first heading, else first line of text); canvasd
+  `card_title`: a card's first heading, else first line of text, else "Canvas post"); canvasd
   logs `card exported`.
   `canvas export --all [--session <id>] [-o file.zip]` (`cli/src/export.rs`)
   reads every card canvasd holds from `/api/state` (or one session's; an
   unknown id exits 1), exports each through that route one at a time, and
   writes a zip (`canvas-export.zip` by default; stored entries, the `zip`
   crate): `<card_id>.html` per card plus `index.html`, newest first by `at`,
-  each row linking its page with the session name, `card_label` and the time,
+  each row linking its page with the session name, `card_title` and the time,
   self-contained and following the reader's light/dark setting. It prints
   `{"path", "cards", "warnings"}`, each warning carrying its `card_id`; a card
   evicted mid-run is a `card-gone` warning and one whose export canvasd answers
@@ -387,8 +396,25 @@ beside the terminal all day.
   when the row moves. A refresh error dims the widget, adds a red dot and a
   "refresh failed" line, and puts "Refresh failed 2m ago: … · retrying in 4m"
   under the pane header. The Timeline shows no widgets. The pane is an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
-  at its `canvas-size` clamped to the pane or else filling it, reloaded after a
-  `put`. Its menu copies the id or folder path and deletes it. A grip at the
+  at its `canvas-size` clamped to the pane or else filling it. A watched change
+  or `put` stamps `updatedAt` and its `artifact-upserted` event carries
+  `changed`, the paths written relative to the artifact's path (no folders,
+  hidden names, `~` backups or extensionless names gone by the burst's end;
+  absent past `MAX_CHANGED_PATHS`). While the open page's relay listens (from
+  its `canvas-artifact-location` with `start: true` until its
+  `canvas-artifact-unload` on pagehide; it reports the address again on every
+  navigation), the viewer never reloads the frame for a change: it posts
+  `canvas-artifact-changed {stamp, paths}` (paths null when unknown, such as
+  changes made while it was disconnected), the relay answers
+  `canvas-artifact-ack {stamp}` and dispatches a cancelable
+  `canvas-artifact-changed` event on the page's window; uncancelled, a change
+  only to linked stylesheets swaps them in place (a sheet that fails to load
+  reloads) and anything else runs `location.reload()`, keeping path and hash.
+  A relay that starts while the newest stamp is unacknowledged hears that
+  change again. With no relay listening the viewer sets the frame's src to
+  the page's last reported address (in memory, per artifact), where a rebuilt
+  frame also opens; a load the viewer caused that brings no start hello (the
+  address is gone) drops it and opens the entry page. Its menu copies the id or folder path and deletes it. A grip at the
   frame's bottom-right corner drags it to another size (clamped to the pane,
   160×120 at least; a double-click goes back to the declared size), kept per
   artifact in the viewer's localStorage (`canvas.artifact-sizes`); the header's
@@ -465,6 +491,16 @@ beside the terminal all day.
   (canvas-17z), but only by posting it up to the viewer, never by fetching
   anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
+- canvasd refuses a post or update (400, logged `card refused`) whose HTML would
+  freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag
+  closing a table, section or row while the cell mode's cell is one the
+  512-element depth cap already closed), and drops such a card from
+  `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`). A
+  widget is framed like a card, so `canvas artifact new|put --widget` refuses
+  one the same way (`widget refused: …`) and `artifacts.json` loads it as no
+  widget (`widget dropped on load`). The reason
+  (`webkit_freeze_reason`) names the end tag and its byte offset, never the
+  tag's attributes.
 - An artifact's page is never themed, width-capped or sized to its content by
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without
   `allow-same-origin`. canvasd serves its files only from inside its folder

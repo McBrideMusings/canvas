@@ -2168,6 +2168,45 @@
       return;
     }
 
+    if (data.type === "canvas-artifact-unload" || data.type === "canvas-artifact-ack") {
+      // The pane's page going away (the next change sets src unless the
+      // next page's relay says hello first), or taking a change.
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      if (data.type === "canvas-artifact-unload") delete artifactFrame.dataset.relay;
+      else if (typeof data.stamp === "string") artifactFrame.dataset.acked = data.stamp;
+      return;
+    }
+
+    if (data.type === "canvas-artifact-location") {
+      // The pane's page reporting its address: its relay is listening for
+      // changes, and a rebuilt frame for this artifact reopens there. Only
+      // an address inside the artifact's own folder is kept.
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      const frame = artifactFrame;
+      if (data.start === true) {
+        frame.dataset.relay = "true";
+        delete frame.dataset.expectRelay;
+        if (frame.dataset.posted && frame.dataset.posted !== frame.dataset.acked) {
+          postArtifactChange(frame, frame.dataset.posted, null);
+        }
+      }
+      let url;
+      try {
+        url = new URL(String(data.href));
+      } catch {
+        return;
+      }
+      const base = `/artifacts/${encodeURIComponent(artifactFrameId)}/`;
+      if (
+        url.protocol === location.protocol &&
+        url.host === location.host &&
+        url.pathname.startsWith(base)
+      ) {
+        artifactLocations.set(artifactFrameId, url.pathname + url.search + url.hash);
+      }
+      return;
+    }
+
     if (data.type === "canvas-resize") {
       // A widget takes its content's height, up to 120px. A row on the
       // hidden Artifacts page reports 0; it keeps its last real height.
@@ -2986,6 +3025,42 @@
   let artifactFrameId = null;
   let artifactBox = null;
   let artifactFull = false;
+  // A change to an artifact's files reaches its open page as a
+  // `canvas-artifact-changed` message, never a reload from here, while a
+  // page's relay is listening (`dataset.relay`: set by the hello a page's
+  // relay sends as it starts, cleared by the one it sends on pagehide): the
+  // relay swaps changed stylesheets or reloads the page at its own address,
+  // and a page may apply the change itself. Each message carries the stamp
+  // it was sent for and the relay acknowledges it on receipt; a page that
+  // starts while the newest stamp sent is unacknowledged was unloading when
+  // it went, so it hears the change again. Per artifact: the paths changed
+  // since the frame last heard (null when some change named none), and the
+  // address its page last reported, where the frame opens or reloads.
+  const artifactChanges = new Map();
+  const artifactLocations = new Map();
+
+  function noteArtifactChange(id, paths) {
+    const known = artifactChanges.get(id);
+    if (!Array.isArray(paths) || known === null) {
+      artifactChanges.set(id, null);
+      return;
+    }
+    const set = known || new Set();
+    for (const path of paths) set.add(String(path));
+    artifactChanges.set(id, set);
+  }
+
+  function takeArtifactChange(id) {
+    const known = artifactChanges.get(id);
+    artifactChanges.delete(id);
+    return known instanceof Set ? [...known] : null;
+  }
+
+  function postArtifactChange(frame, stamp, paths) {
+    frame.dataset.posted = stamp;
+    frame.dataset.expectRelay = "true";
+    frame.contentWindow?.postMessage({ type: "canvas-artifact-changed", stamp, paths }, "*");
+  }
 
   function dropArtifactFrame() {
     artifactBox?.remove();
@@ -3044,6 +3119,18 @@
       const id = artifact.id;
       frame.addEventListener("load", () => {
         frame.dataset.loaded = "true";
+        // A load the viewer caused (a change, or opening at the stored
+        // address) whose page never sent a start hello, which a relay sends
+        // before its page's load event, means that address is gone
+        // (canvasd's 404): forget it and open the entry page instead.
+        const unheard = frame.dataset.expectRelay === "true";
+        delete frame.dataset.expectRelay;
+        if (unheard && artifactLocations.has(id)) {
+          artifactLocations.delete(id);
+          delete frame.dataset.loaded;
+          frame.src = `/artifacts/${encodeURIComponent(id)}/`;
+          return;
+        }
         postArtifactData(frame, artifacts.get(id)?.data);
       });
       artifactBox.append(artifactFrame, buildPaneGrip());
@@ -3057,11 +3144,21 @@
     // (canvasd's watcher stamps updatedAt) reloads the page whether it landed
     // while the pane was showing, hidden on the Timeline, or disconnected.
     if (artifactFrameSrc !== loaded) {
-      const sameUrl = artifactFrameSrc && artifactFrameSrc.startsWith(`${src}@`);
+      const fresh = !artifactFrameSrc;
+      const paths = takeArtifactChange(artifact.id);
       artifactFrameSrc = loaded;
-      delete artifactFrame.dataset.loaded;
-      if (sameUrl) artifactFrame.src = "about:blank";
-      artifactFrame.src = src;
+      if (!fresh && artifactFrame.dataset.relay === "true") {
+        postArtifactChange(artifactFrame, loaded, paths);
+      } else {
+        delete artifactFrame.dataset.loaded;
+        delete artifactFrame.dataset.relay;
+        delete artifactFrame.dataset.posted;
+        delete artifactFrame.dataset.acked;
+        if (!fresh) artifactFrame.src = "about:blank";
+        const at = artifactLocations.get(artifact.id);
+        if (at) artifactFrame.dataset.expectRelay = "true";
+        artifactFrame.src = at || src;
+      }
     }
   }
 
@@ -3089,12 +3186,18 @@
   }
 
   function upsertArtifact(artifact) {
+    const before = artifacts.get(artifact.id);
+    if (before && before.updatedAt !== artifact.updatedAt) {
+      noteArtifactChange(artifact.id, artifact.changed);
+    }
     artifacts.set(artifact.id, artifact);
     if (page === "artifacts") renderArtifacts();
   }
 
   function removeArtifact(id) {
     artifacts.delete(id);
+    artifactChanges.delete(id);
+    artifactLocations.delete(id);
     if (id in chosenSizes) {
       delete chosenSizes[id];
       saveChosenSizes();
@@ -3396,8 +3499,21 @@
     cards.clear();
     postTextLower.clear();
     for (const c of data.cards) cards.set(c.id, c);
+    // A change missed while disconnected can't be named, so the page hears
+    // of it with unknown paths.
+    const previous = new Map(artifacts);
     artifacts.clear();
-    for (const a of data.artifacts || []) artifacts.set(a.id, a);
+    for (const a of data.artifacts || []) {
+      const before = previous.get(a.id);
+      if (before && before.updatedAt !== a.updatedAt) noteArtifactChange(a.id, null);
+      artifacts.set(a.id, a);
+    }
+    for (const id of [...artifactChanges.keys(), ...artifactLocations.keys()]) {
+      if (!artifacts.has(id)) {
+        artifactChanges.delete(id);
+        artifactLocations.delete(id);
+      }
+    }
     artifactsLoaded = true;
     let pruned = false;
     for (const id of Object.keys(chosenSizes)) {

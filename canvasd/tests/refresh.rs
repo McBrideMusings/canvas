@@ -174,7 +174,12 @@ async fn the_refresh_records_its_cwd_and_pid_and_stops_with_that_process() {
     state.refresh_tick_with(|pid| pid != 4242).await;
     assert_eq!(state.refreshing_count(), 0);
     // Nothing will retry it, so its error goes.
-    assert!(!state.artifacts.read().await.refresh_errors.contains_key(&id));
+    assert!(!state
+        .artifacts
+        .read()
+        .await
+        .refresh_errors
+        .contains_key(&id));
     state.refresh_tick_with(|_| true).await;
     assert_eq!(state.refreshing_count(), 1);
 }
@@ -202,6 +207,38 @@ async fn put_replaces_the_widget_and_refresh_and_keeps_them_when_absent() {
     assert_eq!(view["widgetHtml"], "<b>two</b>");
     let saved = std::fs::read_to_string(dir.join("artifacts.json")).unwrap();
     assert!(saved.contains("<b>two</b>"), "{saved}");
+}
+
+#[tokio::test]
+async fn a_widget_that_freezes_webkit_is_refused_and_dropped_on_load() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let freezing = format!("{}<table><tr><td><svg></table>", "<div>".repeat(505));
+    let body = json!({"widget_html": freezing});
+    let (status, _) = send(&app, "POST", "/api/artifacts", body, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let body = json!({"widget_html": "<b>one</b>"});
+    let (_, created) = send(&app, "POST", "/api/artifacts", body, None).await;
+    let id = created["id"].as_str().unwrap();
+    let source = temp_dir().join("index.html");
+    std::fs::write(&source, "<p>x</p>").unwrap();
+    let uri = format!("/api/artifacts/{id}/put");
+    let body = json!({"source": source, "widget_html": freezing});
+    let (status, _) = send(&app, "POST", &uri, body, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let saved = std::fs::read_to_string(dir.join("artifacts.json")).unwrap();
+    assert!(saved.contains("<b>one</b>"), "{saved}");
+
+    // A widget stored before canvasd refused one.
+    std::fs::write(
+        dir.join("artifacts.json"),
+        saved.replace("<b>one</b>", &freezing),
+    )
+    .unwrap();
+    let state = AppState::open(&dir).await;
+    let artifacts = state.artifacts.read().await;
+    assert_eq!(artifacts.records[id].widget_html, None);
 }
 
 #[tokio::test]

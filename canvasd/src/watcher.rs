@@ -5,8 +5,8 @@
 //! a write belongs to every artifact whose path holds it. Writes are gathered
 //! per artifact until [`QUIET`] passes with no write (or [`MAX_WAIT`] since the
 //! burst's first write), then the artifact's `updatedAt` is stamped and
-//! `artifact-upserted` goes out once; the viewer reloads the open pane when
-//! `updatedAt` changes. A burst that leaves the folder's
+//! `artifact-upserted` goes out once, listing the paths the burst wrote; the
+//! viewer tells the open page when `updatedAt` changes. A burst that leaves the folder's
 //! [`fingerprint`](crate::artifacts::fingerprint) as it was last stamped
 //! (a `put`, which stamps itself) publishes nothing.
 //!
@@ -14,7 +14,7 @@
 //! gone when canvasd starts), so a path whose watch failed is tried again
 //! every [`RETRY_EVERY`]; once it is watched, it reloads as a burst would.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,15 +195,27 @@ impl Watcher {
         self.lock().held.contains_key(id)
     }
 
-    /// Every artifact whose watched path holds `path`. Each checks its own
-    /// fingerprint, so an outer artifact reloads for a write inside a nested
-    /// one only when its own files changed too, which they did.
-    fn owners(&self, path: &Path) -> Vec<String> {
+    /// Every artifact whose watched path holds `path`, with `path` relative
+    /// to that artifact's (a linked HTML file is its own name; a watched
+    /// folder itself is no path). Each checks its own fingerprint, so an
+    /// outer artifact reloads for a write inside a nested one only when its
+    /// own files changed too, which they did.
+    fn owners(&self, path: &Path) -> Vec<(String, Option<String>)> {
         self.lock()
             .paths
             .iter()
-            .filter(|(_, root)| path.starts_with(root))
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, root)| {
+                let rel = path.strip_prefix(root).ok()?;
+                let rel = if rel.as_os_str().is_empty() {
+                    root.is_file()
+                        .then(|| root.file_name())
+                        .flatten()
+                        .map(Path::new)
+                } else {
+                    Some(rel)
+                };
+                Some((id.clone(), rel.map(|r| r.to_string_lossy().into_owned())))
+            })
             .collect()
     }
 
@@ -256,14 +268,15 @@ pub fn spawn_artifact_watcher(state: AppState) {
         let watched = state.watcher.start(os);
         canvas_core::log::info("artifact watcher started", &[("watched", &watched)]);
 
-        // Per artifact: the burst's first write, its latest, and how many.
-        let mut pending: HashMap<String, (Instant, Instant, usize)> = HashMap::new();
+        // Per artifact: the burst's first write, its latest, how many, and
+        // the paths written, relative to the artifact's.
+        let mut pending: HashMap<String, Burst> = HashMap::new();
         let mut retry = tokio::time::interval(RETRY_EVERY);
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let due = pending
                 .values()
-                .map(|(first, last, _)| (*last + QUIET).min(*first + MAX_WAIT))
+                .map(|b| (b.last + QUIET).min(b.first + MAX_WAIT))
                 .min();
             let wait = async {
                 match due {
@@ -275,10 +288,13 @@ pub fn spawn_artifact_watcher(state: AppState) {
                 path = rx.recv() => {
                     let Some(path) = path else { break };
                     let now = Instant::now();
-                    for id in state.watcher.owners(&path) {
-                        let burst = pending.entry(id).or_insert((now, now, 0));
-                        burst.1 = now;
-                        burst.2 += 1;
+                    for (id, rel) in state.watcher.owners(&path) {
+                        let burst = pending.entry(id).or_insert_with(|| Burst::new(now));
+                        burst.last = now;
+                        burst.writes += 1;
+                        if let Some(rel) = rel {
+                            burst.paths.insert(rel);
+                        }
                     }
                 }
                 _ = retry.tick() => {
@@ -287,26 +303,28 @@ pub fn spawn_artifact_watcher(state: AppState) {
                     // anything did, and waits out a hold like any burst.
                     let now = Instant::now();
                     for id in state.watcher.retry_failed() {
-                        pending.entry(id).or_insert((now, now, 0));
+                        pending.entry(id).or_insert_with(|| Burst::new(now));
                     }
                 }
                 () = wait => {
                     let now = Instant::now();
-                    let ready: Vec<(String, usize)> = pending
+                    let ready: Vec<String> = pending
                         .iter()
-                        .filter(|(_, (first, last, _))| now >= *last + QUIET || now >= *first + MAX_WAIT)
-                        .map(|(id, (_, _, writes))| (id.clone(), *writes))
+                        .filter(|(_, b)| now >= b.last + QUIET || now >= b.first + MAX_WAIT)
+                        .map(|(id, _)| id.clone())
                         .collect();
-                    for (id, writes) in ready {
+                    for id in ready {
                         if state.watcher.is_held(&id) {
                             // Look again once a quiet period has passed.
                             if let Some(burst) = pending.get_mut(&id) {
-                                *burst = (now, now, burst.2);
+                                burst.first = now;
+                                burst.last = now;
                             }
                             continue;
                         }
-                        pending.remove(&id);
-                        files_changed(&state, &id, writes).await;
+                        if let Some(burst) = pending.remove(&id) {
+                            files_changed(&state, &id, burst).await;
+                        }
                     }
                 }
             }
@@ -314,15 +332,61 @@ pub fn spawn_artifact_watcher(state: AppState) {
     });
 }
 
-/// One burst ended: stamps `updatedAt` and tells every viewer, unless the
-/// files still match the fingerprint of their last stamp. A linked path that
-/// disappeared is a change too: the view it publishes says `sourceMissing`.
-async fn files_changed(state: &AppState, id: &str, writes: usize) {
+/// Whether a path a burst saw names one of the page's files, rather than a
+/// folder or an editor's scratch file: a hidden name or a `~` backup, or a
+/// name with no extension that is gone again by the burst's end (vim's
+/// `4913` probe). A removed file with an extension is a change the page needs.
+fn page_file(folder: &Path, rel: &str) -> bool {
+    let path = Path::new(rel);
+    if rel.ends_with('~')
+        || path
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    {
+        return false;
+    }
+    let full = if folder.is_file() {
+        folder.to_path_buf()
+    } else {
+        folder.join(path)
+    };
+    match std::fs::metadata(&full) {
+        Ok(meta) => !meta.is_dir(),
+        Err(_) => path.extension().is_some(),
+    }
+}
+
+/// One artifact's writes, gathered until it goes quiet.
+struct Burst {
+    first: Instant,
+    last: Instant,
+    writes: usize,
+    paths: BTreeSet<String>,
+}
+
+impl Burst {
+    fn new(now: Instant) -> Self {
+        Self {
+            first: now,
+            last: now,
+            writes: 0,
+            paths: BTreeSet::new(),
+        }
+    }
+}
+
+/// One burst ended: stamps `updatedAt` and tells every viewer which paths it
+/// wrote, unless the files still match the fingerprint of their last stamp.
+/// A linked path that disappeared is a change too: the view it publishes says
+/// `sourceMissing`. A burst a retried watch started wrote nothing it saw, so
+/// it names no paths.
+async fn files_changed(state: &AppState, id: &str, burst: Burst) {
+    let writes = burst.writes;
     let Some(folder) = state.artifacts.read().await.source_path_of(id) else {
         return;
     };
-    let Ok(print) =
-        tokio::task::spawn_blocking(move || crate::artifacts::fingerprint(&folder)).await
+    let root = folder.clone();
+    let Ok(print) = tokio::task::spawn_blocking(move || crate::artifacts::fingerprint(&root)).await
     else {
         return;
     };
@@ -339,7 +403,14 @@ async fn files_changed(state: &AppState, id: &str, writes: usize) {
     };
     record.updated_at = chrono::Utc::now().to_rfc3339();
     artifacts.fingerprints.insert(id.to_string(), print);
-    if let Ok(view) = save_and_publish(state, &artifacts, id).await {
+    let paths: Vec<String> = burst
+        .paths
+        .into_iter()
+        .filter(|rel| page_file(&folder, rel))
+        .collect();
+    let listed = paths.len();
+    let changed = (!paths.is_empty()).then_some(paths);
+    if let Ok(view) = save_and_publish(state, &artifacts, id, changed).await {
         artifacts
             .log_action(id, Action::Change, &Actor::default())
             .await;
@@ -348,6 +419,7 @@ async fn files_changed(state: &AppState, id: &str, writes: usize) {
             &[
                 ("id", &id),
                 ("writes", &writes),
+                ("paths", &listed),
                 ("updated_at", &view.artifact.updated_at),
                 ("source_missing", &view.source_missing),
             ],

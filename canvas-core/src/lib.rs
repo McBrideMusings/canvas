@@ -383,7 +383,18 @@ pub struct ArtifactView {
     /// the viewer hands it to the widget and the page as `canvas-data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// The files the change that stamped `updatedAt` wrote or removed,
+    /// relative to `path` (a linked HTML file is its own name). Only on the
+    /// `artifact-upserted` event a watched change or a `put` publishes, and
+    /// absent there when more than [`MAX_CHANGED_PATHS`] changed; the viewer
+    /// hands it to the open page as `canvas-artifact-changed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
 }
+
+/// The most changed paths an `artifact-upserted` event lists; past this, the
+/// change names none and the page reloads whole.
+pub const MAX_CHANGED_PATHS: usize = 200;
 
 /// Which kind of page failure an [`ArtifactScriptError`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

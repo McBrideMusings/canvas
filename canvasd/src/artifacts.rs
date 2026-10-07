@@ -70,7 +70,7 @@ pub struct Artifacts {
 
 impl Artifacts {
     pub async fn load(dir: &Path) -> Self {
-        let records = match tokio::fs::read(dir.join(ARTIFACTS_FILE)).await {
+        let mut records = match tokio::fs::read(dir.join(ARTIFACTS_FILE)).await {
             Ok(bytes) => match serde_json::from_slice::<ArtifactsFile>(&bytes) {
                 Ok(file) => file.artifacts,
                 Err(e) => {
@@ -90,6 +90,22 @@ impl Artifacts {
             },
             Err(_) => BTreeMap::new(),
         };
+        // A widget stored before canvasd refused HTML that freezes
+        // Canvas.app's WebKit would freeze every viewer on each start; the
+        // artifact keeps its page and loses only the widget.
+        for record in records.values_mut() {
+            let reason = record
+                .widget_html
+                .as_deref()
+                .and_then(canvas_core::html::webkit_freeze_reason);
+            if let Some(reason) = reason {
+                canvas_core::log::warn(
+                    "widget dropped on load",
+                    &[("id", &record.id), ("reason", &reason)],
+                );
+                record.widget_html = None;
+            }
+        }
         Artifacts {
             records,
             fingerprints: HashMap::new(),
@@ -260,6 +276,7 @@ impl Artifacts {
             opened_links: Vec::new(),
             refresh_error: self.refresh_errors.get(&artifact.id).cloned(),
             data: self.data.get(&artifact.id).cloned(),
+            changed: None,
         }
     }
 
@@ -314,6 +331,10 @@ pub fn apply_extras(
                 "a widget is at most {} KB of HTML",
                 MAX_WIDGET_BYTES / 1024
             ));
+        }
+        // The viewer frames a widget as it does a card.
+        if let Some(reason) = canvas_core::html::webkit_freeze_reason(&widget) {
+            return Err(format!("widget refused: {reason}"));
         }
         record.widget_html = Some(widget);
     }
@@ -642,30 +663,38 @@ pub fn content_security_policy(id: &str) -> String {
 
 /// Copies `source` into `folder`: a file under its own name, a folder's
 /// contents recursively, adding to and overwriting what is there (nothing is
-/// removed). Returns how many files it wrote. A symlinked file is copied as
-/// its content; a symlinked folder or a link to nothing is skipped, so a link
-/// cycle can't recurse forever. A destination file that is itself a symlink
-/// is removed first, so the copy writes a file rather than through the link.
-pub fn copy_into(source: &Path, folder: &Path) -> std::io::Result<usize> {
+/// removed). Returns the files it wrote, relative to `folder`. A symlinked
+/// file is copied as its content; a symlinked folder or a link to nothing is
+/// skipped, so a link cycle can't recurse forever. A destination file that is
+/// itself a symlink is removed first, so the copy writes a file rather than
+/// through the link.
+pub fn copy_into(source: &Path, folder: &Path) -> std::io::Result<Vec<String>> {
     let meta = std::fs::metadata(source)?;
+    let mut written = Vec::new();
     if meta.is_dir() {
-        copy_dir(source, folder)
+        copy_dir(source, folder, Path::new(""), &mut written)?;
     } else {
         let name = source.file_name().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "source has no file name")
         })?;
         copy_file(source, &folder.join(name))?;
-        Ok(1)
+        written.push(name.to_string_lossy().into_owned());
     }
+    Ok(written)
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<usize> {
+fn copy_dir(
+    from: &Path,
+    to: &Path,
+    relative: &Path,
+    written: &mut Vec<String>,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
-    let mut written = 0;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let src = entry.path();
         let dest = to.join(entry.file_name());
+        let rel = relative.join(entry.file_name());
         let link = entry.file_type()?.is_symlink();
         let meta = match std::fs::metadata(&src) {
             Ok(meta) => meta,
@@ -675,14 +704,14 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<usize> {
         };
         if meta.is_dir() {
             if !link {
-                written += copy_dir(&src, &dest)?;
+                copy_dir(&src, &dest, &rel, written)?;
             }
         } else {
             copy_file(&src, &dest)?;
-            written += 1;
+            written.push(rel.to_string_lossy().into_owned());
         }
     }
-    Ok(written)
+    Ok(())
 }
 
 fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {

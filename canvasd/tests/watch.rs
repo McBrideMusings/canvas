@@ -42,6 +42,24 @@ async fn watched_artifact() -> (AppState, axum::Router, String, PathBuf) {
     (state, app, id, folder)
 }
 
+/// The paths each `artifact-upserted` event for `id` within `window` names.
+async fn changes_for(
+    rx: &mut tokio::sync::broadcast::Receiver<CanvasEvent>,
+    id: &str,
+    window: Duration,
+) -> Vec<Option<Vec<String>>> {
+    let mut seen = Vec::new();
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        if let CanvasEvent::ArtifactUpserted(view) = event {
+            if view.artifact.id == id {
+                seen.push(view.changed);
+            }
+        }
+    }
+    seen
+}
+
 /// The `artifact-upserted` events for `id` published within `window`.
 async fn upserts_for(
     rx: &mut tokio::sync::broadcast::Receiver<CanvasEvent>,
@@ -91,6 +109,50 @@ async fn a_burst_of_writes_reloads_the_artifact_once() {
     assert_eq!(actions, [&json!("create"), &json!("change")]);
     assert_eq!(log[1]["sessionId"], Value::Null);
     assert_eq!(log[1]["agent"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_reload_names_the_paths_its_burst_wrote() {
+    let (state, _app, id, folder) = watched_artifact().await;
+    let mut rx = state.events.subscribe();
+
+    std::fs::write(folder.join("index.html"), "<h1>one</h1>").unwrap();
+    std::fs::create_dir_all(folder.join("css")).unwrap();
+    std::fs::write(folder.join("css/site.css"), "h1{}").unwrap();
+    std::fs::write(folder.join(".index.html.swp"), "x").unwrap();
+    std::fs::write(folder.join("index.html~"), "x").unwrap();
+    std::fs::write(folder.join("4913"), "x").unwrap();
+    std::fs::remove_file(folder.join("4913")).unwrap();
+
+    let seen = changes_for(&mut rx, &id, Duration::from_secs(2)).await;
+    assert_eq!(seen.len(), 1, "got {seen:?}");
+    // The new `css` folder and an editor's scratch files are not page files.
+    let paths = seen[0].clone().expect("a watched change names its paths");
+    assert_eq!(paths, ["css/site.css", "index.html"]);
+}
+
+#[tokio::test]
+async fn a_put_names_the_files_it_copied() {
+    let (state, app, id, _folder) = watched_artifact().await;
+    let source = temp_dir();
+    std::fs::create_dir_all(source.join("css")).unwrap();
+    std::fs::write(source.join("index.html"), "<h1>put</h1>").unwrap();
+    std::fs::write(source.join("css/site.css"), "h1{}").unwrap();
+    let mut rx = state.events.subscribe();
+
+    send(
+        &app,
+        "POST",
+        &format!("/api/artifacts/{id}/put"),
+        Some(json!({ "source": source })),
+    )
+    .await;
+
+    let seen = changes_for(&mut rx, &id, Duration::from_secs(1)).await;
+    assert_eq!(seen.len(), 1, "got {seen:?}");
+    let mut paths = seen[0].clone().expect("a put names its files");
+    paths.sort();
+    assert_eq!(paths, ["css/site.css", "index.html"]);
 }
 
 #[tokio::test]

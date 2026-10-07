@@ -25,11 +25,18 @@ pub fn inline_stylesheets(html: &str, read: impl Fn(&str) -> Option<Vec<u8>>) ->
     let mut out = String::with_capacity(html.len());
     let mut warnings = Vec::new();
     let mut pos = 0usize;
-    for Tag { start, end, .. } in tags(html) {
+    for Tag {
+        start,
+        end,
+        foreign,
+        ..
+    } in tags(html)
+    {
         out.push_str(&html[pos..start]);
         let tag = &html[start..end];
         pos = end;
-        let Some(href) = local_stylesheet_href(tag) else {
+        // The browser loads no stylesheet for an SVG or MathML `<link>`.
+        let Some(href) = local_stylesheet_href(tag).filter(|_| !foreign) else {
             out.push_str(tag);
             continue;
         };
@@ -183,6 +190,25 @@ mod tests {
         let r = inline_stylesheets(html, files(&[("/p/a.css", b".a{}"), ("/p/b.css", b".b{}")]));
         assert_eq!(r.html, "<style>.a{}</style><style>.b{}</style>");
         assert!(r.warnings.is_empty());
+    }
+
+    #[test]
+    fn svg_and_math_links_stay_as_written() {
+        // The browser loads nothing for an SVG or MathML `<link>`; inside
+        // `<foreignObject>` it is HTML again.
+        let read = || files(&[("/p/a.css", b".a{}")]);
+        let kept = r#"<svg><link rel="stylesheet" href="/p/a.css"/></svg><math><link rel="stylesheet" href="/p/a.css"></math>"#;
+        let r = inline_stylesheets(kept, read());
+        assert_eq!(r.html, kept);
+        assert!(r.warnings.is_empty());
+
+        let html =
+            r#"<svg><foreignObject><link rel="stylesheet" href="/p/a.css"></foreignObject></svg>"#;
+        let r = inline_stylesheets(html, read());
+        assert_eq!(
+            r.html,
+            "<svg><foreignObject><style>.a{}</style></foreignObject></svg>"
+        );
     }
 
     #[test]
