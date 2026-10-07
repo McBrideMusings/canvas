@@ -592,10 +592,21 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
     };
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     let bytes = if mime.essence_str() == "text/html" {
-        if let Some(refused) = refuse_freezing_page(&id, &rel, &bytes) {
-            return refused;
+        // The freeze scan costs about 20ms per MB of page, so it runs off the
+        // runtime's workers.
+        let page = tokio::task::spawn_blocking(move || {
+            let freeze = canvas_core::html::webkit_freeze_page_reason(&bytes);
+            match freeze {
+                Some(reason) => Err(reason),
+                None => Ok(artifacts::served_page(&bytes)),
+            }
+        })
+        .await;
+        match page {
+            Ok(Ok(page)) => page,
+            Ok(Err(reason)) => return refused_page(&id, &rel, &reason),
+            Err(e) => return failed("serving an artifact page failed", &id, &e),
         }
-        artifacts::served_page(&bytes)
     } else {
         bytes
     };
@@ -624,31 +635,28 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
         .into_response()
 }
 
-/// A 422 in place of an HTML page that would freeze Canvas.app's WebKit
-/// (`canvas_core::html::webkit_freeze_page_reason`), naming why in the pane;
-/// the file itself is left as it is. `None` for any other page.
-fn refuse_freezing_page(id: &str, rel: &str, html: &[u8]) -> Option<Response> {
-    let reason = canvas_core::html::webkit_freeze_page_reason(html)?;
+/// The 422 canvasd answers in place of an HTML page that would freeze
+/// Canvas.app's WebKit (`canvas_core::html::webkit_freeze_page_reason`),
+/// naming why in the pane; the file itself is left as it is.
+fn refused_page(id: &str, rel: &str, reason: &str) -> Response {
     canvas_core::log::warn(
         "artifact page refused",
-        &[("id", &id), ("path", &rel), ("reason", &reason.as_str())],
+        &[("id", &id), ("path", &rel), ("reason", &reason)],
     );
-    Some(
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            [
-                (
-                    header::CONTENT_TYPE,
-                    "text/plain; charset=utf-8".to_string(),
-                ),
-                (header::CACHE_CONTROL, "no-store".to_string()),
-                (
-                    header::CONTENT_SECURITY_POLICY,
-                    artifacts::content_security_policy(id),
-                ),
-            ],
-            format!("Canvas won't show this page: {reason}.\n"),
-        )
-            .into_response(),
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [
+            (
+                header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_string(),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                artifacts::content_security_policy(id),
+            ),
+        ],
+        format!("Canvas won't show this page: {reason}.\n"),
     )
+        .into_response()
 }
