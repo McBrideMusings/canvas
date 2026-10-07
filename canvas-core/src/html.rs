@@ -9,13 +9,16 @@ use std::rc::Rc;
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
 /// `>` inside a quoted attribute value doesn't end the tag early. Tag
 /// boundaries follow the browser's tokenizer: `<` opens a tag only before a
-/// letter, `/`, `!` or `?` (so the `<` in `a < b` is text), and a quote opens
+/// letter, `!`, `?` or a `/` with anything after it (so the `<` in `a < b`
+/// and a `</` at the end of the HTML are text), and a quote opens
 /// a value only where a value starts, after the `=` that ends an attribute
 /// name (so the `'` in `<b's>` or `<a href=p?q='x'>` is just a character).
-/// `<!` and `<?` end at the first `>`. Returns the byte range `[start, end)`
-/// including the angle brackets. A comment is one range from `<!--` through
-/// `-->` (or the end of the HTML), so a quote or tag inside it is never read.
-/// `None` past the last tag or if a tag is left unterminated.
+/// `<!`, `<?` and a `</` before anything but a letter open a bogus comment,
+/// which ends at the first `>` (or the end of the HTML). Returns the byte
+/// range `[start, end)` including the angle brackets. A comment is one range
+/// from `<!--` through `-->` (or the end of the HTML), so a quote or tag inside
+/// it is never read. `None` past the last tag or if a start or end tag is left
+/// unterminated.
 pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = html.as_bytes();
     let i = tag_open(html, from)?;
@@ -26,8 +29,12 @@ pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
             .map_or(html.len(), |e| i + 2 + e + 3);
         return Some((i, end));
     }
-    if matches!(bytes[i + 1], b'!' | b'?') {
-        return html[i..].find('>').map(|e| (i, i + e + 1));
+    // `tag_open` leaves a byte after a `</`.
+    if matches!(bytes[i + 1], b'!' | b'?')
+        || bytes[i + 1] == b'/' && !bytes[i + 2].is_ascii_alphabetic()
+    {
+        let end = html[i..].find('>').map_or(html.len(), |e| i + e + 1);
+        return Some((i, end));
     }
     let mut state = Tok::Name;
     for (j, &c) in bytes.iter().enumerate().skip(i + 1) {
@@ -54,14 +61,17 @@ pub fn next_tag(html: &str, from: usize) -> Option<(usize, usize)> {
 }
 
 /// The offset of the first `<` at or after `from` that opens a tag, one
-/// before a letter, `/`, `!` or `?`, terminated or not.
+/// before a letter, `!`, `?` or a `/` with anything after it, terminated or
+/// not: a `</` at the end of the HTML is text.
 fn tag_open(html: &str, from: usize) -> Option<usize> {
     let bytes = html.as_bytes();
     (from..bytes.len()).find(|&i| {
         bytes[i] == b'<'
-            && bytes
-                .get(i + 1)
-                .is_some_and(|&c| c.is_ascii_alphabetic() || matches!(c, b'/' | b'!' | b'?'))
+            && match bytes.get(i + 1) {
+                Some(b'/') => i + 2 < bytes.len(),
+                Some(&c) => c.is_ascii_alphabetic() || matches!(c, b'!' | b'?'),
+                None => false,
+            }
     })
 }
 
@@ -3565,6 +3575,10 @@ mod tests {
         assert_eq!(webkit_freeze(&runs), None);
         // An unterminated tag at the end is dropped, not read as text.
         assert_eq!(webkit_freeze(&format!("{runs}<i")), None);
+        // So is a bogus comment, but a `</` with nothing after it is text.
+        assert_eq!(webkit_freeze(&format!("{runs}</ x")), None);
+        let ends = format!("{runs}</");
+        assert_eq!(webkit_freeze(&ends), Some(ends.len()));
         let html = format!("{runs}x");
         assert_eq!(webkit_freeze(&html), Some(html.len()));
         assert_eq!(
@@ -3634,6 +3648,13 @@ mod tests {
                 "<!-- open"
             ]
         );
+    }
+
+    #[test]
+    fn a_bogus_comment_ends_at_its_first_close_or_the_end() {
+        let html = "</ x='>'><? a='>'<!x a='>'<p>y<!b <i";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert_eq!(names, ["</ x='>", "<? a='>", "<!x a='>", "<p>", "<!b <i"]);
     }
 
     #[test]
