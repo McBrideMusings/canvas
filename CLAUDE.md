@@ -169,7 +169,8 @@ beside the terminal all day.
   it); the viewer's lightbox skips those entries and the card CSP carries
   `media-src`. A local `<link rel="stylesheet" href="/abs/x.css">` is replaced
   by a `<style>` block with its `url()` assets as data URIs, before the scan
-  (`cli/src/inline_css.rs`). Hook
+  (`cli/src/inline_css.rs`); one inside SVG or MathML, which the browser never
+  loads, stays as written. Hook
   dispatch never starts a tokio runtime; only `canvas daemon` does.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
