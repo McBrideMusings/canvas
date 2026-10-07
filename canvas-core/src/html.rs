@@ -90,6 +90,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         open: Vec::new(),
         formatting: Vec::new(),
         next_id: 0,
+        form: None,
         mode: Mode::Body,
     }
 }
@@ -133,6 +134,11 @@ pub struct Tags<'a> {
     formatting: Vec<Option<Formatting>>,
     /// The id the next opened element gets.
     next_id: usize,
+    /// The tree builder's form element pointer: the id of the last `<form>`
+    /// opened outside a `<template>`. Only a `</form>` outside a template
+    /// clears it, so it outlives the form's place on the stack, and while it
+    /// is set a `<form>` outside a template is dropped.
+    form: Option<usize>,
     /// The tree builder's insertion mode. Like WebKit's it is kept, not read
     /// off the open elements each time: the depth cap can close the table,
     /// section, row or cell that set it, and the mode stays.
@@ -336,6 +342,10 @@ impl Tags<'_> {
         if !self.table_start_tag(name) || matches!(name, "html" | "body" | "head") {
             return None;
         }
+        let sets_pointer = name == "form" && !self.in_template();
+        if sets_pointer && self.form.is_some() {
+            return None;
+        }
         self.body_start_tag(name);
         if self.reconstructs(tag, name) {
             self.reconstruct();
@@ -348,6 +358,9 @@ impl Tags<'_> {
             let id = self.push_html(name);
             if FORMATTING_TAGS.contains(&name) {
                 self.push_formatting(id, name, tag);
+            }
+            if sets_pointer {
+                self.form = Some(id);
             }
         }
         match name {
@@ -1097,13 +1110,7 @@ impl Tags<'_> {
             "p" => Scope::Button,
             "li" => Scope::ListItem,
             "table" | "caption" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th" => Scope::Table,
-            "form" => {
-                // `</form>` removes the form alone, leaving open what it holds.
-                if let Some(i) = self.in_scope(name, Scope::Default) {
-                    self.open.remove(i);
-                }
-                return;
-            }
+            "form" => return self.form_end_tag(),
             _ if SCOPED_END_TAGS.contains(&name) || is_heading(name) => Scope::Default,
             _ if FORMATTING_TAGS.contains(&name) => return self.adopt(name),
             _ => return self.other_end_tag(name),
@@ -1114,6 +1121,37 @@ impl Tags<'_> {
                 self.clear_to_marker();
             }
         }
+    }
+
+    /// Closes elements for `</form>`. Outside a `<template>` it clears the
+    /// form element pointer and, when that form is in scope, closes the
+    /// `<p>`, list items and the like at the top of the stack, then removes
+    /// the form alone, leaving open what it holds. Inside one it closes the
+    /// innermost form in scope and everything inside it.
+    fn form_end_tag(&mut self) {
+        if self.in_template() {
+            if let Some(i) = self.in_scope("form", Scope::Default) {
+                self.open.truncate(i);
+            }
+            return;
+        }
+        let Some(i) = self.form.take().and_then(|id| self.open_index(id)) else {
+            return;
+        };
+        if self.open[i + 1..]
+            .iter()
+            .any(|e| e.ends_scope(Scope::Default))
+        {
+            return;
+        }
+        while self
+            .open
+            .last()
+            .is_some_and(|e| !e.is_foreign() && IMPLIED_END_TAGS.contains(&e.name.as_str()))
+        {
+            self.open.pop();
+        }
+        self.open.remove(i);
     }
 
     /// Closes elements for an end tag the "in body" rules name no step for:
@@ -2469,6 +2507,52 @@ mod tests {
                 "{html}: {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_form_start_tag_is_dropped_until_form_end_tag_clears_the_pointer() {
+        // Each runs inside `<svg><foreignObject>`, then `</foreignObject>`,
+        // which closes the island only while it is the current node: a form
+        // left open keeps it open and `<style/>` opens HTML raw text. The
+        // count is the `<b>` elements WebKit, Chromium and Canvas.app build.
+        for (inner, bs) in [
+            // `</div>` closes the form, but the pointer stays set.
+            ("<div><form></div><form>", 1),
+            ("<div><form></div></form><form>", 0),
+            ("<form></form><form>", 0),
+            ("<div><form></div><div></form></div>", 1),
+            ("<form id=a><div></form><form>", 0),
+            // A form inside a template sets no pointer, and a `</form>`
+            // inside one clears none.
+            ("<template><form></template><form>", 0),
+            ("<div><form></div><template></form></template><form>", 1),
+            (
+                "<div><form></div><template><span></form></template><form>",
+                1,
+            ),
+            // `</form>` first closes a `<p>` or list item at the top.
+            ("<form><p></form>", 1),
+            ("<form><li></form>", 1),
+            ("<form><span></form>", 0),
+            ("<form><p><span></form>", 0),
+            // A `</form>` whose form is out of scope still clears the
+            // pointer, so the next `</form>` leaves the form open.
+            ("<form><marquee></form></marquee></form>", 0),
+        ] {
+            let html =
+                format!("<svg><foreignObject>{inner}</foreignObject><style/><b>x</b></style>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+        // Inside a template, `</form>` closes everything the form holds, so
+        // `<style/>` is HTML raw text.
+        let html = "<template><form><svg></form><style/><b>x</b></style></template>";
+        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+        assert!(!names.contains(&"<b>"), "{names:?}");
     }
 
     #[test]
