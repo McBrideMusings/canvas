@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -12,6 +13,7 @@ use canvas_core::{
     ScriptErrorReport,
 };
 
+use crate::artifact_state;
 use crate::artifacts::{self, Artifacts};
 use crate::provenance::{Action, Actor};
 use crate::routes::MAX_DATA_BYTES;
@@ -619,4 +621,107 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
         bytes,
     )
         .into_response()
+}
+
+/// The folder `id`'s state sits in (see [`artifact_state`]).
+async fn state_source(state: &AppState, id: &str) -> Result<PathBuf, Response> {
+    let artifacts = state.artifacts.read().await;
+    let Some(record) = artifacts.records.get(id) else {
+        return Err(not_found());
+    };
+    artifacts.source_path(record).ok_or_else(no_data_dir)
+}
+
+/// Answers a state error as its status and text, logging a refusal.
+fn state_refused(id: &str, key: &str, e: &artifact_state::Error) -> Response {
+    let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    canvas_core::log::warn(
+        "artifact state refused",
+        &[("id", &id), ("key", &key), ("reason", e)],
+    );
+    (status, e.to_string()).into_response()
+}
+
+/// Runs a blocking state operation off the async threads.
+async fn state_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, artifact_state::Error> + Send + 'static,
+) -> Result<T, artifact_state::Error> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|e| Err(artifact_state::Error::Io(std::io::Error::other(e))))
+}
+
+/// `PUT /api/artifacts/:id/state/:key`: stores the request body, one JSON
+/// value, under `key` (the viewer's relay of `canvas-state-set`). Writes
+/// reload nothing: the watcher ignores `canvas-data/`.
+pub async fn set_artifact_state(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let source = match state_source(&state, &id).await {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let _write = artifact_state::WRITES.lock().await;
+    let bytes = body.len();
+    let (key_for_set, source_for_set) = (key.clone(), source);
+    match state_blocking(move || artifact_state::set(&source_for_set, &key_for_set, &body)).await {
+        Ok(()) => {
+            canvas_core::log::info(
+                "artifact state set",
+                &[("id", &id), ("key", &key), ("bytes", &bytes)],
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => state_refused(&id, &key, &e),
+    }
+}
+
+/// `GET /api/artifacts/:id/state`: every key as one JSON object.
+pub async fn get_artifact_state(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let source = match state_source(&state, &id).await {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    match state_blocking(move || artifact_state::get_all(&source)).await {
+        Ok(values) => Json(values).into_response(),
+        Err(e) => state_refused(&id, "", &e),
+    }
+}
+
+/// `GET /api/artifacts/:id/state/:key`: one value; 404 when the key holds none.
+pub async fn get_artifact_state_key(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(String, String)>,
+) -> Response {
+    let source = match state_source(&state, &id).await {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let wanted = key.clone();
+    match state_blocking(move || artifact_state::get(&source, &wanted)).await {
+        Ok(Some(value)) => Json(value).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "no value under that key").into_response(),
+        Err(e) => state_refused(&id, &key, &e),
+    }
+}
+
+/// `DELETE /api/artifacts/:id/state`: deletes every value.
+pub async fn clear_artifact_state(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let source = match state_source(&state, &id).await {
+        Ok(source) => source,
+        Err(response) => return response,
+    };
+    let _write = artifact_state::WRITES.lock().await;
+    match state_blocking(move || artifact_state::clear(&source)).await {
+        Ok(cleared) => {
+            canvas_core::log::info("artifact state cleared", &[("id", &id), ("keys", &cleared)]);
+            Json(serde_json::json!({ "cleared": cleared })).into_response()
+        }
+        Err(e) => state_refused(&id, "", &e),
+    }
 }

@@ -8,7 +8,8 @@
 //! `artifact-upserted` goes out once, listing the paths the burst wrote; the
 //! viewer tells the open page when `updatedAt` changes. A burst that leaves the folder's
 //! [`fingerprint`](crate::artifacts::fingerprint) as it was last stamped
-//! (a `put`, which stamps itself) publishes nothing.
+//! (a `put`, which stamps itself) publishes nothing. Writes under an
+//! artifact's `canvas-data/` folder (a page's saved state) belong to no burst.
 //!
 //! The OS refuses to watch a path that doesn't exist (a link whose folder is
 //! gone when canvasd starts), so a path whose watch failed is tried again
@@ -206,6 +207,15 @@ impl Watcher {
             .iter()
             .filter_map(|(id, root)| {
                 let rel = path.strip_prefix(root).ok()?;
+                // A page's saved state is not a change to the page.
+                if rel
+                    .components()
+                    .next()
+                    .is_some_and(|c| c.as_os_str() == crate::artifact_state::DIR)
+                    && root.is_dir()
+                {
+                    return None;
+                }
                 let rel = if rel.as_os_str().is_empty() {
                     root.is_file()
                         .then(|| root.file_name())

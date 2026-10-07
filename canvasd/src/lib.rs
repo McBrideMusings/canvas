@@ -1,4 +1,5 @@
 pub mod artifact_routes;
+pub mod artifact_state;
 pub mod artifacts;
 pub mod cdn;
 pub mod export;
@@ -94,6 +95,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/artifacts/:id/data",
             put(artifact_routes::put_artifact_data),
+        )
+        .route(
+            "/api/artifacts/:id/state",
+            get(artifact_routes::get_artifact_state).delete(artifact_routes::clear_artifact_state),
+        )
+        .route(
+            "/api/artifacts/:id/state/:key",
+            get(artifact_routes::get_artifact_state_key).put(artifact_routes::set_artifact_state),
         )
         .route(
             "/api/artifacts/:id/errors",
