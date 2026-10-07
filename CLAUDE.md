@@ -195,14 +195,17 @@ beside the terminal all day.
   of file closes it (`closed_at_end`: open strings, comments, `url(`, brackets
   and blocks, an at-rule's `;`; a selector with no block dropped), so it can't
   run into the text after it. A `<style>` inside SVG or MathML holds markup,
-  not raw text: its CSS is every text run and CDATA section joined, comments
+  not raw text: as Canvas.app's WebKit reads it, its CSS is every text run and
+  CDATA section inside it joined, child elements' included, up to the tag that
+  closes it (`</style>`, an ancestor's end tag, a breakout tag such as `<p>`;
+  `Tags::is_open` says), comments
   (bogus ones too) dropped, every HTML character reference (named or numeric,
   `htmlize` via `canvas_core::html::decode_entities`) decoded once per text run
   outside CDATA, and the scan reads it whole (`Cdn::markup_css`), so a reference
-  split by a comment or a CDATA boundary is still one. The pieces before the
+  split by a comment, a child element or a CDATA boundary is still one. The pieces before the
   first replacement and after the last stay as written; those between become one
-  run in the form of the first of them, text written with entities or CDATA with
-  `]]>` split; a style where nothing was inlined keeps its text exactly as
+  run in the form of the first of them, text written with entities, CDATA with
+  `]]>` split or a child's raw text, followed by the child elements' tags, emptied; a style where nothing was inlined keeps its text exactly as
   written. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,

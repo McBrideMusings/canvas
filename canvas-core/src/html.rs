@@ -624,6 +624,17 @@ impl Tags<'_> {
         self.pos = self.pos.max(pos);
     }
 
+    /// An id for the innermost open element, which after a start tag that
+    /// opened an element is that element.
+    pub fn current(&self) -> Option<usize> {
+        self.open.last().map(|e| e.id)
+    }
+
+    /// Whether the element [`Tags::current`] named `id` is still open.
+    pub fn is_open(&self, id: usize) -> bool {
+        self.open.holds(id)
+    }
+
     /// Updates the open elements for the start tag `tag`, and returns where
     /// its text ends when the scan reads it as raw text, and whether it
     /// opened an SVG or MathML element.
@@ -1588,7 +1599,7 @@ impl Tags<'_> {
     /// integration point, as Canvas.app's WebKit reads it (Playwright's
     /// WebKit build opens a section at an integration point too). Elsewhere
     /// it is a bogus comment, ending at the first `>`.
-    fn cdata_allowed(&self) -> bool {
+    pub fn cdata_allowed(&self) -> bool {
         self.open.last().is_some_and(Element::holds_foreign_content)
     }
 
