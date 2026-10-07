@@ -2921,6 +2921,55 @@ mod tests {
     }
 
     #[test]
+    fn a_stylesheet_inside_an_svg_style_counts_its_base64_toward_the_total() {
+        // 14 sheets of 0.9 of the asset cap fit the 16-cap total as bytes
+        // (12.6) but not as base64 (16.8): the last stays a link.
+        let size = MAX_ASSET_BYTES / 10 * 9;
+        let links: String = (0..14)
+            .map(|n| format!(r#"<link rel="stylesheet" href="https://unpkg.com/{n}.css">"#))
+            .collect();
+        let html = format!("<svg><style><foreignObject>{links}</foreignObject></style></svg>");
+        let fetch = |_: &str, _: Duration| Ok(vec![b'x'; size]);
+        let r = export_card(&card(&html, &[], &[]), None, files, fetch);
+        assert_eq!(r.html.matches("href=\"data:").count(), 13);
+        assert!(r.html.contains(
+            r#"<link rel="stylesheet" href="https://unpkg.com/13.css"></foreignObject>"#
+        ));
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert_eq!(r.warnings[0].target, "https://unpkg.com/13.css");
+        assert_eq!(r.warnings[0].reason, over_total_reason());
+    }
+
+    #[test]
+    fn a_dropped_anchor_inside_an_svg_style_keeps_its_css_edits_in_place() {
+        // The local-path anchor's start and end tags go; the @import after
+        // them still becomes its sheet's rules.
+        let html = r##"<svg><style><foreignObject><a href="#canvas-open-0">/**/</a></foreignObject>@import "https://cdnjs.cloudflare.com/x/css/b.css";.d{}</style></svg>"##;
+        let r = export_card(&card(html, &[], &["/x/f.md"]), None, files, cdn_files);
+        assert!(
+            r.html
+                .contains("<svg><style><foreignObject>/**/</foreignObject>.b{}.d{}</style></svg>"),
+            "{}",
+            r.html
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn a_script_inside_a_mathml_style_becomes_a_data_uri_in_place() {
+        // A MathML `<style>` reads the text inside its children as CSS too,
+        // and inside an `<mi>` an HTML element is HTML again.
+        let html = r#"<math><style><mi><script src="https://unpkg.com/lib.js">.c{}</script></mi>.d{}</style></math>"#;
+        let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+        let want = format!(
+            r#"<math><style><mi><script src="data:text/javascript;charset=utf-8;base64,{}">.c{{}}</script></mi>.d{{}}</style></math>"#,
+            base64(b"var s='</script>',t='<!--<SCRIPT>';"),
+        );
+        assert!(r.html.contains(&want), "{}", r.html);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
     fn failed_and_oversize_downloads_warn_once_and_stay_links() {
         let c = card(
             r#"<script src="https://unpkg.com/big.js"></script><link rel="stylesheet" href="https://unpkg.com/gone.css"><link rel="stylesheet" href="https://unpkg.com/gone.css"><script src="https://example.com/other.js"></script>"#,
