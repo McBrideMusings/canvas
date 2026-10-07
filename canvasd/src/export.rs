@@ -10,6 +10,7 @@
 //! network; one that can't be fetched stays a link and warns. Pure apart from
 //! the injected file reader and downloader, which are the test seams.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::ops::Range;
@@ -110,12 +111,8 @@ fn rewrite<F: cdn::Fetch>(
     warnings: &mut Vec<ExportWarning>,
 ) -> (String, Vec<Map<String, Value>>) {
     let html = card.html.as_str();
-    let image_prefix = format!("/api/cards/{}/images/", card.id);
+    let mut refs = CardRefs::new(card, read);
     let mut out = String::with_capacity(html.len());
-    // One entry per open <a>: true when its tags are dropped (a local path).
-    let mut anchors: Vec<bool> = Vec::new();
-    // Bytes of image and video files inlined so far.
-    let mut media_bytes = 0usize;
     let mut pos = 0usize;
     // Inside an SVG or MathML `<style>`, whose text holds markup: the
     // style's element id and everything written in it so far, kept until the
@@ -144,7 +141,14 @@ fn rewrite<F: cdn::Fetch>(
                 pieces.push(StylePiece::Text(text));
             }
             if scan.is_open(*id) {
-                pieces.push(StylePiece::of_tag(tag, scan.cdata_allowed()));
+                match StylePiece::of_tag(tag, scan.cdata_allowed()) {
+                    StylePiece::Element(_) => {
+                        if let Some(tag) = style_child(tag, foreign, &mut refs, cdn, warnings) {
+                            pieces.push(StylePiece::Element(tag));
+                        }
+                    }
+                    piece => pieces.push(piece),
+                }
                 if let Some(text_end) = text_end {
                     let name = tag_name(tag).unwrap_or_default();
                     pieces.push(StylePiece::Raw(&html[end..text_end], name));
@@ -166,85 +170,31 @@ fn rewrite<F: cdn::Fetch>(
                     continue;
                 }
             }
-            if closing_name(tag) == "a" && anchors.pop() == Some(true) {
-                continue;
+            if !refs.drops_end(tag) {
+                out.push_str(tag);
             }
-            out.push_str(tag);
             continue;
         }
 
         match tag_name(tag).as_deref() {
-            Some(element @ ("img" | "video" | "source")) => {
-                let Some(src) = find_attr_value(tag, "src") else {
-                    out.push_str(tag);
-                    continue;
-                };
-                let Some(index) = tag[src.range()]
-                    .strip_prefix(&image_prefix)
-                    .and_then(|n| n.parse::<usize>().ok())
-                else {
-                    out.push_str(tag);
-                    continue;
-                };
-                let path = card.images.get(index).map(String::as_str).unwrap_or("");
-                match media_data_uri(path, read, MAX_MEDIA_BYTES - media_bytes) {
-                    Ok((uri, len)) => {
-                        media_bytes += len;
-                        out.push_str(&replace_attr_value(tag, src, &uri))
-                    }
-                    Err((kind, reason)) => {
-                        warnings.push(ExportWarning {
-                            kind,
-                            target: path.to_string(),
-                            reason,
-                        });
-                        let name = Path::new(path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        if element == "img" {
-                            let what = match kind {
-                                ExportWarningKind::MediaTooLarge => "image left out",
-                                _ => "image missing",
-                            };
-                            out.push_str(&format!(
-                                "<span class=\"canvas-missing\" role=\"img\">{what}: {}</span>",
-                                escape_text(&name)
-                            ));
-                        } else {
-                            // Drop ` src="…"` whole: an empty src would make
-                            // the browser request the page's own URL.
-                            out.push_str(&without_attr(tag, "src", src));
-                        }
-                    }
+            Some(element @ ("img" | "video" | "source")) => match refs.media(tag, warnings) {
+                None => out.push_str(tag),
+                Some(Ok(tag)) => out.push_str(&tag),
+                Some(Err(missing)) if element == "img" => {
+                    let what = match missing.kind {
+                        ExportWarningKind::MediaTooLarge => "image left out",
+                        _ => "image missing",
+                    };
+                    out.push_str(&format!(
+                        "<span class=\"canvas-missing\" role=\"img\">{what}: {}</span>",
+                        escape_text(&missing.name)
+                    ));
                 }
-            }
+                Some(Err(missing)) => out.push_str(&missing.without_src),
+            },
             Some("a") => {
-                let link = find_attr_value(tag, "href").and_then(|href| {
-                    let index = tag[href.range()]
-                        .strip_prefix("#canvas-open-")?
-                        .parse::<usize>()
-                        .ok()?;
-                    Some((href, card.targets.get(index).map(String::as_str)))
-                });
-                match link {
-                    None => {
-                        anchors.push(false);
-                        out.push_str(tag);
-                    }
-                    Some((href, Some(url)))
-                        if url.starts_with("http://") || url.starts_with("https://") =>
-                    {
-                        anchors.push(false);
-                        let close = if tag.ends_with("/>") { "/>" } else { ">" };
-                        let tag = replace_attr_value(tag, href, &escape_attr(url));
-                        out.push_str(tag.strip_suffix(close).unwrap_or(&tag));
-                        out.push_str(" target=\"_blank\" rel=\"noopener\"");
-                        out.push_str(close);
-                    }
-                    // A local path, or an index the card has no target for:
-                    // the link text stays, the anchor goes.
-                    Some(_) => anchors.push(true),
+                if let Some(tag) = refs.anchor(tag) {
+                    out.push_str(&tag);
                 }
             }
             // An SVG or MathML `<script>` or `<link>` fetches nothing, so it
@@ -284,11 +234,7 @@ fn rewrite<F: cdn::Fetch>(
                     match cdn.module_graph(&url, warnings) {
                         Some(key) => {
                             out.push_str(&without_attr(tag, "src", src));
-                            let import = format!(
-                                "import {};",
-                                serde_json::to_string(&key).unwrap_or_default()
-                            );
-                            out.push_str(&escape_raw(&import, "script"));
+                            out.push_str(&escape_raw(&module_import(&key), "script"));
                             pos = text_end.unwrap_or(end);
                         }
                         None => out.push_str(tag),
@@ -312,11 +258,7 @@ fn rewrite<F: cdn::Fetch>(
                     continue;
                 };
                 let css = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
-                    cdn.importing.push(url.clone());
-                    let from = cdn.source_url(&url);
-                    let css = cdn.css(&String::from_utf8_lossy(&bytes), Some(&from), 0, warnings);
-                    cdn.importing.pop();
-                    Some(css)
+                    Some(cdn.stylesheet(&url, &bytes, warnings))
                 });
                 match css {
                     Some(css) => {
@@ -366,6 +308,225 @@ fn rewrite<F: cdn::Fetch>(
     (out, card_maps)
 }
 
+/// The card's own references in its tags: its files, read into the page,
+/// and its `#canvas-open-<n>` anchors, rewritten from its targets.
+struct CardRefs<'c, R> {
+    card: &'c Card,
+    read: &'c R,
+    image_prefix: String,
+    /// One entry per open `<a>`: true when its tags are dropped (a local path).
+    anchors: Vec<bool>,
+    /// Bytes of image and video files inlined so far.
+    media_bytes: usize,
+}
+
+/// A card file an `<img>`, `<video>` or `<source>` names that stays out of
+/// the page, already warned about.
+struct MissingMedia {
+    kind: ExportWarningKind,
+    /// The file's name.
+    name: String,
+    /// The tag with ` src="…"` dropped whole: an empty src would make the
+    /// browser request the page's own URL.
+    without_src: String,
+}
+
+impl<'c, R: Fn(&str, u64) -> io::Result<Vec<u8>>> CardRefs<'c, R> {
+    fn new(card: &'c Card, read: &'c R) -> Self {
+        CardRefs {
+            card,
+            read,
+            image_prefix: format!("/api/cards/{}/images/", card.id),
+            anchors: Vec::new(),
+            media_bytes: 0,
+        }
+    }
+
+    /// For an `<img>`, `<video>` or `<source>` whose src names one of the
+    /// card's files: the tag with the file as a `data:` URI, or the file
+    /// left out after a warning. None for any other src.
+    fn media(
+        &mut self,
+        tag: &str,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<Result<String, MissingMedia>> {
+        let src = find_attr_value(tag, "src")?;
+        let index = tag[src.range()]
+            .strip_prefix(&self.image_prefix)?
+            .parse::<usize>()
+            .ok()?;
+        let path = self
+            .card
+            .images
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("");
+        Some(
+            match media_data_uri(path, self.read, MAX_MEDIA_BYTES - self.media_bytes) {
+                Ok((uri, len)) => {
+                    self.media_bytes += len;
+                    Ok(replace_attr_value(tag, src, &uri))
+                }
+                Err((kind, reason)) => {
+                    warnings.push(ExportWarning {
+                        kind,
+                        target: path.to_string(),
+                        reason,
+                    });
+                    Err(MissingMedia {
+                        kind,
+                        name: Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        without_src: without_attr(tag, "src", src),
+                    })
+                }
+            },
+        )
+    }
+
+    /// The `<a>` start tag `tag` as the page writes it: a `#canvas-open-<n>`
+    /// on a web target becomes a link opening in a new tab; one on a local
+    /// path, or an index the card has no target for, is dropped (None), its
+    /// link text staying.
+    fn anchor<'t>(&mut self, tag: &'t str) -> Option<Cow<'t, str>> {
+        let link = find_attr_value(tag, "href").and_then(|href| {
+            let index = tag[href.range()]
+                .strip_prefix("#canvas-open-")?
+                .parse::<usize>()
+                .ok()?;
+            Some((href, self.card.targets.get(index).map(String::as_str)))
+        });
+        let written = match link {
+            None => Some(Cow::Borrowed(tag)),
+            Some((href, Some(url)))
+                if url.starts_with("http://") || url.starts_with("https://") =>
+            {
+                let close = if tag.ends_with("/>") { "/>" } else { ">" };
+                let tag = replace_attr_value(tag, href, &escape_attr(url));
+                let open = tag.strip_suffix(close).unwrap_or(&tag);
+                Some(Cow::Owned(format!(
+                    "{open} target=\"_blank\" rel=\"noopener\"{close}"
+                )))
+            }
+            Some(_) => None,
+        };
+        self.anchors.push(written.is_none());
+        written
+    }
+
+    /// Whether the end tag `tag` closes an `<a>` whose start tag was dropped.
+    fn drops_end(&mut self, tag: &str) -> bool {
+        closing_name(tag) == "a" && self.anchors.pop() == Some(true)
+    }
+}
+
+/// The child element tag `tag` inside an SVG or MathML `<style>` as the page
+/// writes it, or None to drop it. The style reads its CSS from the text
+/// inside its children too, so only attributes change: each card file and
+/// CDN script or stylesheet an HTML element there loads (inside a
+/// `<foreignObject>`, where it runs) becomes a `data:` URI, and anchors are
+/// rewritten as anywhere else. A card import map stays where it is.
+fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Vec<u8>>>(
+    tag: &'t str,
+    foreign: bool,
+    refs: &mut CardRefs<R>,
+    cdn: &mut Cdn<F>,
+    warnings: &mut Vec<ExportWarning>,
+) -> Option<Cow<'t, str>> {
+    if tag.starts_with("</") {
+        return (!refs.drops_end(tag)).then_some(Cow::Borrowed(tag));
+    }
+    let written = match tag_name(tag).as_deref() {
+        Some("img" | "video" | "source") => match refs.media(tag, warnings) {
+            None => None,
+            Some(Ok(tag)) => Some(tag),
+            // A placeholder's text would be read as CSS.
+            Some(Err(missing)) => Some(missing.without_src),
+        },
+        Some("a") => return refs.anchor(tag),
+        Some("script") if !foreign => {
+            let src = find_attr_value(tag, "src")
+                .and_then(|src| Some((src, cdn::join(None, &attr_url(&tag[src.range()]))?)))
+                .filter(|(_, url)| cdn::allowed(url));
+            src.and_then(|(src, url)| {
+                let uri = match script_type(tag).as_str() {
+                    "importmap" => return None,
+                    // The page's import map serves the module and what it
+                    // reaches; a `data:` src can't resolve them itself.
+                    "module" => {
+                        let import = module_import(&cdn.module_graph(&url, warnings)?);
+                        data_uri("text/javascript", import.as_bytes())
+                    }
+                    _ => cdn.inline(&url, warnings, |cdn, bytes, warnings| {
+                        charged_data_uri(
+                            cdn,
+                            &url,
+                            "text/javascript",
+                            &bytes,
+                            bytes.len(),
+                            warnings,
+                        )
+                    })?,
+                };
+                Some(replace_attr_value(tag, src, &uri))
+            })
+        }
+        Some("link") if !foreign => {
+            let href = stylesheet_href(tag)
+                .filter(|url| cdn::allowed(url))
+                .zip(find_attr_value(tag, "href"));
+            href.and_then(|(url, href)| {
+                let uri = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
+                    let css = cdn.stylesheet(&url, &bytes, warnings);
+                    charged_data_uri(cdn, &url, "text/css", css.as_bytes(), css.len(), warnings)
+                })?;
+                Some(replace_attr_value(tag, href, &uri))
+            })
+        }
+        _ => None,
+    };
+    // A hash of the file no longer matches what the data: URI holds.
+    Some(match written {
+        Some(tag) => match find_attr_value(&tag, "integrity") {
+            Some(integrity) => Cow::Owned(without_attr(&tag, "integrity", integrity)),
+            None => Cow::Owned(tag),
+        },
+        None => Cow::Borrowed(tag),
+    })
+}
+
+/// The body of a module script that imports the module the page's import
+/// map keeps under `key`.
+fn module_import(key: &str) -> String {
+    format!("import {};", serde_json::to_string(key).unwrap_or_default())
+}
+
+/// `bytes` as a UTF-8 `data:` URI of type `mime`.
+fn data_uri(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};charset=utf-8;base64,{}", base64(bytes))
+}
+
+/// [`data_uri`] of what `url`'s body became, `counted` bytes of it already
+/// counted toward the inlining total and the rest counted now; None, after a
+/// warning naming `url`, when the rest would pass the total.
+fn charged_data_uri<F: cdn::Fetch>(
+    cdn: &mut Cdn<F>,
+    url: &str,
+    mime: &str,
+    bytes: &[u8],
+    counted: usize,
+    warnings: &mut Vec<ExportWarning>,
+) -> Option<String> {
+    let uri = data_uri(mime, bytes);
+    if !cdn.charge(uri.len().saturating_sub(counted)) {
+        cdn.warn(url, over_total_reason(), warnings);
+        return None;
+    }
+    Some(uri)
+}
+
 /// One node of an SVG or MathML `<style>`, as written.
 enum StylePiece<'a> {
     /// A text run, character references and all.
@@ -375,8 +536,8 @@ enum StylePiece<'a> {
     /// A comment, bogus or not, or a doctype: nothing the CSS reads.
     Comment(&'a str),
     /// A child element's start or end tag, which the CSS reads nothing
-    /// from but which keeps the tree's shape.
-    Element(&'a str),
+    /// from but which keeps the tree's shape, as the page writes it.
+    Element(Cow<'a, str>),
     /// The text of a child element the scan read as raw text, such as an
     /// HTML `<title>` inside a `<foreignObject>`, and that element's name.
     Raw(&'a str, String),
@@ -398,17 +559,17 @@ impl<'a> StylePiece<'a> {
         if bogus {
             StylePiece::Comment(tag)
         } else {
-            StylePiece::Element(tag)
+            StylePiece::Element(Cow::Borrowed(tag))
         }
     }
 
-    fn raw(&self) -> &'a str {
+    fn raw(&self) -> &str {
         match self {
             StylePiece::Text(raw)
             | StylePiece::Cdata(raw)
             | StylePiece::Comment(raw)
-            | StylePiece::Element(raw)
             | StylePiece::Raw(raw, _) => raw,
+            StylePiece::Element(raw) => raw,
         }
     }
 
@@ -706,6 +867,16 @@ impl<F: cdn::Fetch> Cdn<F> {
         self.modules.iter().any(|(k, _)| *k == key).then_some(key)
     }
 
+    /// The stylesheet `url` linked with body `bytes`, its references
+    /// inlined by [`Cdn::css`] against the URL the body came from.
+    fn stylesheet(&mut self, url: &str, bytes: &[u8], warnings: &mut Vec<ExportWarning>) -> String {
+        self.importing.push(url.to_string());
+        let from = self.source_url(url);
+        let css = self.css(&String::from_utf8_lossy(bytes), Some(&from), 0, warnings);
+        self.importing.pop();
+        css
+    }
+
     /// [`Cdn::css`] of an SVG or MathML `<style>` written as `pieces`. The
     /// browser reads its CSS from every text run, character references
     /// decoded, and CDATA section joined, child elements' included, comments
@@ -759,7 +930,7 @@ impl<F: cdn::Fetch> Cdn<F> {
             pieces[first + 1..=last]
                 .iter()
                 .filter_map(|piece| match piece {
-                    StylePiece::Element(tag) => Some(*tag),
+                    StylePiece::Element(tag) => Some(tag.as_ref()),
                     _ => None,
                 }),
         );
@@ -2337,6 +2508,76 @@ mod tests {
             "{}",
             r.html
         );
+    }
+
+    #[test]
+    fn files_html_loads_inside_an_svg_style_become_data_uris_in_place() {
+        // Inside an SVG `<style>`'s `<foreignObject>` an HTML script runs and
+        // a stylesheet link applies, while the style reads the text inside
+        // them as its own CSS: only the attributes change.
+        let html = format!(
+            r##"<svg><style><foreignObject><script src="https://unpkg.com/lib.js">.c{{}}</script><script type="module" src="{LIT}"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/x/css/b.css" media="print"><img src="/api/cards/c1/images/0"><img src="/api/cards/c1/images/1"><a href="#canvas-open-0">w</a><a href="#canvas-open-1">l</a></foreignObject>.d{{}}</style></svg>"##
+        );
+        let c = card(
+            &html,
+            &["/x/a.png", "/x/gone.png"],
+            &["https://e.com/", "/x/f.md"],
+        );
+        let fetch = |url: &str, t: Duration| match url {
+            LIT => Ok(b"export const a=1;".to_vec()),
+            _ => cdn_files(url, t),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let js = |s: &[u8]| format!("data:text/javascript;charset=utf-8;base64,{}", base64(s));
+        let want = format!(
+            r#"<svg><style><foreignObject><script src="{}">.c{{}}</script><script type="module" src="{}"></script><link rel="stylesheet" href="data:text/css;charset=utf-8;base64,{}" media="print"><img src="data:image/png;base64,{}"><img><a href="https://e.com/" target="_blank" rel="noopener">w</a>l</foreignObject>.d{{}}</style></svg>"#,
+            js(b"var s='</script>',t='<!--<SCRIPT>';"),
+            js(format!("import \"{LIT}\";").as_bytes()),
+            base64(b".b{}"),
+            base64(b"abc"),
+        );
+        assert!(r.html.contains(&want), "{}", r.html);
+        assert_eq!(
+            page_map(&r.html)["imports"][LIT],
+            js_data("export const a=1;")
+        );
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert_eq!(r.warnings[0].kind, ExportWarningKind::MissingImage);
+    }
+
+    #[test]
+    fn links_an_svg_style_child_cant_inline_stay_and_integrity_goes() {
+        // Off the CDN hosts, not a stylesheet, or failed: as written.
+        let kept = r#"<svg><style><foreignObject><link rel="stylesheet" href="https://example.com/x.css"><link rel="icon" href="/f.ico"><link rel="stylesheet" href="https://unpkg.com/gone.css"></foreignObject>.a{}</style></svg>"#;
+        let r = export_card(&card(kept, &[], &[]), None, files, cdn_files);
+        assert!(r.html.contains(kept), "{}", r.html);
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+
+        // A hash of the file can't match what the data: URI holds.
+        let html = r#"<svg><style><foreignObject><link rel="stylesheet" integrity="sha384-X" href="https://cdnjs.cloudflare.com/x/css/b.css"></foreignObject></style></svg>"#;
+        let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+        let want = format!(
+            r#"<link rel="stylesheet" href="data:text/css;charset=utf-8;base64,{}">"#,
+            base64(b".b{}")
+        );
+        assert!(r.html.contains(&want), "{}", r.html);
+    }
+
+    #[test]
+    fn a_data_uri_inside_an_svg_style_counts_its_base64_toward_the_total() {
+        // 14 scripts of 0.9 of the asset cap fit the 16-cap total as bytes
+        // (12.6) but not as base64 (16.8): the last stays a link.
+        let size = MAX_ASSET_BYTES / 10 * 9;
+        let scripts: String = (0..14)
+            .map(|n| format!(r#"<script src="https://unpkg.com/{n}.js"></script>"#))
+            .collect();
+        let html = format!("<svg><style><foreignObject>{scripts}</foreignObject></style></svg>");
+        let fetch = |_: &str, _: Duration| Ok(vec![b'x'; size]);
+        let r = export_card(&card(&html, &[], &[]), None, files, fetch);
+        assert_eq!(r.html.matches("src=\"data:").count(), 13);
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert_eq!(r.warnings[0].target, "https://unpkg.com/13.js");
+        assert_eq!(r.warnings[0].reason, over_total_reason());
     }
 
     #[test]

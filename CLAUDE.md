@@ -219,7 +219,11 @@ beside the terminal all day.
   first replacement and after the last stay as written; those between become one
   run in the form of the first of them, text written with entities, CDATA with
   `]]>` split or a child's raw text, followed by the child elements' tags, emptied; a style where nothing was inlined keeps its text exactly as
-  written. A failure, or an `@import` nested past
+  written. Inside such a style's `<foreignObject>` an HTML script runs and a
+  stylesheet link applies, but their text is the style's CSS, so only attributes
+  change there: a CDN `<script src>` or stylesheet `href` becomes a `data:` URI
+  (a module's an `import` of its import-map key), a card file a `data:` URI or,
+  when missing, no `src` at all, anchors as anywhere else. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
   since the browser ignores an `@import` inside a block, and every `@import` inlined
