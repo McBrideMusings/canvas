@@ -1119,9 +1119,11 @@ impl Tags<'_> {
             match self.mode {
                 Mode::Body => return !part,
                 Mode::Template => {
+                    // The current spec lists base, basefont, bgsound,
+                    // noframes and title here too; Canvas.app's WebKit and
+                    // Chromium let those pick the body's mode.
                     let next = match name {
-                        "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes"
-                        | "script" | "style" | "template" | "title" => return true,
+                        "link" | "meta" | "script" | "style" | "template" => return true,
                         "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => Mode::Table,
                         "col" => Mode::ColumnGroup,
                         "tr" => Mode::TableBody,
@@ -3907,9 +3909,18 @@ mod tests {
         for (inner, bs) in [
             ("<col>", 1),
             ("<col><col>", 1),
+            ("<link><col>", 1),
             ("<meta><col>", 1),
             ("<script></script><col>", 1),
+            ("<style></style><col>", 1),
             ("<template></template><col>", 1),
+            // The "in head" rules take these, but they pick the body's mode
+            // (counts from Canvas.app and Chromium).
+            ("<base><col>", 0),
+            ("<basefont><col>", 0),
+            ("<bgsound><col>", 0),
+            ("<noframes></noframes><col>", 0),
+            ("<title></title><col>", 0),
             // Text doesn't pick a mode.
             ("t<col>", 1),
             (" <col>", 1),
@@ -3965,6 +3976,36 @@ mod tests {
                 !tags(&html).any(|t| &html[t.start..t.end] == "<b>"),
                 "{end}"
             );
+        }
+    }
+
+    #[test]
+    fn a_raw_text_element_closes_at_its_own_end_tag_whatever_the_mode() {
+        // Template contents drop every end tag but `</template>`, yet a
+        // `<script>` or `<style>` there still closes at its own end tag, as
+        // the tree builder's text mode closes it. Left open, it would be the
+        // current node when `<col>` picks the column group, which would close
+        // it and take `<style/>` as raw text. A column group never holds raw
+        // text open: such a start tag closes the column group first, or is
+        // dropped. The count is the `<b>` elements Canvas.app and Chromium
+        // build.
+        for el in ["script", "style"] {
+            for html in [
+                format!("<template><{el}></{el}><col><style/></template><b>x</b>"),
+                format!(
+                    "<table><colgroup><template><{el}></{el}><col><style/></template><b>x</b>"
+                ),
+                format!(
+                    "<template><col><template><{el}></{el}><col><style/></template></template><b>x</b>"
+                ),
+            ] {
+                let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+                assert_eq!(
+                    names.iter().filter(|n| **n == "<b>").count(),
+                    1,
+                    "{html}: {names:?}"
+                );
+            }
         }
     }
 
