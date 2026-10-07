@@ -84,7 +84,8 @@ enum Tok {
 /// closing tag, which the tag's `text_end` holds; after `<plaintext>` the
 /// rest of the HTML is its text. In
 /// SVG or MathML those elements hold markup like any other, and a
-/// `<![CDATA[` section there is one tag through its `]]>`.
+/// `<![CDATA[` section there is one tag through its `]]>`, except at an
+/// integration point such as `<foreignObject>`.
 pub fn tags(html: &str) -> Tags<'_> {
     Tags {
         html,
@@ -201,6 +202,12 @@ enum Ns {
 impl Element {
     fn is_foreign(&self) -> bool {
         self.ns != Ns::Html
+    }
+
+    /// Whether the browser reads what follows this element, as the current
+    /// node, as foreign content: it is SVG or MathML and no integration point.
+    fn holds_foreign_content(&self) -> bool {
+        self.is_foreign() && self.point == Point::None
     }
 
     fn is_special(&self) -> bool {
@@ -602,12 +609,7 @@ impl Tags<'_> {
     fn text(&mut self, to: usize) {
         let text = &self.html[self.pos.min(to)..to];
         let chars = text.trim_matches('\0');
-        if chars.is_empty()
-            || self
-                .open
-                .last()
-                .is_some_and(|e| e.is_foreign() && e.point == Point::None)
-        {
+        if chars.is_empty() || self.open.last().is_some_and(Element::holds_foreign_content) {
             return;
         }
         let space = chars
@@ -1124,20 +1126,18 @@ impl Tags<'_> {
     /// Pops foreign elements until the innermost is HTML or an integration
     /// point.
     fn pop_foreign_to_point(&mut self) {
-        while self
-            .open
-            .last()
-            .is_some_and(|e| e.is_foreign() && e.point == Point::None)
-        {
+        while self.open.last().is_some_and(Element::holds_foreign_content) {
             self.open.pop();
         }
     }
 
     /// Whether a `<![CDATA[` here opens a CDATA section, which runs to `]]>`:
-    /// only while the browser's current node is SVG or MathML, as WebKit
-    /// reads it. Elsewhere it is a bogus comment, ending at the first `>`.
+    /// only while the browser's current node is SVG or MathML and not an
+    /// integration point, as Canvas.app's WebKit reads it (Playwright's
+    /// WebKit build opens a section at an integration point too). Elsewhere
+    /// it is a bogus comment, ending at the first `>`.
     fn cdata_allowed(&self) -> bool {
-        self.open.last().is_some_and(Element::is_foreign)
+        self.open.last().is_some_and(Element::holds_foreign_content)
     }
 
     /// Closes elements for the end tag `</name>`. While the innermost element
@@ -2396,34 +2396,57 @@ mod tests {
                 "</svg>"
             ]
         );
-        // How many `<b>` elements WebKit builds from each. Chromium reads a
-        // CDATA section at any integration point as a bogus comment.
+        // How many `<b>` elements Canvas.app's WebKit builds from each, as
+        // Chromium does; Playwright's WebKit build reads a section at an
+        // integration point too.
         for (html, bs) in [
             ("<svg><style><![CDATA[a>b]]><b>x</b></style></svg>", 1),
             ("<svg><![CDATA[x>y<b>z</b>", 0),
+            ("<svg><g><![CDATA[x>y<b>z</b>]]></g></svg>", 0),
+            // `<mglyph>` is MathML even in `<mi>`.
+            ("<math><mi><mglyph><![CDATA[x>y<b>z</b>]]></mi></math>", 0),
+            // Without an HTML `encoding` it is no integration point.
             (
                 "<math><annotation-xml><![CDATA[x>y<b>z</b>]]></annotation-xml></math>",
                 0,
             ),
+            // A bogus comment, ending at the first `>`, at an integration
+            // point and where the current node is HTML.
+            (
+                "<math><annotation-xml encoding=text/html><![CDATA[x>y<b>z</b>]]></annotation-xml></math>",
+                1,
+            ),
             (
                 "<svg><foreignObject><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
+                1,
+            ),
+            ("<svg><desc><![CDATA[x>y<b>z</b>]]></desc></svg>", 1),
+            ("<math><mi><![CDATA[x>y<b>z</b>]]></mi></math>", 1),
+            ("<math><mtext><![CDATA[x>y<b>z</b>]]></mtext></math>", 1),
+            ("<math><mo><![CDATA[x>y<b>z</b>]]></mo></math>", 1),
+            ("<math><mn><![CDATA[x>y<b>z</b>]]></mn></math>", 1),
+            ("<math><ms><![CDATA[x>y<b>z</b>]]></ms></math>", 1),
+            ("<svg><title><![CDATA[x>y<b>z</b>]]></title></svg>", 1),
+            (
+                "<math><annotation-xml encoding='Application/XHTML+XML'><![CDATA[x>y<b>z</b>]]></annotation-xml></math>",
+                1,
+            ),
+            (
+                "<math><annotation-xml encoding=text/xml><![CDATA[x>y<b>z</b>]]></annotation-xml></math>",
                 0,
             ),
-            ("<math><mi><![CDATA[x>y<b>z</b>]]></mi></math>", 0),
             (
                 "<svg><foreignObject><div></div><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
-                0,
+                1,
             ),
             (
                 "<svg><foreignObject><br><![CDATA[x>y<b>z</b>]]></foreignObject></svg>",
-                0,
+                1,
             ),
             (
                 "<svg><title><style/>a</style><![CDATA[x>y<b>z</b>]]></title></svg>",
-                0,
+                1,
             ),
-            // A bogus comment, ending at the first `>`, where the current
-            // node is HTML.
             ("<p><![CDATA[x>y<b>z</b>]]>", 1),
             (
                 "<svg><foreignObject><div><![CDATA[x>y<b>z</b>]]></div></foreignObject></svg>",
@@ -2437,66 +2460,69 @@ mod tests {
                 "{html}: {names:?}"
             );
         }
-        // Start tags that leave no HTML element open inside the island.
-        for tag in ["image", "frame", "keygen", "basefont", "bgsound"] {
-            let html =
-                format!("<svg><foreignObject><{tag}><![CDATA[x>y<b>z</b>]]></foreignObject></svg>");
-            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
-            assert!(!names.contains(&"<b>"), "{html}: {names:?}");
-        }
     }
 
     #[test]
     fn a_start_tag_closes_what_the_browser_closes_before_it() {
-        // Each runs inside `<svg><foreignObject>`, then a CDATA section: one
-        // element left open that WebKit closed makes it a bogus comment, and
-        // the `<b>` inside it a tag. The count is WebKit's `<b>` elements.
+        // Each runs inside `<svg><foreignObject>`, then
+        // `</foreignObject><style/><b>x</b></style>`. With nothing HTML left
+        // open, `</foreignObject>` closes the island, the SVG `<style/>`
+        // closes at once and the `<b>` is a tag; one element left open that
+        // WebKit closed keeps the island, and the `<style>` is HTML raw text.
+        // The count is the `<b>` elements Canvas.app's WebKit, Playwright's
+        // and Chromium build.
         for (inner, bs) in [
-            ("<p>a<p>b</p>", 0),
-            ("<li>a<li>b</li>", 0),
-            ("<li>a<div><li>b</li></div>", 0),
-            ("<li>a<span><li>b</li>", 0),
-            ("<li><ul><li>b</li></ul>", 1),
-            ("<dd>a<dt>b</dt>", 0),
-            ("<dt>a<dd>b</dd>", 0),
-            ("<option>a<option>b</option>", 0),
-            ("<optgroup><option>a<optgroup>b</optgroup>", 1),
-            ("<p>a<div>b</div>", 0),
-            ("<p>a<h1>b</h1>", 0),
-            ("<h1>a<h2>b</h2>", 0),
-            ("<button>a<button>b</button>", 0),
-            ("<p>a<table></table>", 0),
-            ("<p>a<form></form>", 0),
-            ("<table><tr><td>a<td>b</td></tr></table>", 0),
-            ("<table><tr><td>a<tr><td>b</td></tr></table>", 0),
-            ("<table><tr><td>a<th>b</table>", 0),
-            ("<table><tbody><tr><td>a<tbody><tr><td>b</table>", 0),
-            ("<table><caption>a<tr><td>b</table>", 0),
-            ("<table><tr><td><table><tr><td>b</table></table>", 0),
+            ("<p>a<p>b</p>", 1),
+            ("<li>a<li>b</li>", 1),
+            ("<li>a<div><li>b</li></div>", 1),
+            ("<li>a<span><li>b</li>", 1),
+            ("<li><ul><li>b</li></ul>", 0),
+            ("<dd>a<dt>b</dt>", 1),
+            ("<dt>a<dd>b</dd>", 1),
+            ("<option>a<option>b</option>", 1),
+            ("<optgroup><option>a<optgroup>b</optgroup>", 0),
+            ("<p>a<div>b</div>", 1),
+            ("<p>a<h1>b</h1>", 1),
+            ("<h1>a<h2>b</h2>", 1),
+            ("<button>a<button>b</button>", 1),
+            ("<p>a<table></table>", 1),
+            ("<p>a<form></form>", 1),
+            ("<table><tr><td>a<td>b</td></tr></table>", 1),
+            ("<table><tr><td>a<tr><td>b</td></tr></table>", 1),
+            ("<table><tr><td>a<th>b</table>", 1),
+            ("<table><tbody><tr><td>a<tbody><tr><td>b</table>", 1),
+            ("<table><caption>a<tr><td>b</table>", 1),
+            ("<table><tr><td><table><tr><td>b</table></table>", 1),
             (
                 "<table><tr><td><svg><foreignObject><td>b</td></tr></table>",
-                0,
+                1,
             ),
-            ("<table><tr><td><math><mi><td>b</td></tr></table>", 0),
-            ("<p><svg><foreignObject><p>a</foreignObject></svg>", 1),
-            ("<li><svg><foreignObject><li>a</foreignObject></svg>", 1),
+            ("<table><tr><td><math><mi><td>b</td></tr></table>", 1),
+            ("<p><svg><foreignObject><p>a</foreignObject></svg>", 0),
+            ("<li><svg><foreignObject><li>a</foreignObject></svg>", 0),
             // A table part outside a table opens nothing.
-            ("<td>a", 0),
-            ("<tr>a", 0),
-            ("<caption>a", 0),
+            ("<td>a", 1),
+            ("<tr>a", 1),
+            ("<caption>a", 1),
             // The adoption agency.
-            ("<em><div></em></div>", 0),
-            ("<em><i><div></em></div></i>", 0),
-            ("<em><span><div></em></div>", 0),
-            ("<em><div><span></em></span></div>", 0),
-            ("<em><i><s><u><div></em></div></u></s></i>", 0),
-            ("<a><div></a></div>", 0),
-            ("<a>x<a>y</a>", 0),
-            ("<a><div><a></a><svg></a>", 0),
-            ("<em><table><tr><td></em></td></tr></table>", 1),
+            ("<em><div></em></div>", 1),
+            ("<em><i><div></em></div></i>", 1),
+            ("<em><span><div></em></div>", 1),
+            ("<em><div><span></em></span></div>", 1),
+            ("<em><i><s><u><div></em></div></u></s></i>", 1),
+            ("<a><div></a></div>", 1),
+            ("<a>x<a>y</a>", 1),
+            ("<a><div><a></a><svg></a>", 1),
+            ("<em><table><tr><td></em></td></tr></table>", 0),
+            // Start tags that leave no HTML element open inside the island.
+            ("<image>", 1),
+            ("<frame>", 1),
+            ("<keygen>", 1),
+            ("<basefont>", 1),
+            ("<bgsound>", 1),
         ] {
             let html =
-                format!("<svg><foreignObject>{inner}<![CDATA[x>y<b>z</b>]]></foreignObject></svg>");
+                format!("<svg><foreignObject>{inner}</foreignObject><style/><b>x</b></style>");
             let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
             assert_eq!(
                 names.iter().filter(|n| **n == "<b>").count(),
@@ -2528,11 +2554,6 @@ mod tests {
 
     #[test]
     fn closed_formatting_elements_reopen_before_text() {
-        // WebKit reopens the `<em>` before `t`, so the CDATA section is a
-        // bogus comment and its `<b>` a tag.
-        let html = "<svg><foreignObject><p><em></p>t<![CDATA[x>y<b>z</b>]]></foreignObject></svg>";
-        let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
-        assert!(names.contains(&"<b>"), "{names:?}");
         // Each runs inside `<svg><foreignObject>`, then `</foreignObject>`:
         // it closes the island only while the island is the current node, so
         // with an `<em>` reopened inside it, the svg stays open and
