@@ -692,43 +692,25 @@ impl<F: cdn::Fetch> Cdn<F> {
             css.push_str(&piece.css());
             spans.push(start..css.len());
         }
-        let out = self.css(&css, None, 0, warnings);
-        let written: String = pieces.iter().map(StylePiece::raw).collect();
-        if out == css {
-            return written;
-        }
-        let same_start = css
-            .bytes()
-            .zip(out.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        let same_end = css
-            .bytes()
-            .rev()
-            .zip(out.bytes().rev())
-            .take_while(|(a, b)| a == b)
-            .count()
-            .min(css.len().min(out.len()) - same_start);
-        let read: Vec<usize> = (0..pieces.len())
-            .filter(|&i| !spans[i].is_empty())
-            .collect();
-        // The pieces holding the change: from the first ending past the
-        // shared start to the last starting before the shared end.
-        let first = read.iter().copied().find(|&i| spans[i].end > same_start);
-        let last = read
-            .iter()
-            .copied()
-            .rev()
-            .find(|&i| spans[i].start < css.len() - same_end);
-        let (first, last) = match (first, last) {
-            (Some(first), Some(last)) => (first.min(last), first.max(last)),
-            (Some(i), None) | (None, Some(i)) => (i, i),
-            // Nothing read, so nothing changed.
-            (None, None) => return written,
+        let edits = self.css_edits(&css, None, 0, warnings);
+        let (Some(start), Some(end)) = (
+            edits.first().map(|e| e.at.start),
+            edits.last().map(|e| e.at.end),
+        ) else {
+            return pieces.iter().map(StylePiece::raw).collect();
         };
-        let from = spans[first].start;
-        let to = out.len() - (css.len() - spans[last].end);
-        let changed = &out[from..to];
+        // The pieces holding the edits: from the one the first edit starts in
+        // to the one the last edit ends in. An edit replaces a token of at
+        // least one byte, so both are pieces with CSS of their own.
+        let first = (0..pieces.len())
+            .find(|&i| spans[i].end > start)
+            .unwrap_or_default();
+        let last = (0..pieces.len())
+            .rev()
+            .find(|&i| spans[i].start < end)
+            .unwrap_or(first);
+        let out = splice(&css, &edits);
+        let changed = &out[spans[first].start..out.len() - (css.len() - spans[last].end)];
         let mut result: String = pieces[..first].iter().map(StylePiece::raw).collect();
         match &pieces[first] {
             StylePiece::Cdata(_) => {
@@ -756,13 +738,7 @@ impl<F: cdn::Fetch> Cdn<F> {
     }
 
     /// `css` with each CDN `@import` replaced by the stylesheet it names and
-    /// each CDN `url()` by a `data:` URI. A reference relative to `base` that
-    /// stays a link is made absolute, since the page no longer sits beside it.
-    /// An `@import` after the sheet's own rules, which the browser ignores,
-    /// stays as written and is never fetched.
-    /// The text is read as the browser tokenizes it: strings, comments and
-    /// escapes are copied untouched, and only a whole `url(` or `@import`
-    /// token is a reference.
+    /// each CDN `url()` by a `data:` URI: [`Cdn::css_edits`] applied.
     fn css(
         &mut self,
         css: &str,
@@ -770,8 +746,28 @@ impl<F: cdn::Fetch> Cdn<F> {
         depth: usize,
         warnings: &mut Vec<ExportWarning>,
     ) -> String {
+        let edits = self.css_edits(css, base, depth, warnings);
+        splice(css, &edits)
+    }
+
+    /// The edits that inline `css`, in order and apart, each one changing
+    /// what it replaces: each CDN `@import` replaced by the stylesheet it
+    /// names and each CDN `url()` by a `data:` URI. A reference relative to
+    /// `base` that stays a link is made absolute, since the page no longer
+    /// sits beside it. An `@import` after the sheet's own rules, which the
+    /// browser ignores, stays as written and is never fetched.
+    /// The text is read as the browser tokenizes it: strings, comments and
+    /// escapes are left untouched, and only a whole `url(` or `@import`
+    /// token is a reference.
+    fn css_edits(
+        &mut self,
+        css: &str,
+        base: Option<&str>,
+        depth: usize,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Vec<Edit> {
         let b = css.as_bytes();
-        let mut out = String::with_capacity(css.len());
+        let mut edits: Vec<Edit> = Vec::new();
         let mut pos = 0usize;
         let mut i = 0usize;
         // The inlined imports that wrote rules, which turn back into links
@@ -792,16 +788,14 @@ impl<F: cdn::Fetch> Cdn<F> {
                     // A rule of the sheet's own before this import leaves it
                     // ignored, so it stays as written and fetches nothing.
                     after_rules = after_rules || prelude(&css[pos..i]).1;
-                    out.push_str(&css[pos..i]);
                     let written = &css[i..import.end];
                     if after_rules {
-                        out.push_str(written);
                         pos = import.end;
                         i = import.end;
                         continue;
                     }
                     let mut tried = self.import_making_room(
-                        &import, base, depth, written, &mut out, &mut ruled, warnings,
+                        &import, base, depth, written, &mut edits, &mut ruled, warnings,
                     );
                     let (links, rules) = prelude(&tried.text);
                     // Sheets freed to make room for an import that still
@@ -824,17 +818,20 @@ impl<F: cdn::Fetch> Cdn<F> {
                     }
                     if links && !ruled.is_empty() {
                         let n = ruled.len();
-                        let (undone, urls) = self.unlink(&mut out, &mut ruled, n);
+                        let (undone, urls) = self.unlink(&mut edits, &mut ruled, n);
                         for url in urls {
                             self.warn(&url, reason.clone(), warnings);
                         }
                         tried.added.after_undoing(&undone);
                     }
-                    let at = out.len();
-                    out.push_str(&tried.text);
+                    let edit = edits.len();
+                    edits.push(Edit {
+                        at: i..import.end,
+                        text: tried.text,
+                    });
                     if let Some(url) = tried.url.filter(|_| rules) {
                         ruled.push(Inlined {
-                            span: at..out.len(),
+                            edit,
                             link: link_text(&import, Some(&url), written),
                             url,
                             added: tried.added,
@@ -847,10 +844,8 @@ impl<F: cdn::Fetch> Cdn<F> {
                     if (i == 0 || !ident_byte(b[i - 1])) && starts_with_ci(b, i, b"url(") =>
                 {
                     let (reference, end) = url_token(css, i);
-                    out.push_str(&css[pos..i]);
-                    match reference.and_then(|r| self.url(r, base, warnings)) {
-                        Some(text) => out.push_str(&text),
-                        None => out.push_str(&css[i..end]),
+                    if let Some(text) = reference.and_then(|r| self.url(r, base, warnings)) {
+                        edits.push(Edit { at: i..end, text });
                     }
                     pos = end;
                     i = end;
@@ -858,8 +853,8 @@ impl<F: cdn::Fetch> Cdn<F> {
                 _ => i += 1,
             }
         }
-        out.push_str(&css[pos..]);
-        out
+        edits.retain(|e| e.text != css[e.at.clone()]);
+        edits
     }
 
     /// What replaces one `@import` written as `written`: the stylesheet it
@@ -921,7 +916,7 @@ impl<F: cdn::Fetch> Cdn<F> {
     }
 
     /// [`Cdn::import`] in a sheet where every import in `ruled`, already in
-    /// `out`, turns back into a link if this one writes a link. When it does
+    /// `edits`, turns back into a link if this one writes a link. When it does
     /// so after missing the inlining total, the earliest of `ruled` turn back
     /// into links first, since they would anyway, and it tries again with
     /// the bytes they freed. Each try ends when the import writes no link,
@@ -933,7 +928,7 @@ impl<F: cdn::Fetch> Cdn<F> {
         base: Option<&str>,
         depth: usize,
         written: &str,
-        out: &mut String,
+        edits: &mut [Edit],
         ruled: &mut Vec<Inlined>,
         warnings: &mut Vec<ExportWarning>,
     ) -> Tried {
@@ -963,26 +958,20 @@ impl<F: cdn::Fetch> Cdn<F> {
                 bytes += ruled[n].added.bytes;
                 n += 1;
             }
-            freed.extend(self.unlink(out, ruled, n).1);
+            freed.extend(self.unlink(edits, ruled, n).1);
         }
     }
 
-    /// Turns the first `n` of `ruled` back into links in `out` and moves the
-    /// rest to where they now sit. Returns everything that came out of the
-    /// record of the page and the URLs now links, for the caller to warn.
+    /// Turns the first `n` of `ruled` back into links in `edits`. Returns
+    /// everything that came out of the record of the page and the URLs now
+    /// links, for the caller to warn.
     fn unlink(
         &mut self,
-        out: &mut String,
+        edits: &mut [Edit],
         ruled: &mut Vec<Inlined>,
         n: usize,
     ) -> (Vec<Added>, Vec<String>) {
         let taken: Vec<Inlined> = ruled.drain(..n).collect();
-        let Some(start) = taken.first().map(|r| r.span.start) else {
-            return (Vec::new(), Vec::new());
-        };
-        let before = out.len();
-        let mut relinked = String::new();
-        let mut pos = start;
         // Last first, so each one's entries are where it recorded them.
         for r in taken.iter().rev() {
             self.undo(&r.added);
@@ -990,17 +979,11 @@ impl<F: cdn::Fetch> Cdn<F> {
         let undone: Vec<Added> = taken.iter().map(|r| r.added.clone()).collect();
         let mut urls = Vec::with_capacity(taken.len());
         for r in taken {
-            relinked.push_str(&out[pos..r.span.start]);
-            relinked.push_str(&r.link);
-            pos = r.span.end;
+            edits[r.edit].text = r.link;
             self.linked.push(r.url.clone());
             urls.push(r.url);
         }
-        relinked.push_str(&out[pos..]);
-        out.truncate(start);
-        out.push_str(&relinked);
         for r in ruled.iter_mut() {
-            r.span = r.span.start + out.len() - before..r.span.end + out.len() - before;
             r.added.after_undoing(&undone);
         }
         (undone, urls)
@@ -1089,11 +1072,32 @@ impl Import {
     }
 }
 
+/// One replacement [`Cdn::css_edits`] makes: the bytes `at` of the sheet
+/// become `text`.
+struct Edit {
+    at: Range<usize>,
+    text: String,
+}
+
+/// `css` with each of `edits`, in order and apart, in place of the bytes it
+/// replaces.
+fn splice(css: &str, edits: &[Edit]) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut pos = 0;
+    for edit in edits {
+        out.push_str(&css[pos..edit.at.start]);
+        out.push_str(&edit.text);
+        pos = edit.at.end;
+    }
+    out.push_str(&css[pos..]);
+    out
+}
+
 /// One `@import` inlined as rules, kept so it can turn back into a link:
-/// where its stylesheet sits in the output, its URL and link form, and what
-/// its stylesheet added to the record of the page.
+/// the edit that holds its stylesheet, its URL and link form, and what its
+/// stylesheet added to the record of the page.
 struct Inlined {
-    span: Range<usize>,
+    edit: usize,
     url: String,
     link: String,
     added: Added,
@@ -2159,7 +2163,7 @@ mod tests {
             (
                 // A bogus comment and an ignored doctype split it too.
                 r#"<math><style>.f{src:url(https://cdnjs.cloudflare.com/x/font/<?p?>f.woff2</ x>?v=1<!doctype x>)}</style></math>"#,
-                r#"<math><style>.f{src:url("data:font/woff2;base64,YWI="<!doctype x>)}</style></math>"#,
+                r#"<math><style>.f{src:url("data:font/woff2;base64,YWI=")}</style></math>"#,
             ),
             (
                 // Nothing to inline: every piece stays as written.
@@ -3033,6 +3037,33 @@ mod tests {
             )),
             "{}",
             r.warnings[0].reason
+        );
+    }
+
+    #[test]
+    fn css_edits_name_exactly_the_bytes_that_changed() {
+        // s.css goes in as rules, then turns back into its link, written as
+        // it was, when 404.css stays a link; only the url() is an edit.
+        let a = r#"@import url("https://unpkg.com/s.css");@import url("https://unpkg.com/404.css");b{background:url(i.png)}"#;
+        let fetch = |url: &str, _: Duration| match url {
+            "https://unpkg.com/s.css" => Ok(b"p{}".to_vec()),
+            "https://unpkg.com/i.png" => Ok(b"i".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        let edits = cdn.css_edits(a, Some("https://unpkg.com/a.css"), 0, &mut warnings);
+        let got: Vec<_> = edits
+            .iter()
+            .map(|e| (e.at.clone(), e.text.as_str()))
+            .collect();
+        let at = a.find("url(i.png)").unwrap();
+        assert_eq!(
+            got,
+            [(
+                at..at + "url(i.png)".len(),
+                r#"url("data:image/png;base64,aQ==")"#
+            )]
         );
     }
 
