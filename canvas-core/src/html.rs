@@ -211,9 +211,10 @@ const MAX_REOPENED: usize = 1_000_000;
 const MAX_OPEN: usize = 512 - 3;
 
 /// The stack of open elements, innermost last, with indexes kept as it
-/// changes: which ids are open, and for each HTML element name and each [`Group`]
-/// the positions holding one, ascending. Past the depth cap the stack can
-/// hold far more than 509 elements (see [`Tags::insert`]), and the tree
+/// changes: which ids are open, and for each HTML element name, each SVG or
+/// MathML element name and each [`Group`] the positions holding one,
+/// ascending. Past the depth cap the stack can hold far more than 509
+/// elements (see [`Tags::insert`]), and the tree
 /// builder asks for the innermost element of a name or kind after nearly
 /// every tag, so each such question reads an index rather than walking the
 /// stack. Finding where an open id sits still walks down from the top, as
@@ -227,6 +228,7 @@ struct OpenElements {
     /// 0, so this costs a byte per element the scan has opened.
     open_ids: Vec<bool>,
     names: HashMap<String, Vec<usize>>,
+    foreign_names: HashMap<String, Vec<usize>>,
     groups: [Vec<usize>; GROUPS],
 }
 
@@ -246,12 +248,15 @@ enum Group {
     Mode,
     /// An element that bounds the scope, one group per [`Scope`].
     ScopeEnd(Scope),
+    /// Any HTML element: an end tag inside SVG or MathML looks for its
+    /// element only above the innermost one.
+    Html,
 }
 
-const GROUPS: usize = 8;
+const GROUPS: usize = 9;
 
 // Each group is a bit of `Element::groups`.
-const _: () = assert!(GROUPS <= u8::BITS as usize);
+const _: () = assert!(GROUPS <= u16::BITS as usize);
 
 impl Group {
     fn index(self) -> usize {
@@ -264,6 +269,7 @@ impl Group {
             Group::ScopeEnd(Scope::ListItem) => 5,
             Group::ScopeEnd(Scope::Button) => 6,
             Group::ScopeEnd(Scope::Table) => 7,
+            Group::Html => 8,
         }
     }
 }
@@ -314,15 +320,19 @@ impl OpenElements {
                 *p -= 1;
             }
         }
-        let mut names: Vec<&str> = self.elements[lo..=hi]
+        let mut names: Vec<(bool, &str)> = self.elements[lo..=hi]
             .iter()
-            .filter(|e| !e.is_foreign())
-            .map(|e| e.name.as_str())
+            .map(|e| (e.is_foreign(), e.name.as_str()))
             .collect();
         names.sort_unstable();
         names.dedup();
-        for name in names {
-            if let Some(list) = self.names.get_mut(name) {
+        for (foreign, name) in names {
+            let map = if foreign {
+                &mut self.foreign_names
+            } else {
+                &mut self.names
+            };
+            if let Some(list) = map.get_mut(name) {
                 shift(list, lo, hi);
             }
         }
@@ -365,12 +375,11 @@ impl OpenElements {
     /// indexes.
     fn index(&mut self, at: usize, element: &Element) {
         self.mark(element.id, true);
-        if !element.is_foreign() {
-            match self.names.get_mut(&element.name) {
-                Some(list) => list.push(at),
-                None => {
-                    self.names.insert(element.name.clone(), vec![at]);
-                }
+        let names = self.names_of(element.is_foreign());
+        match names.get_mut(&element.name) {
+            Some(list) => list.push(at),
+            None => {
+                names.insert(element.name.clone(), vec![at]);
             }
         }
         for (i, list) in self.groups.iter_mut().enumerate() {
@@ -384,15 +393,22 @@ impl OpenElements {
     /// its position is the last of each list it is in.
     fn unindex(&mut self, element: &Element) {
         self.mark(element.id, false);
-        if !element.is_foreign() {
-            if let Some(list) = self.names.get_mut(&element.name) {
-                list.pop();
-            }
+        if let Some(list) = self.names_of(element.is_foreign()).get_mut(&element.name) {
+            list.pop();
         }
         for (i, list) in self.groups.iter_mut().enumerate() {
             if element.groups & (1 << i) != 0 {
                 list.pop();
             }
+        }
+    }
+
+    /// The name index for HTML elements, or for SVG and MathML ones.
+    fn names_of(&mut self, foreign: bool) -> &mut HashMap<String, Vec<usize>> {
+        if foreign {
+            &mut self.foreign_names
+        } else {
+            &mut self.names
         }
     }
 
@@ -420,6 +436,16 @@ impl OpenElements {
         list[..list.partition_point(|&p| p < i)].last().copied()
     }
 
+    /// The position of the innermost open SVG or MathML element `name` at
+    /// `from` or above.
+    fn last_foreign_named_from(&self, name: &str, from: usize) -> Option<usize> {
+        self.foreign_names
+            .get(name)?
+            .last()
+            .copied()
+            .filter(|&p| p >= from)
+    }
+
     /// The position of the innermost open element of `group`.
     fn last_in(&self, group: Group) -> Option<usize> {
         self.groups[group.index()].last().copied()
@@ -445,7 +471,7 @@ struct Element {
     name: String,
     ns: Ns,
     point: Point,
-    groups: u8,
+    groups: u16,
 }
 
 /// An entry in the list of active formatting elements: the open or closed
@@ -495,9 +521,10 @@ impl Element {
             scope(Scope::ListItem),
             scope(Scope::Button),
             scope(Scope::Table),
+            (Group::Html, html),
         ];
         for (group, member) in groups {
-            element.groups |= u8::from(member) << group.index();
+            element.groups |= u16::from(member) << group.index();
         }
         element
     }
@@ -1614,13 +1641,9 @@ impl Tags<'_> {
             } else {
                 // With no HTML element open here, the card's wrapper `<div>`
                 // is the nearest, and the tag still reads as HTML.
-                let from = self
-                    .open
-                    .iter()
-                    .rposition(|e| !e.is_foreign())
-                    .map_or(0, |i| i + 1);
-                if let Some(i) = self.open[from..].iter().rposition(|e| e.name == name) {
-                    self.open.truncate(from + i);
+                let from = self.open.last_in(Group::Html).map_or(0, |i| i + 1);
+                if let Some(i) = self.open.last_foreign_named_from(name, from) {
+                    self.open.truncate(i);
                     return;
                 }
             }
@@ -2559,10 +2582,8 @@ mod tests {
 
     #[test]
     fn deep_nesting_scans_in_one_pass() {
-        // Each stray end tag walks the open `<g>`s twice, as foreign content
-        // and then by the "in body" rules, and WebKit's depth cap holds them
-        // to 509 inside a card: 20,000 of them cost about 20 million steps,
-        // not the 800 million an uncapped stack would.
+        // WebKit's depth cap holds the open `<g>`s to 509 inside a card, and
+        // each stray end tag reads the indexes rather than walking them.
         let html = format!(
             "<svg>{}{}<h2>end</h2>",
             "<g>".repeat(20_000),
@@ -2614,6 +2635,33 @@ mod tests {
         assert!(label < scan * 3, "card_label {label:?}, scan {scan:?}");
     }
 
+    #[test]
+    fn a_stray_end_tag_in_svg_costs_about_a_start_tag() {
+        // A `</x>` inside SVG finds the innermost HTML element and any open
+        // `x` above it from the indexes, not by walking the 509 open `<g>`s:
+        // 20,000 of them scan in about the time 20,000 more `<g>`s do. Each
+        // side takes its fastest of three runs, so a busy machine slows both.
+        let deep = |tail: &str| format!("<svg>{}{}", "<g>".repeat(20_000), tail.repeat(20_000));
+        let fastest = |html: &str| {
+            (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    assert_eq!(tags(html).count(), 40_001);
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let starts = fastest(&deep("<g>"));
+        let ends = fastest(&deep("</x>"));
+        // End tags take less time than start tags here; a scan that walked
+        // the 509 `<g>`s for each one would take about four times as long.
+        assert!(
+            ends < starts * 2,
+            "end tags {ends:?}, start tags {starts:?}"
+        );
+    }
+
     /// Panics unless the stack's indexes are what a walk of its elements
     /// finds.
     fn assert_indexed(open: &OpenElements, context: &str) {
@@ -2622,13 +2670,17 @@ mod tests {
             .filter(|&id| open.holds(id))
             .collect();
         assert_eq!(marked, ids, "ids: {context:.60}");
-        let mut names: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, e) in open.iter().enumerate().filter(|(_, e)| !e.is_foreign()) {
-            names.entry(e.name.clone()).or_default().push(i);
+        for (foreign, index) in [(false, &open.names), (true, &open.foreign_names)] {
+            let mut names: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, e) in open.iter().enumerate() {
+                if e.is_foreign() == foreign {
+                    names.entry(e.name.clone()).or_default().push(i);
+                }
+            }
+            let mut indexed = index.clone();
+            indexed.retain(|_, list| !list.is_empty());
+            assert_eq!(indexed, names, "names (foreign {foreign}): {context:.60}");
         }
-        let mut indexed = open.names.clone();
-        indexed.retain(|_, list| !list.is_empty());
-        assert_eq!(indexed, names, "names: {context:.60}");
         for (g, list) in open.groups.iter().enumerate() {
             let walked: Vec<usize> = (0..open.len())
                 .filter(|&i| open[i].groups & (1 << g) != 0)
@@ -2646,6 +2698,9 @@ mod tests {
             "<template><a>x<div><a>y</a></div></template>z",
             "<template><form><div>x</form></div></template><form>y</form>",
             "<svg><template><foreignObject><template>x</svg></template>",
+            "<b><p><svg><g><g><a>x</b>y</g></a></svg>z",
+            "<svg><g><foreignObject><b><p><svg><g>x</b>y</g></foreignObject></g>z",
+            "<math><mi><svg><g>x</mi></g><mtext><b><div>y</b></math>",
             "<b><i><u><s><div>x</b>y</div><a>1<p><a>2</p><h1><h2>z</h3>",
             "<b><div><div><div><div><div><div><div><div><div><div>x</b>y",
             "<ul><li><div><li><dl><dd><dt>x</dl><select><option>a<optgroup>b</select>",
@@ -2676,7 +2731,9 @@ mod tests {
         open.push(element(3, "div", Ns::Html));
         open.push(element(4, "b", Ns::Html));
         assert_indexed(&open, "push");
-        assert_eq!(open.remove(1).id, 1);
+        open.lift(1, 3);
+        assert_indexed(&open, "lift");
+        assert_eq!(open.remove(3).id, 1);
         assert_indexed(&open, "remove");
         open.rebuild_from(1, |above| {
             above[0].id = 7;
@@ -3515,6 +3572,13 @@ mod tests {
             ("<div><svg></span><style/><b>x</b></style>", 1),
             ("<div><svg></foo><style/><b>x</b></style>", 1),
             ("<li><ol><svg></li><style/><b>x</b></style>", 1),
+            // An SVG end tag looks for its element only above the nearest
+            // HTML one: the `</g>` closes nothing, and `</div>` closes the
+            // inner svg.
+            (
+                "<svg><g><foreignObject><div><svg></g></div><style/><b>x</b></style>",
+                0,
+            ),
             // `</form>` removes the form alone.
             ("<form><svg></form><style/><b>x</b></style>", 1),
             // An integration point bounds the scope.
