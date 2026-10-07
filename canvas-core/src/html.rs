@@ -1692,9 +1692,11 @@ pub fn webkit_freeze(html: &str) -> Option<usize> {
     None
 }
 
-/// The offset of the first `</name` at or after `from`, any case, or the end
-/// of the HTML. It reads only as far as the match, so a page of many raw-text
-/// elements costs its length once, not once per element.
+/// The offset of the first end tag for `name` at or after `from`, any case,
+/// or the end of the HTML: `</name` followed by a space, tab, line feed, form
+/// feed, carriage return, `/` or `>`, as the tokenizer's appropriate end tag
+/// needs, so `</scriptx>` stays text. It reads only as far as the match, so a
+/// page of many raw-text elements costs its length once, not once per element.
 fn closing_tag_start(html: &str, from: usize, name: &str) -> usize {
     let bytes = html.as_bytes();
     let mut pos = from;
@@ -1702,8 +1704,14 @@ fn closing_tag_start(html: &str, from: usize, name: &str) -> usize {
         let lt = pos + rel;
         let closes = bytes[lt + 1..]
             .strip_prefix(b"/")
-            .and_then(|rest| rest.get(..name.len()))
-            .is_some_and(|n| n.eq_ignore_ascii_case(name.as_bytes()));
+            .and_then(|rest| rest.get(..=name.len()))
+            .is_some_and(|n| {
+                n[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+                    && matches!(
+                        n[name.len()],
+                        b' ' | b'\t' | b'\n' | b'\x0c' | b'\r' | b'/' | b'>'
+                    )
+            });
         if closes {
             return lt;
         }
@@ -2048,15 +2056,45 @@ mod tests {
     }
 
     #[test]
-    fn closing_tag_start_finds_the_name_in_any_case_as_a_prefix() {
-        let html = "é<script>a</b>< /script></ScRiPtx>z";
+    fn closing_tag_start_needs_the_name_then_space_slash_or_gt() {
+        let html = "é<script>a</b>< /script></scriptx></SCRIPT\u{b}></ScRiPt\t>z";
         assert_eq!(
             closing_tag_start(html, 10, "script"),
-            html.find("</Sc").unwrap()
+            html.find("</ScRiPt\t").unwrap()
         );
+        for tail in [" ", "\t", "\n", "\x0c", "\r", "/", ">"] {
+            let html = format!("x</Style{tail}");
+            assert_eq!(closing_tag_start(&html, 0, "style"), 1, "{tail:?}");
+        }
         assert_eq!(closing_tag_start(html, 0, "style"), html.len());
+        assert_eq!(closing_tag_start("x</script", 0, "script"), 9);
         assert_eq!(closing_tag_start("x</scrip", 0, "script"), 8);
         assert_eq!(closing_tag_start("x<", 1, "script"), 2);
+    }
+
+    fn img_count(html: &str) -> usize {
+        tags(html)
+            .filter(|t| tag_name(&html[t.start..t.end]).as_deref() == Some("img"))
+            .count()
+    }
+
+    #[test]
+    fn a_raw_text_end_tag_with_a_longer_name_stays_text() {
+        // Chromium, Playwright's WebKit and Canvas.app's WKWebView build no
+        // image for any of these: `</scriptx>` is not `</script>`, nor is a
+        // vertical tab or no-break space after the name.
+        for el in [
+            "iframe", "noembed", "noframes", "script", "style", "textarea", "title", "xmp",
+        ] {
+            for tail in ["x>", "\u{b}>", "\u{a0}>"] {
+                let html = format!("<{el}>x</{el}{tail}<img src=a.png>");
+                assert_eq!(img_count(&html), 0, "{html:?}");
+            }
+            for tail in ["/>", " >", "\t>", "\n>", "\x0c>", "\r>", " a=1>", ">"] {
+                let html = format!("<{el}>x</{}{tail}<img src=a.png>", el.to_uppercase());
+                assert_eq!(img_count(&html), 1, "{html:?}");
+            }
+        }
     }
 
     #[test]
