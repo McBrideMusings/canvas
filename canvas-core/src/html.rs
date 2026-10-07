@@ -94,6 +94,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         next_id: 0,
         form: None,
         mode: Mode::Body,
+        templates: Vec::new(),
     }
 }
 
@@ -145,6 +146,13 @@ pub struct Tags<'a> {
     /// off the open elements each time: the depth cap can close the table,
     /// section, row or cell that set it, and the mode stays.
     mode: Mode,
+    /// The tree builder's stack of template insertion modes, one per open
+    /// `<template>`, innermost last. A template starts in [`Mode::Template`],
+    /// and its first start tag that the "in head" rules don't handle picks
+    /// the mode its contents keep: a table part's, else [`Mode::Body`].
+    /// Only `</template>` pops it, so like WebKit's it outlives a template
+    /// the depth cap closed.
+    templates: Vec<Mode>,
 }
 
 /// WebKit's cap on its stack of open elements
@@ -220,6 +228,7 @@ impl Element {
                         | "th"
                         | "marquee"
                         | "object"
+                        | "select"
                         | "template"
                 ) || (scope == Scope::ListItem && matches!(name, "ol" | "ul"))
                     || (scope == Scope::Button && name == "button")
@@ -348,7 +357,19 @@ impl Tags<'_> {
         if sets_pointer && self.form.is_some() {
             return None;
         }
-        self.body_start_tag(name);
+        // A table's rules insert a `<form>` where it is and close it at once.
+        if name == "form" && matches!(self.mode, Mode::Table | Mode::TableBody | Mode::Row) {
+            self.insert(tag, name);
+            let id = self.push_html(name);
+            if sets_pointer {
+                self.form = Some(id);
+            }
+            self.open.pop();
+            return None;
+        }
+        if !self.body_start_tag(name) {
+            return None;
+        }
         if self.reconstructs(tag, name) {
             self.reconstruct();
         }
@@ -505,6 +526,9 @@ impl Tags<'_> {
         if let Some(mode) = mode_of(name) {
             self.mode = mode;
         }
+        if name == "template" {
+            self.templates.push(Mode::Template);
+        }
         if MARKERS.contains(&name) {
             self.formatting.push(None);
         }
@@ -610,6 +634,7 @@ impl Tags<'_> {
             .filter(|e| !e.is_foreign())
             .find_map(|e| match e.name.as_str() {
                 "html" => Some(Mode::Body),
+                "template" => Some(self.templates.last().copied().unwrap_or(Mode::Template)),
                 name => mode_of(name),
             })
             .unwrap_or(Mode::Body);
@@ -649,6 +674,21 @@ impl Tags<'_> {
             let part = TABLE_PARTS.contains(&name);
             match self.mode {
                 Mode::Body => return !part,
+                Mode::Template => {
+                    let next = match name {
+                        "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes"
+                        | "script" | "style" | "template" | "title" => return true,
+                        "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => Mode::Table,
+                        "col" => Mode::ColumnGroup,
+                        "tr" => Mode::TableBody,
+                        "td" | "th" => Mode::Row,
+                        _ => Mode::Body,
+                    };
+                    if let Some(mode) = self.templates.last_mut() {
+                        *mode = next;
+                    }
+                    self.mode = next;
+                }
                 Mode::Cell | Mode::Caption if part => {
                     let (closes, next): (&[&str], _) = if self.mode == Mode::Cell {
                         (&["td", "th"], Mode::Row)
@@ -735,7 +775,9 @@ impl Tags<'_> {
     fn table_end_tag(&mut self, name: &str) -> bool {
         loop {
             match (self.mode, name) {
-                (Mode::Body | Mode::Template, _) => return false,
+                (Mode::Body, _) => return false,
+                // "In template" drops every end tag but `</template>`.
+                (Mode::Template, _) => return true,
                 (Mode::ColumnGroup, "template") => return false,
                 (Mode::ColumnGroup, _) => {
                     let current = self
@@ -828,9 +870,40 @@ impl Tags<'_> {
 
     /// Closes what the "in body" rules close for the start tag `<name>`:
     /// an open `<p>` before a block, a list item before its sibling, a
-    /// heading before a heading, and the like.
-    fn body_start_tag(&mut self, name: &str) {
+    /// heading before a heading, and the like. Returns whether the tag still
+    /// opens an element; a `<select>` inside a select closes it instead.
+    fn body_start_tag(&mut self, name: &str) -> bool {
+        // Only these read whether a select is in scope.
+        let select = matches!(name, "hr" | "input" | "optgroup" | "option" | "select")
+            .then(|| self.in_scope("select", Scope::Default))
+            .flatten();
         match name {
+            "select" | "input" => {
+                if let Some(i) = select {
+                    self.open.truncate(i);
+                    return name == "input";
+                }
+            }
+            "hr" => {
+                self.close_p();
+                if select.is_some() {
+                    self.imply_end_tags("");
+                }
+            }
+            // In a select, an `<option>` closes an option and what is open
+            // inside it, and an `<optgroup>` an optgroup too; elsewhere they
+            // close only an option that is the current node.
+            "option" | "optgroup" => {
+                if select.is_some() {
+                    self.imply_end_tags(if name == "option" { "optgroup" } else { "" });
+                } else if self
+                    .open
+                    .last()
+                    .is_some_and(|e| !e.is_foreign() && e.name == "option")
+                {
+                    self.open.pop();
+                }
+            }
             _ if CLOSES_P.contains(&name) => self.close_p(),
             _ if is_heading(name) => {
                 self.close_p();
@@ -863,25 +936,13 @@ impl Tags<'_> {
                     self.open.truncate(i);
                 }
             }
-            "option" | "optgroup"
-                if self
-                    .open
-                    .last()
-                    .is_some_and(|e| !e.is_foreign() && e.name == "option") =>
-            {
-                self.open.pop();
-            }
             "rb" | "rp" | "rt" | "rtc" if self.in_scope("ruby", Scope::Default).is_some() => {
                 let keep = if matches!(name, "rp" | "rt") {
                     "rtc"
                 } else {
                     ""
                 };
-                while self.open.last().is_some_and(|e| {
-                    !e.is_foreign() && e.name != keep && IMPLIED_END_TAGS.contains(&e.name.as_str())
-                }) {
-                    self.open.pop();
-                }
+                self.imply_end_tags(keep);
             }
             "a" => {
                 // A second `<a>` ends the first, which leaves the list and
@@ -902,6 +963,18 @@ impl Tags<'_> {
                 }
             }
             _ => {}
+        }
+        true
+    }
+
+    /// Closes the `<p>`, list items, options and the like at the top of the
+    /// stack, but never an `<except>`, as the tree builder's "generate
+    /// implied end tags" step does.
+    fn imply_end_tags(&mut self, except: &str) {
+        while self.open.last().is_some_and(|e| {
+            !e.is_foreign() && e.name != except && IMPLIED_END_TAGS.contains(&e.name.as_str())
+        }) {
+            self.open.pop();
         }
     }
 
@@ -1091,6 +1164,7 @@ impl Tags<'_> {
             if let Some(i) = self.template_index() {
                 self.open.truncate(i);
                 self.clear_to_marker();
+                self.templates.pop();
                 self.reset_mode();
             }
             return;
@@ -1147,13 +1221,7 @@ impl Tags<'_> {
         {
             return;
         }
-        while self
-            .open
-            .last()
-            .is_some_and(|e| !e.is_foreign() && IMPLIED_END_TAGS.contains(&e.name.as_str()))
-        {
-            self.open.pop();
-        }
+        self.imply_end_tags("");
         self.open.remove(i);
     }
 
@@ -1232,6 +1300,7 @@ const SCOPED_END_TAGS: &[&str] = &[
     "pre",
     "search",
     "section",
+    "select",
     "summary",
     "ul",
 ];
@@ -2653,6 +2722,167 @@ mod tests {
         let html = "<template><form><svg></form><style/><b>x</b></style></template>";
         let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
         assert!(!names.contains(&"<b>"), "{names:?}");
+    }
+
+    #[test]
+    fn a_form_inside_a_table_closes_at_once() {
+        // A table's rules insert a `<form>` and close it at once, so it holds
+        // no place on the stack. Each runs inside `k` `<div>`s, as in
+        // `a_node_inserted_at_webkits_depth_cap_closes_the_innermost_element`:
+        // the `<svg>` fills the stack only when something is left open
+        // before it. The count is the `<b>` elements WebKit and Canvas.app
+        // build; Chromium's depth cap differs.
+        for (k, inner, bs) in [
+            (506, "<table><form>", 1),
+            (505, "<table><tbody><form>", 1),
+            (506, "<table><tbody><form>", 0),
+            (506, "<table><colgroup></colgroup><form>", 1),
+            (504, "<table><tbody><tr><form>", 1),
+            (505, "<table><tbody><tr><form>", 0),
+            // With the pointer set, the form is dropped.
+            (506, "<form></form><table><form>", 1),
+        ] {
+            let html = format!(
+                "{}{inner}<svg><!--c--><style><b>x</b></style>",
+                "<div>".repeat(k)
+            );
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{k} {inner}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_template_keeps_the_mode_its_first_start_tag_picks() {
+        // A template's first start tag that the "in head" rules don't take
+        // picks the mode for the rest of it: a table part's, else the body's,
+        // where a table part is dropped. Each `<style/>` shows the mode: a
+        // column group drops it, so `</template>` closes the template and the
+        // `<b>` after it is a tag; anywhere else it opens raw text. The count
+        // is the `<b>` elements WebKit, Chromium and Canvas.app build.
+        for (inner, bs) in [
+            ("<col>", 1),
+            ("<col><col>", 1),
+            ("<meta><col>", 1),
+            ("<script></script><col>", 1),
+            ("<template></template><col>", 1),
+            // Text doesn't pick a mode.
+            ("t<col>", 1),
+            (" <col>", 1),
+            // An end tag is dropped.
+            ("</div><col>", 1),
+            ("<div></div><col>", 0),
+            // Closing a nested template goes back to the mode the outer
+            // one picked.
+            ("<div><template></template><col>", 0),
+            ("<caption>", 0),
+            ("<colgroup>", 0),
+            ("<tr>", 0),
+            ("<td>", 0),
+        ] {
+            let html = format!("<template>{inner}<style/></template><b>x</b>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+        // Inside `<svg><foreignObject>`, a `<td>` the body's rules drop
+        // leaves the island the current node, so `</foreignObject>` closes it
+        // and `<style/>` is SVG.
+        for (inner, bs) in [
+            ("<template><div></div>", 1),
+            ("<template>", 1),
+            ("<template><template></template>", 1),
+            ("<template><div><template></template>", 1),
+            ("<table><tr><td><template><div></div>", 1),
+            ("<template><td>", 0),
+        ] {
+            let html =
+                format!("{inner}<svg><foreignObject><td></foreignObject><style/><b>x</b></style>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+        // With the stack full, a `</p>` or `</br>` the body's rules read
+        // would insert an element and close the template; the template's
+        // rules drop it, so `</template>` closes the template and `<col>` is
+        // dropped.
+        for end in ["</p>", "</br>"] {
+            let html = format!(
+                "{}<template>{end}</template><col><style/><b>x</b></style>",
+                "<div>".repeat(508)
+            );
+            assert!(
+                !tags(&html).any(|t| &html[t.start..t.end] == "<b>"),
+                "{end}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_select_closes_for_a_select_or_input_and_bounds_scope() {
+        // The current spec's rules, which WebKit and Chromium follow; the
+        // WebKit in Canvas.app still runs the older "in select" mode, which
+        // drops most tags inside a select. Each runs inside
+        // `<svg><foreignObject>`, then `</foreignObject>`: a select left open
+        // keeps the island open and `<style/>` opens HTML raw text.
+        for (inner, bs) in [
+            ("<select><select>", 1),
+            ("<select><input>", 1),
+            ("<select><div><select>", 1),
+            ("<select><div><input>", 1),
+            ("<select><keygen>", 0),
+            ("<select><hr>", 0),
+            ("<select></select>", 1),
+            ("<select><div></select>", 1),
+            ("<select><button></select>", 1),
+            ("<select><option><optgroup></select>", 1),
+            // `<input>` reopens the `<strong>` after closing the select.
+            ("<select><p><strong></p><input>", 0),
+            // A select bounds the scope of what holds it.
+            ("<div><select></div>", 0),
+            ("<p><select></p>", 0),
+        ] {
+            let html =
+                format!("<svg><foreignObject>{inner}</foreignObject><style/><b>x</b></style>");
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+        // Inside a select, `<optgroup>` closes an open option or optgroup,
+        // and `<option>` and `<hr>` close an open option and what is open
+        // inside it, so `k` `<div>`s leave the `<svg>` short of filling the
+        // stack. The count is the `<b>` elements WebKit and Chromium build.
+        for (k, inner, bs) in [
+            (505, "<select><optgroup><optgroup>", 1),
+            (505, "<select><optgroup><option><optgroup>", 1),
+            (504, "<select><option><p><option>", 1),
+            (506, "<select><option><hr>", 1),
+            // `<option>` leaves an optgroup open.
+            (505, "<select><optgroup><option>", 0),
+        ] {
+            let html = format!(
+                "{}{inner}<svg><!--c--><style><b>x</b></style>",
+                "<div>".repeat(k)
+            );
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{k} {inner}"
+            );
+        }
     }
 
     #[test]
