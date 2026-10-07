@@ -2663,34 +2663,27 @@ fn visible_text(html: &str) -> String {
     let mut scan = tags(html);
     let mut text = VisibleText::new(&scan);
     while let Some(tag) = scan.next() {
-        text.before(html, &tag);
-        text.tag(html, &scan, &tag);
+        text.step(html, &scan, &tag);
     }
     text.finish(html)
 }
 
-/// [`visible_text`] of what `scan` reads from where it stopped up to the end
-/// tag `</close>` outside a `<template>`; `None` when that never comes.
+/// [`visible_text`] of what `scan` reads from where it stopped up to and
+/// including the end tag `</close>` outside a `<template>` (so ending with the
+/// line break a block end tag adds); `None` when that never comes.
 fn visible_text_until(html: &str, scan: &mut Tags, close: &str) -> Option<String> {
     let mut text = VisibleText::new(scan);
     while let Some(tag) = scan.next() {
-        text.before(html, &tag);
-        let raw = &html[tag.start..tag.end];
-        if !text.hidden
-            && raw.starts_with("</")
-            && tag_name(&raw.replacen("</", "<", 1)).as_deref() == Some(close)
-        {
+        if text.step(html, scan, &tag).as_deref() == Some(close) {
             return Some(text.out);
         }
-        text.tag(html, scan, &tag);
     }
     None
 }
 
 /// The text [`visible_text`] gathers, fed by its caller one tag at a time:
-/// [`before`](Self::before) takes the text ahead of a tag,
-/// [`tag`](Self::tag) the tag itself, and [`finish`](Self::finish) the text
-/// after the last one.
+/// [`step`](Self::step) takes a tag and the text ahead of it, and
+/// [`finish`](Self::finish) the text after the last one.
 struct VisibleText {
     out: String,
     /// Where the text not yet read starts.
@@ -2714,17 +2707,10 @@ impl VisibleText {
         }
     }
 
-    /// Takes the text between the last tag and `tag`.
-    fn before(&mut self, html: &str, tag: &Tag) {
-        if !self.hidden && self.muted.is_none() {
-            self.out
-                .push_str(&decode_entities(&html[self.pos..tag.start]));
-        }
-        self.pos = tag.end;
-    }
-
-    /// Takes `tag`, which `scan` has just read, after [`before`](Self::before).
-    fn tag(&mut self, html: &str, scan: &Tags, tag: &Tag) {
+    /// Takes the text between the last tag and `tag`, then `tag`, which `scan`
+    /// has just read. Returns the tag's name when it is an end tag outside a
+    /// `<template>`.
+    fn step(&mut self, html: &str, scan: &Tags, tag: &Tag) -> Option<String> {
         let &Tag {
             start,
             end,
@@ -2732,10 +2718,16 @@ impl VisibleText {
             opened,
             ..
         } = tag;
+        if !self.hidden && self.muted.is_none() {
+            self.out.push_str(&decode_entities(&html[self.pos..start]));
+        }
+        self.pos = end;
         self.muted = self.muted.filter(|id| scan.is_open(*id));
         let raw = &html[start..end];
+        let closes = !self.hidden && raw.starts_with("</");
         let quiet = self.hidden || self.muted.is_some();
-        match tag_name(&raw.replacen("</", "<", 1)).as_deref() {
+        let name = tag_name(&raw.replacen("</", "<", 1));
+        match name.as_deref() {
             Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
                 match text {
                     Some(text) => self.pos = text.end,
@@ -2760,6 +2752,7 @@ impl VisibleText {
             _ => {}
         }
         self.hidden = scan.in_template();
+        name.filter(|_| closes)
     }
 
     /// The text gathered, with whatever follows the last tag.
