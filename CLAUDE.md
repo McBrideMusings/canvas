@@ -494,12 +494,14 @@ beside the terminal all day.
 - canvasd refuses a post or update (400, logged `card refused`) whose HTML would
   freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag
   closing a table, section or row while the cell mode's cell is one the
-  512-element depth cap already closed), and drops such a card from
+  512-element depth cap already closed, or a table part's start tag, or its
+  end tag in table scope, while "in select in table" holds a select the cap
+  already closed), and drops such a card from
   `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`). A
   widget is framed like a card, so `canvas artifact new|put --widget` refuses
   one the same way (`widget refused: …`) and `artifacts.json` loads it as no
   widget (`widget dropped on load`). The reason
-  (`webkit_freeze_reason`) names the end tag and its byte offset, never the
+  (`webkit_freeze_reason`) names the tag and its byte offset, never the
   tag's attributes.
 - An artifact's page is never themed, width-capped or sized to its content by
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without

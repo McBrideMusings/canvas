@@ -98,7 +98,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         form: None,
         mode: Mode::Body,
         templates: Vec::new(),
-        freezes: false,
+        freeze: None,
     }
 }
 
@@ -157,13 +157,24 @@ pub struct Tags<'a> {
     /// Only `</template>` pops it, so like WebKit's it outlives a template
     /// the depth cap closed.
     templates: Vec<Mode>,
-    /// Set once an end tag that closes a table, section or row reached the
-    /// cell mode with no cell in table scope, the depth cap having closed it.
-    /// The spec has the end tag close the cell first, and WebKit's "close
-    /// the cell" finds none, so the older WebKit Canvas.app runs reprocesses
-    /// that end tag in the same mode forever. The scan goes on as a newer
-    /// WebKit does, in the row mode.
-    freezes: bool,
+    /// Set by the first tag the older WebKit Canvas.app runs reprocesses in
+    /// the same mode forever: see [`Freeze`].
+    freeze: Option<Freeze>,
+}
+
+/// A tag that freezes Canvas.app's WebKit, which reprocesses it in the same
+/// insertion mode forever, the depth cap having closed what it would close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Freeze {
+    /// An end tag that closes a table, section or row reached the cell mode
+    /// with no cell in table scope. The spec has the end tag close the cell
+    /// first, and WebKit's "close the cell" finds none. The scan goes on as
+    /// a newer WebKit does, in the row mode.
+    Cell,
+    /// In "in select in table", a table part's start tag, or its end tag in
+    /// table scope, closes the select first, and there is none in select
+    /// scope. The scan drops the tag.
+    Select,
 }
 
 /// WebKit's cap on its stack of open elements
@@ -309,7 +320,6 @@ impl Element {
                         | "th"
                         | "marquee"
                         | "object"
-                        | "select"
                         | "template"
                 ) || (scope == Scope::ListItem && matches!(name, "ol" | "ul"))
                     || (scope == Scope::Button && name == "button")
@@ -341,6 +351,15 @@ enum Mode {
     Cell,
     Caption,
     ColumnGroup,
+    /// The older "in select" mode Canvas.app's WebKit still runs, where the
+    /// current spec reads a select's contents as a body: only options,
+    /// optgroups, `<hr>`, `<script>` and `<template>` go in, `<select>`,
+    /// `<input>`, `<keygen>` and `<textarea>` close the select, and every
+    /// other tag is dropped.
+    Select,
+    /// "In select in table": a select opened in a table mode, which a table
+    /// part's start or end tag also closes.
+    SelectInTable,
 }
 
 /// The insertion mode the HTML element `name` starts when it opens, and
@@ -384,6 +403,10 @@ impl Tags<'_> {
     /// its text ends when the scan reads it as raw text, and whether it
     /// opened an SVG or MathML element.
     fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
+        // A select holds only HTML, so its mode reads every tag.
+        if matches!(self.mode, Mode::Select | Mode::SelectInTable) {
+            return self.select_start_tag(tag, name, end);
+        }
         let self_closing = tag.ends_with("/>");
         let mut as_html = match self.open.last() {
             None => true,
@@ -607,6 +630,16 @@ impl Tags<'_> {
         if let Some(mode) = mode_of(name) {
             self.mode = mode;
         }
+        if name == "select" {
+            self.mode = if matches!(
+                self.mode,
+                Mode::Table | Mode::TableBody | Mode::Row | Mode::Cell | Mode::Caption
+            ) {
+                Mode::SelectInTable
+            } else {
+                Mode::Select
+            };
+        }
         if name == "template" {
             self.templates.push(Mode::Template);
         }
@@ -695,6 +728,7 @@ impl Tags<'_> {
                 self.open.pop();
                 self.mode = Mode::Table;
             }
+            Mode::Select | Mode::SelectInTable => return,
             _ => {}
         }
         self.reconstruct();
@@ -702,15 +736,31 @@ impl Tags<'_> {
 
     /// Sets the insertion mode from the open elements, as the tree builder's
     /// "reset the insertion mode appropriately" step does.
+    ///
+    /// A select is "in select in table" when a table holds it before any
+    /// template does.
     fn reset_mode(&mut self) {
+        let html = |e: &&Element| !e.is_foreign();
         self.mode = self
             .open
             .iter()
+            .enumerate()
             .rev()
-            .filter(|e| !e.is_foreign())
-            .find_map(|e| match e.name.as_str() {
+            .filter(|(_, e)| html(e))
+            .find_map(|(i, e)| match e.name.as_str() {
                 "html" => Some(Mode::Body),
                 "template" => Some(self.templates.last().copied().unwrap_or(Mode::Template)),
+                "select" => Some(
+                    match self.open[..i]
+                        .iter()
+                        .rev()
+                        .filter(html)
+                        .find(|e| matches!(e.name.as_str(), "table" | "template"))
+                    {
+                        Some(e) if e.name == "table" => Mode::SelectInTable,
+                        _ => Mode::Select,
+                    },
+                ),
                 name => mode_of(name),
             })
             .unwrap_or(Mode::Body);
@@ -922,7 +972,7 @@ impl Tags<'_> {
                             self.open.truncate(i);
                             self.clear_to_marker();
                         }
-                        None => self.freezes = true,
+                        None => self.freeze_at(Freeze::Cell),
                     }
                     self.mode = Mode::Row;
                 }
@@ -947,41 +997,148 @@ impl Tags<'_> {
         }
     }
 
-    /// Closes what the "in body" rules close for the start tag `<name>`:
-    /// an open `<p>` before a block, a list item before its sibling, a
-    /// heading before a heading, and the like. Returns whether the tag still
-    /// opens an element; a `<select>` inside a select closes it instead.
-    fn body_start_tag(&mut self, name: &str) -> bool {
-        // Only these read whether a select is in scope.
-        let select = matches!(name, "hr" | "input" | "optgroup" | "option" | "select")
-            .then(|| self.in_scope("select", Scope::Default))
-            .flatten();
+    /// Applies the select modes' rules for the start tag `tag` named `name`
+    /// and returns where its text ends when it opens raw text; a select opens
+    /// no SVG or MathML element.
+    fn select_start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
+        let closes = match name {
+            "select" => {
+                self.close_select();
+                return (None, false);
+            }
+            "input" | "keygen" | "textarea" => true,
+            "caption" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "td" | "th" => {
+                self.mode == Mode::SelectInTable
+            }
+            _ => false,
+        };
+        if closes {
+            // The tag goes on to the mode the select's end left.
+            if self.close_select() {
+                return self.start_tag(tag, name, end);
+            }
+            // WebKit checks for a select before an `<input>`, `<keygen>` or
+            // `<textarea>` closes it, but not before a table part does.
+            if name != "input" && name != "keygen" && name != "textarea" {
+                self.freeze_at(Freeze::Select);
+            }
+            return (None, false);
+        }
         match name {
-            "select" | "input" => {
-                if let Some(i) = select {
-                    self.open.truncate(i);
-                    return name == "input";
+            "option" | "optgroup" | "hr" => {
+                let closes: &[&str] = if name == "option" {
+                    &["option"]
+                } else {
+                    &["option", "optgroup"]
+                };
+                for close in closes {
+                    if self
+                        .open
+                        .last()
+                        .is_some_and(|e| !e.is_foreign() && e.name == *close)
+                    {
+                        self.open.pop();
+                    }
                 }
-            }
-            "hr" => {
-                self.close_p();
-                if select.is_some() {
-                    self.imply_end_tags("");
+                self.insert(tag, name);
+                if name != "hr" {
+                    self.push_html(name);
                 }
+                (None, false)
             }
-            // In a select, an `<option>` closes an option and what is open
-            // inside it, and an `<optgroup>` an optgroup too; elsewhere they
-            // close only an option that is the current node.
-            "option" | "optgroup" => {
-                if select.is_some() {
-                    self.imply_end_tags(if name == "option" { "optgroup" } else { "" });
-                } else if self
-                    .open
-                    .last()
-                    .is_some_and(|e| !e.is_foreign() && e.name == "option")
+            "script" | "template" => {
+                self.insert(tag, name);
+                self.push_html(name);
+                let text = (name == "script").then(|| closing_tag_start(self.html, end, name));
+                (text, false)
+            }
+            _ => (None, false),
+        }
+    }
+
+    /// Applies the select modes' rules for the end tag `</name>`: an
+    /// option, optgroup or the select closes when it is the element the
+    /// rules name, a table part's end tag in table scope closes the select
+    /// and goes on, and every other end tag is dropped.
+    fn select_end_tag(&mut self, name: &str) {
+        let current = |s: &Self, n: &str| {
+            s.open
+                .last()
+                .is_some_and(|e| !e.is_foreign() && e.name == n)
+        };
+        match name {
+            "option" | "script" if current(self, name) => {
+                self.open.pop();
+            }
+            "optgroup" => {
+                let len = self.open.len();
+                if current(self, "option")
+                    && len >= 2
+                    && !self.open[len - 2].is_foreign()
+                    && self.open[len - 2].name == "optgroup"
                 {
                     self.open.pop();
                 }
+                if current(self, "optgroup") {
+                    self.open.pop();
+                }
+            }
+            "select" => {
+                self.close_select();
+            }
+            "caption" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "td" | "th"
+                if self.mode == Mode::SelectInTable && self.in_table_scope(&[name]).is_some() =>
+            {
+                if self.close_select() {
+                    self.html_end_tag(name);
+                } else {
+                    self.freeze_at(Freeze::Select);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Records that the current tag freezes WebKit, unless an earlier one did.
+    fn freeze_at(&mut self, freeze: Freeze) {
+        self.freeze.get_or_insert(freeze);
+    }
+
+    /// Closes the select in select scope, where every element but an option
+    /// or optgroup ends the scope, and resets the insertion mode. Returns
+    /// whether one was open.
+    fn close_select(&mut self) -> bool {
+        for i in (0..self.open.len()).rev() {
+            let e = &self.open[i];
+            if e.is_foreign() {
+                return false;
+            }
+            match e.name.as_str() {
+                "select" => {
+                    self.open.truncate(i);
+                    self.reset_mode();
+                    return true;
+                }
+                "option" | "optgroup" => {}
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Closes what the "in body" rules close for the start tag `<name>`:
+    /// an open `<p>` before a block, a list item before its sibling, a
+    /// heading before a heading, and the like. Returns whether the tag still
+    /// opens an element.
+    fn body_start_tag(&mut self, name: &str) -> bool {
+        match name {
+            "option" | "optgroup"
+                if self
+                    .open
+                    .last()
+                    .is_some_and(|e| !e.is_foreign() && e.name == "option") =>
+            {
+                self.open.pop();
             }
             _ if CLOSES_P.contains(&name) => self.close_p(),
             _ if is_heading(name) => {
@@ -1244,6 +1401,9 @@ impl Tags<'_> {
             }
             return;
         }
+        if matches!(self.mode, Mode::Select | Mode::SelectInTable) {
+            return self.select_end_tag(name);
+        }
         if self.table_end_tag(name) {
             return;
         }
@@ -1375,7 +1535,6 @@ const SCOPED_END_TAGS: &[&str] = &[
     "pre",
     "search",
     "section",
-    "select",
     "summary",
     "ul",
 ];
@@ -1681,34 +1840,48 @@ impl Iterator for Tags<'_> {
     }
 }
 
-/// The offset of the first end tag in `html` that freezes Canvas.app's
-/// WebKit (see `Tags::freezes`): a card holding one must never reach a
-/// viewer, and `None` when it holds none.
+/// The offset of the first tag in `html` that freezes Canvas.app's WebKit
+/// (see [`Freeze`]): a card holding one must never reach a viewer, and `None`
+/// when it holds none.
 pub fn webkit_freeze(html: &str) -> Option<usize> {
+    first_freeze(html).map(|(at, _)| at)
+}
+
+/// The offset of the first tag that freezes Canvas.app's WebKit, and why.
+fn first_freeze(html: &str) -> Option<(usize, Freeze)> {
     let mut scan = tags(html);
     while let Some(tag) = scan.next() {
-        if scan.freezes {
-            return Some(tag.start);
+        if let Some(freeze) = scan.freeze {
+            return Some((tag.start, freeze));
         }
     }
     None
 }
 
 /// Why Canvas.app's WebKit freezes on `html` framed as a card or widget, as
-/// one line naming the end tag [`webkit_freeze`] finds and its offset; the
-/// tag's attributes are left out, so the line stays short whatever the tag
-/// holds. `None` when it holds none.
+/// one line naming the tag [`webkit_freeze`] finds and its offset; the tag's
+/// attributes are left out, so the line stays short whatever the tag holds.
+/// `None` when it holds none.
 pub fn webkit_freeze_reason(html: &str) -> Option<String> {
-    let at = webkit_freeze(html)?;
-    // Past the `</`, which the scan only reads as an end tag before a letter.
-    let rest = &html[at + 2..];
+    let (at, freeze) = first_freeze(html)?;
+    // Past the `<` or `</`, which the scan only reads as a tag before a letter.
+    let slash = if html[at + 1..].starts_with('/') {
+        "/"
+    } else {
+        ""
+    };
+    let rest = &html[at + 1 + slash.len()..];
     let len = rest
         .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
         .unwrap_or(rest.len());
     let name = rest[..len].to_ascii_lowercase();
+    let (closes, nest) = match freeze {
+        Freeze::Cell => ("closes a table cell", "the table"),
+        Freeze::Select => ("closes a select in a table", "the select"),
+    };
     Some(format!(
-        "its </{name}> at byte {at} closes a table cell nested past WebKit's \
-         512-element limit, which freezes Canvas.app; nest the table less deeply"
+        "its <{slash}{name}> at byte {at} {closes} nested past WebKit's \
+         512-element limit, which freezes Canvas.app; nest {nest} less deeply"
     ))
 }
 
@@ -3136,31 +3309,76 @@ mod tests {
     }
 
     #[test]
-    fn a_select_closes_for_a_select_or_input_and_bounds_scope() {
-        // The current spec's rules, which WebKit and Chromium follow; the
-        // WebKit in Canvas.app still runs the older "in select" mode, which
-        // drops most tags inside a select. Each runs inside
-        // `<svg><foreignObject>`, then `</foreignObject>`: a select left open
-        // keeps the island open and `<style/>` opens HTML raw text.
+    fn a_table_part_reaching_a_select_the_depth_cap_closed_freezes_webkit() {
+        // Inside a cell and `k` `<div>`s, the cap closes the select when the
+        // `<option>` goes in, and "in select in table" stays. A table part's
+        // start tag, or its end tag in table scope, then loops in WebKit.
+        let deep = |k: usize, tail: &str| {
+            format!(
+                "<table><tr><td>{}<select><option>{tail}<img>",
+                "<div>".repeat(k)
+            )
+        };
+        for tail in ["<td>", "</td>", "</tr>", "<TR class=x>"] {
+            let html = deep(504, tail);
+            let at = html.rfind(tail).unwrap();
+            assert_eq!(webkit_freeze(&html), Some(at), "{tail}");
+        }
+        // `</th>` is not in table scope, WebKit checks for a select before
+        // an `<input>` closes it, and 503 `<div>`s leave the select open.
+        for (k, tail) in [(504, "</th>"), (504, "<input>"), (504, ""), (503, "</td>")] {
+            assert_eq!(webkit_freeze(&deep(k, tail)), None, "{k} {tail}");
+        }
+        assert_eq!(
+            webkit_freeze_reason(&deep(504, "<TD id=a>")).as_deref(),
+            Some(
+                "its <td> at byte 2551 closes a select in a table nested past WebKit's \
+                 512-element limit, which freezes Canvas.app; nest the select less deeply"
+            )
+        );
+    }
+
+    #[test]
+    fn a_select_runs_the_older_in_select_mode() {
+        // Canvas.app's WebKit still runs the older "in select" mode, where
+        // Chromium and newer WebKit follow the current spec: inside a select
+        // `<style/>` is dropped, so the `<b>` after it is a tag (1), and
+        // once the select closes it opens raw text (0).
         for (inner, bs) in [
-            ("<select><select>", 1),
-            ("<select><input>", 1),
-            ("<select><div><select>", 1),
-            ("<select><div><input>", 1),
+            ("<select>", 1),
+            ("<select><option>", 1),
+            ("<select><optgroup><hr>", 1),
+            ("<select><div>", 1),
+            ("<select><tr>", 1),
+            ("<select></select>", 0),
+            ("<select><div></select>", 0),
+            ("<select><option></select>", 0),
+            ("<select><select>", 0),
+            ("<select><input>", 0),
             ("<select><keygen>", 0),
-            ("<select><hr>", 0),
-            ("<select></select>", 1),
-            ("<select><div></select>", 1),
-            ("<select><button></select>", 1),
-            ("<select><option><optgroup></select>", 1),
-            // `<input>` reopens the `<strong>` after closing the select.
-            ("<select><p><strong></p><input>", 0),
-            // A select bounds the scope of what holds it.
-            ("<div><select></div>", 0),
-            ("<p><select></p>", 0),
+            // `<textarea>` and `<script>` are raw text to the end.
+            ("<select><textarea>", 0),
+            ("<select><script>", 0),
+            ("<select><script></script>", 1),
+            // A template's contents are read as a body.
+            ("<select><template>", 0),
+            ("<select><template></template>", 1),
+            // In a table, a table part's start tag or its end tag in table
+            // scope closes the select too.
+            ("<table><tr><td><select><td>", 0),
+            ("<table><tr><td><select></td>", 0),
+            ("<table><tr><td><select></tr>", 0),
+            ("<table><tr><td><select></th>", 1),
+            ("<table><select><tr>", 0),
+            ("<table><tr><td><select><template></template><td>", 0),
+            // A template between the table and the select keeps it apart.
+            ("<table><tr><td><template><select><td>", 1),
+            (
+                "<table><tr><td><template><select><template></template><td>",
+                1,
+            ),
         ] {
-            let html =
-                format!("<svg><foreignObject>{inner}</foreignObject><style/><b>x</b></style>");
+            let html = format!("{inner}<style/><b>x</b></style>");
             let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
             assert_eq!(
                 names.iter().filter(|n| **n == "<b>").count(),
@@ -3168,29 +3386,16 @@ mod tests {
                 "{html}: {names:?}"
             );
         }
-        // Inside a select, `<optgroup>` closes an open option or optgroup,
-        // and `<option>` and `<hr>` close an open option and what is open
-        // inside it, so `k` `<div>`s leave the `<svg>` short of filling the
-        // stack. The count is the `<b>` elements WebKit and Chromium build.
-        for (k, inner, bs) in [
-            (505, "<select><optgroup><optgroup>", 1),
-            (505, "<select><optgroup><option><optgroup>", 1),
-            (504, "<select><option><p><option>", 1),
-            (506, "<select><option><hr>", 1),
-            // `<option>` leaves an optgroup open.
-            (505, "<select><optgroup><option>", 0),
-        ] {
-            let html = format!(
-                "{}{inner}<svg><!--c--><style><b>x</b></style>",
-                "<div>".repeat(k)
-            );
-            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
-            assert_eq!(
-                names.iter().filter(|n| **n == "<b>").count(),
-                bs,
-                "{k} {inner}"
-            );
-        }
+        // An `<svg>` in a select is dropped, so it opens no SVG.
+        let html = "<select><svg><style/><b>x</b></style>";
+        assert!(tags(html).all(|t| !t.foreign), "{html}");
+        // Text in a select reopens no formatting element: with the stack
+        // full, reopening the `<b>` would close the select.
+        let html = format!(
+            "{}<b><select>x<input><style/><b>x</b></style>",
+            "<div>".repeat(508)
+        );
+        assert!(!tags(&html).any(|t| &html[t.start..t.end] == "<b>" && t.start > 508 * 5 + 3));
     }
 
     #[test]
