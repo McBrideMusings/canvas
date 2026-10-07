@@ -347,6 +347,10 @@ struct Cdn<F> {
     /// stylesheet's expansion that is thrown away can drop its own.
     present: Vec<String>,
     inlined: usize,
+    /// Bytes `get` has refused for the inlining total, so an `@import` that
+    /// missed it can tell how much room it lacked. Outside the record `undo`
+    /// takes back: a try reads only how much it grew while the try ran.
+    refused: usize,
     /// The stylesheets being expanded, outermost first, so an `@import`
     /// that closes a cycle is dropped.
     importing: Vec<String>,
@@ -365,6 +369,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             warned: HashSet::new(),
             present: Vec::new(),
             inlined: 0,
+            refused: 0,
             importing: Vec::new(),
             linked: Vec::new(),
         }
@@ -419,10 +424,13 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             self.cache.insert(url.to_string(), result);
         }
         let result = match self.cache.get(url) {
-            Some(Ok(bytes)) if self.inlined + bytes.len() > MAX_INLINED_BYTES => Err(format!(
-                "skipped: the export already inlined {} MB",
-                MAX_INLINED_BYTES / (1024 * 1024)
-            )),
+            Some(Ok(bytes)) if self.inlined + bytes.len() > MAX_INLINED_BYTES => {
+                self.refused += bytes.len();
+                Err(format!(
+                    "skipped: the export already inlined {} MB",
+                    MAX_INLINED_BYTES / (1024 * 1024)
+                ))
+            }
             Some(Ok(bytes)) => Ok(bytes.clone()),
             Some(Err(reason)) => Err(reason.clone()),
             None => return None,
@@ -554,29 +562,45 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                         ruled.clear();
                     }
                     out.push_str(&css[pos..i]);
-                    let start = self.mark();
                     let written = &css[i..import.end];
-                    let (text, inlined) = self.import(&import, base, depth, written, warnings);
-                    let mut added = self.since(start);
-                    let (links, rules) = prelude(&text);
-                    if links && !ruled.is_empty() {
+                    let mut tried = self.import_making_room(
+                        &import, base, depth, written, &mut out, &mut ruled, warnings,
+                    );
+                    let (links, rules) = prelude(&tried.text);
+                    // Sheets freed to make room for an import that still
+                    // writes a link went back for the link, as the rest do.
+                    let reason = if links {
                         let later = self
                             .linked
-                            .get(start.linked)
-                            .unwrap_or(&import.reference)
-                            .clone();
-                        let ruled = std::mem::take(&mut ruled);
-                        let undone = self.unlink(&mut out, ruled, &later, warnings);
-                        added.after_undoing(&undone);
+                            .get(tried.start.linked)
+                            .unwrap_or(&import.reference);
+                        format!("kept as a link: the later @import of {later} would be ignored after its rules")
+                    } else {
+                        let later = tried.url.as_deref().unwrap_or(&import.reference);
+                        format!(
+                            "kept as a link: the later @import of {later} needed its bytes under the export's {} MB total",
+                            MAX_INLINED_BYTES / (1024 * 1024)
+                        )
+                    };
+                    for url in std::mem::take(&mut tried.freed) {
+                        self.warn(&url, reason.clone(), warnings);
+                    }
+                    if links && !ruled.is_empty() {
+                        let n = ruled.len();
+                        let (undone, urls) = self.unlink(&mut out, &mut ruled, n);
+                        for url in urls {
+                            self.warn(&url, reason.clone(), warnings);
+                        }
+                        tried.added.after_undoing(&undone);
                     }
                     let at = out.len();
-                    out.push_str(&text);
-                    if let Some(url) = inlined.filter(|_| rules) {
+                    out.push_str(&tried.text);
+                    if let Some(url) = tried.url.filter(|_| rules) {
                         ruled.push(Inlined {
                             span: at..out.len(),
                             link: link_text(&import, Some(&url), written),
                             url,
-                            added,
+                            added: tried.added,
                         });
                     }
                     pos = import.end;
@@ -659,40 +683,89 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         (link_text(import, absolute.as_deref(), written), None)
     }
 
-    /// Turns each of `ruled` back into a link in `out`, since the browser
-    /// ignores the link to `later` that follows their rules, and warns.
-    /// Returns everything that came out of the record of the page.
+    /// [`Cdn::import`] in a sheet where every import in `ruled`, already in
+    /// `out`, turns back into a link if this one writes a link. When it does
+    /// so after missing the inlining total, the earliest of `ruled` turn back
+    /// into links first, since they would anyway, and it tries again with
+    /// the bytes they freed. Each try ends when the import writes no link,
+    /// `ruled` is empty, or nothing was refused for the total.
+    #[allow(clippy::too_many_arguments)]
+    fn import_making_room(
+        &mut self,
+        import: &Import,
+        base: Option<&str>,
+        depth: usize,
+        written: &str,
+        out: &mut String,
+        ruled: &mut Vec<Inlined>,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Tried {
+        let mut freed = Vec::new();
+        loop {
+            let start = self.mark();
+            let (warned, refused) = (warnings.len(), self.refused);
+            let (text, url) = self.import(import, base, depth, written, warnings);
+            let added = self.since(start);
+            if !prelude(&text).0 || ruled.is_empty() || self.refused == refused {
+                return Tried {
+                    text,
+                    url,
+                    start,
+                    added,
+                    freed,
+                };
+            }
+            let short = (self.inlined + self.refused - refused).saturating_sub(MAX_INLINED_BYTES);
+            self.undo(&added);
+            for w in warnings.drain(warned..) {
+                self.warned.remove(&w.target);
+            }
+            let (mut n, mut bytes) = (0, 0);
+            while n < ruled.len() && (n == 0 || bytes < short) {
+                bytes += ruled[n].added.bytes;
+                n += 1;
+            }
+            freed.extend(self.unlink(out, ruled, n).1);
+        }
+    }
+
+    /// Turns the first `n` of `ruled` back into links in `out` and moves the
+    /// rest to where they now sit. Returns everything that came out of the
+    /// record of the page and the URLs now links, for the caller to warn.
     fn unlink(
         &mut self,
         out: &mut String,
-        ruled: Vec<Inlined>,
-        later: &str,
-        warnings: &mut Vec<ExportWarning>,
-    ) -> Vec<Added> {
-        let Some(start) = ruled.first().map(|r| r.span.start) else {
-            return Vec::new();
+        ruled: &mut Vec<Inlined>,
+        n: usize,
+    ) -> (Vec<Added>, Vec<String>) {
+        let taken: Vec<Inlined> = ruled.drain(..n).collect();
+        let Some(start) = taken.first().map(|r| r.span.start) else {
+            return (Vec::new(), Vec::new());
         };
+        let before = out.len();
         let mut relinked = String::new();
         let mut pos = start;
         // Last first, so each one's entries are where it recorded them.
-        for r in ruled.iter().rev() {
+        for r in taken.iter().rev() {
             self.undo(&r.added);
         }
-        let undone = ruled.iter().map(|r| r.added.clone()).collect();
-        for r in ruled {
+        let undone: Vec<Added> = taken.iter().map(|r| r.added.clone()).collect();
+        let mut urls = Vec::with_capacity(taken.len());
+        for r in taken {
             relinked.push_str(&out[pos..r.span.start]);
             relinked.push_str(&r.link);
             pos = r.span.end;
-            let reason = format!(
-                "kept as a link: the later @import of {later} would be ignored after its rules"
-            );
-            self.warn(&r.url, reason, warnings);
-            self.linked.push(r.url);
+            self.linked.push(r.url.clone());
+            urls.push(r.url);
         }
         relinked.push_str(&out[pos..]);
         out.truncate(start);
         out.push_str(&relinked);
-        undone
+        for r in ruled.iter_mut() {
+            r.span = r.span.start + out.len() - before..r.span.end + out.len() - before;
+            r.added.after_undoing(&undone);
+        }
+        (undone, urls)
     }
 
     /// What replaces one `url()` naming `reference`: a CDN file as a `data:`
@@ -783,6 +856,17 @@ struct Inlined {
     url: String,
     link: String,
     added: Added,
+}
+
+/// What [`Cdn::import_making_room`] wrote for one `@import`: its text, its
+/// URL when inlined, where its final try started and what that try added,
+/// and the URLs of the earlier imports it turned back into links.
+struct Tried {
+    text: String,
+    url: Option<String>,
+    start: Mark,
+    added: Added,
+    freed: Vec<String>,
 }
 
 /// A point in a [`Cdn`]'s record of the page: the bytes inlined and the
@@ -2101,21 +2185,173 @@ mod tests {
             "{}",
             r.html.len()
         );
-        assert_eq!(
-            r.warnings[0].target,
-            format!("https://unpkg.com/b{fit}.css")
-        );
-        assert!(r.warnings[0].reason.contains("already inlined 8 MB"));
-        // The sheets inlined before a link turn back into links, so every
-        // sheet missing from the page is a link with a warning.
+        // Each sheet past the total turns the earliest inlined one back into
+        // a link and takes its bytes, so the last `fit` are inlined.
         let links = r
             .html
             .matches(r#"@import url("https://unpkg.com/b"#)
             .count();
-        assert_eq!(r.warnings.len(), links);
-        assert!(links > 40 - fit, "{links}");
-        // Turning sheets back into links frees their bytes for later ones.
-        assert!(links < 40, "{links}");
+        assert_eq!(links, 40 - fit);
+        for n in 0..40 {
+            let link = format!(r#"@import url("https://unpkg.com/b{n}.css");"#);
+            assert_eq!(r.html.contains(&link), n < 40 - fit, "b{n}");
+        }
+        let got: Vec<_> = r.warnings.iter().map(|w| w.target.clone()).collect();
+        let want: Vec<_> = (0..40 - fit)
+            .map(|n| format!("https://unpkg.com/b{n}.css"))
+            .collect();
+        assert_eq!(got, want);
+        assert!(
+            r.warnings[0].reason.contains(&format!(
+                "@import of https://unpkg.com/b{fit}.css needed its bytes under the export's 8 MB total"
+            )),
+            "{}",
+            r.warnings[0].reason
+        );
+    }
+
+    #[test]
+    fn a_sheet_past_the_total_stays_a_link_when_freeing_cannot_fit_it() {
+        // The big sheets and pad.css leave 10 bytes too few for b.css; s.css
+        // frees 3, so both s.css and b.css end up links.
+        let a = "@import \"s.css\";@import \"b.css\";";
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/pad.css" => Ok(vec![b'z'; 10]),
+            "https://unpkg.com/s.css" => Ok(b"p{}".to_vec()),
+            "https://unpkg.com/b.css" => Ok(vec![b'x'; MAX_ASSET_BYTES]),
+            u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
+            assert!(cdn
+                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
+                .is_some());
+        }
+        assert!(cdn
+            .get("https://unpkg.com/pad.css", &mut warnings)
+            .is_some());
+        let out = cdn.css(a, Some("https://unpkg.com/a.css"), 0, &mut warnings);
+        assert_eq!(
+            out,
+            r#"@import url("https://unpkg.com/s.css");@import url("https://unpkg.com/b.css");"#
+        );
+        let got: Vec<_> = warnings
+            .iter()
+            .map(|w| (w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "https://unpkg.com/b.css",
+                    "skipped: the export already inlined 8 MB"
+                ),
+                (
+                    "https://unpkg.com/s.css",
+                    "kept as a link: the later @import of https://unpkg.com/b.css would be ignored after its rules"
+                ),
+            ]
+        );
+        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - MAX_ASSET_BYTES + 10);
+    }
+
+    #[test]
+    fn an_import_retried_after_freeing_room_counts_once() {
+        // j.css fits, but its k.css misses the total by 326 bytes until
+        // s.css's 607 turn back into a link; j.css then inlines whole, and
+        // its first try leaves nothing in the record of the page.
+        let s = format!("p{{}}/*{}*/", "x".repeat(600));
+        let k = format!("q{{}}/*{}*/", "x".repeat(MAX_ASSET_BYTES - 307));
+        let j = "@import \"k.css\";p{}";
+        let (s2, k2) = (s.clone(), k.clone());
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/s.css" => Ok(s2.clone().into_bytes()),
+            "https://unpkg.com/j.css" => Ok(j.as_bytes().to_vec()),
+            "https://unpkg.com/k.css" => Ok(k2.clone().into_bytes()),
+            u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
+            assert!(cdn
+                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
+                .is_some());
+        }
+        let out = cdn.css(
+            "@import \"s.css\";@import \"j.css\";",
+            Some("https://unpkg.com/a.css"),
+            0,
+            &mut warnings,
+        );
+        assert_eq!(
+            out,
+            format!(r#"@import url("https://unpkg.com/s.css");{k}p{{}}"#)
+        );
+        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - 281);
+        assert_eq!(cdn.linked, ["https://unpkg.com/s.css"]);
+        let got: Vec<_> = warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(got, ["https://unpkg.com/s.css"]);
+    }
+
+    #[test]
+    fn room_made_inside_an_import_then_around_it_counts_once() {
+        // x.css's b.css misses the total by 307 bytes; x.css's own try frees
+        // a.css and inlines b.css, but a.css as a link would turn s.css back
+        // into one, so s.css goes first and x.css then inlines whole.
+        let s = format!("p{{}}/*{}*/", "x".repeat(600));
+        let a = format!("a{{}}/*{}*/", "x".repeat(600));
+        let x = "@import \"a.css\";@import \"b.css\";";
+        let b = format!("b{{}}/*{}*/", "x".repeat(MAX_ASSET_BYTES - 32 - 607 - 307));
+        let (s2, a2, b2) = (s.clone(), a.clone(), b.clone());
+        let fetch = move |url: &str, _: Duration| match url {
+            "https://unpkg.com/s.css" => Ok(s2.clone().into_bytes()),
+            "https://unpkg.com/x.css" => Ok(x.as_bytes().to_vec()),
+            "https://unpkg.com/a.css" => Ok(a2.clone().into_bytes()),
+            "https://unpkg.com/b.css" => Ok(b2.clone().into_bytes()),
+            u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
+            assert!(cdn
+                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
+                .is_some());
+        }
+        let out = cdn.css(
+            "@import \"s.css\";@import \"x.css\";",
+            Some("https://unpkg.com/page.css"),
+            0,
+            &mut warnings,
+        );
+        assert_eq!(
+            out,
+            format!(r#"@import url("https://unpkg.com/s.css");{a}{b}"#)
+        );
+        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - 300);
+        assert_eq!(cdn.linked, ["https://unpkg.com/s.css"]);
+        assert_eq!(
+            cdn.present[cdn.present.len() - 3..],
+            [
+                "https://unpkg.com/x.css",
+                "https://unpkg.com/a.css",
+                "https://unpkg.com/b.css"
+            ]
+        );
+        let got: Vec<_> = warnings
+            .iter()
+            .map(|w| (w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [(
+                "https://unpkg.com/s.css",
+                "kept as a link: the later @import of https://unpkg.com/x.css needed its bytes under the export's 8 MB total"
+            )]
+        );
     }
 
     #[test]
