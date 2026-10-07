@@ -1277,6 +1277,7 @@ fn statement_end(b: &[u8], at: usize) -> Option<usize> {
 /// as U+FFFD, every open bracket and block closed, and an at-rule statement
 /// ended with `;`. A rule's selector with no block is dropped, as the browser
 /// drops it, since any `;` would leave it reading on into the next rule.
+/// A `}` that closes nothing at the top level is written as `]`.
 fn closed_at_end(css: &str) -> String {
     /// The statement under way at the top level.
     struct Statement {
@@ -1287,6 +1288,7 @@ fn closed_at_end(css: &str) -> String {
     let b = css.as_bytes();
     let mut statement: Option<Statement> = None;
     let mut open: Vec<u8> = Vec::new();
+    let mut stray: Vec<usize> = Vec::new();
     let mut tail = String::new();
     let mut i = 0usize;
     while i < b.len() {
@@ -1371,6 +1373,8 @@ fn closed_at_end(css: &str) -> String {
                     if open.is_empty() && c == b'}' && statement.as_ref().is_some_and(|s| s.block) {
                         statement = None;
                     }
+                } else if open.is_empty() && c == b'}' {
+                    stray.push(i);
                 }
                 i += 1;
             }
@@ -1381,15 +1385,25 @@ fn closed_at_end(css: &str) -> String {
             _ => i += 1,
         }
     }
+    // A stray `}` at the top level is one more token of its statement, but
+    // inside an import's wrapper it would close the wrapper; `]` reads the
+    // same at the top level and closes nothing inside a block.
+    let kept = |end: usize| {
+        let mut out = css[..end].to_string();
+        for &at in stray.iter().take_while(|&&at| at < end) {
+            out.replace_range(at..at + 1, "]");
+        }
+        out
+    };
     match statement {
         Some(Statement {
             at_rule: false,
             start,
             block: false,
-        }) => css[..start].to_string(),
+        }) => kept(start),
         statement => {
             let mut out = String::with_capacity(css.len() + tail.len() + open.len() + 1);
-            out.push_str(css);
+            out.push_str(&kept(css.len()));
             out.push_str(&tail);
             out.extend(open.iter().rev().map(|&c| c as char));
             if statement.is_some_and(|s| !s.block) {
@@ -2793,6 +2807,23 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_brace_in_an_imported_sheet_stays_inside_its_wrapper() {
+        let c = card(
+            r#"<style>@import "https://unpkg.com/s.css" screen;</style>"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            "https://unpkg.com/s.css" => Ok(b"} .a{color:red}".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let want = "<style>@media screen{] .a{color:red}}</style>";
+        assert!(r.html.contains(want), "{}", r.html);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
     fn closed_at_end_closes_what_the_end_of_file_closes() {
         for (css, want) in [
             ("", ""),
@@ -2827,6 +2858,13 @@ mod tests {
             ("@x ) ] a", "@x ) ] a;"),
             ("--> .a{}", "--> .a{}"),
             ("@media x{.a{}.b", "@media x{.a{}.b}"),
+            ("} .a{color:red}", "] .a{color:red}"),
+            ("@media all, } {.a{}}", "@media all, ] {.a{}}"),
+            ("@x };.a{}", "@x ];.a{}"),
+            (".a{ } }.b{}", ".a{ } ].b{}"),
+            (".a( } ).b{}", ".a( } ).b{}"),
+            (".a{ ( } ) }", ".a{ ( } ) }"),
+            ("} .a{} }", "] .a{} "),
         ] {
             assert_eq!(closed_at_end(css), want, "{css:?}");
         }
