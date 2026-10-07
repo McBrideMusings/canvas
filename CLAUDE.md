@@ -387,8 +387,25 @@ beside the terminal all day.
   when the row moves. A refresh error dims the widget, adds a red dot and a
   "refresh failed" line, and puts "Refresh failed 2m ago: … · retrying in 4m"
   under the pane header. The Timeline shows no widgets. The pane is an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
-  at its `canvas-size` clamped to the pane or else filling it, reloaded after a
-  `put`. Its menu copies the id or folder path and deletes it. A grip at the
+  at its `canvas-size` clamped to the pane or else filling it. A watched change
+  or `put` stamps `updatedAt` and its `artifact-upserted` event carries
+  `changed`, the paths written relative to the artifact's path (no folders,
+  hidden names, `~` backups or extensionless names gone by the burst's end;
+  absent past `MAX_CHANGED_PATHS`). While the open page's relay listens (from
+  its `canvas-artifact-location` with `start: true` until its
+  `canvas-artifact-unload` on pagehide; it reports the address again on every
+  navigation), the viewer never reloads the frame for a change: it posts
+  `canvas-artifact-changed {stamp, paths}` (paths null when unknown, such as
+  changes made while it was disconnected), the relay answers
+  `canvas-artifact-ack {stamp}` and dispatches a cancelable
+  `canvas-artifact-changed` event on the page's window; uncancelled, a change
+  only to linked stylesheets swaps them in place (a sheet that fails to load
+  reloads) and anything else runs `location.reload()`, keeping path and hash.
+  A relay that starts while the newest stamp is unacknowledged hears that
+  change again. With no relay listening the viewer sets the frame's src to
+  the page's last reported address (in memory, per artifact), where a rebuilt
+  frame also opens; a load the viewer caused that brings no start hello (the
+  address is gone) drops it and opens the entry page. Its menu copies the id or folder path and deletes it. A grip at the
   frame's bottom-right corner drags it to another size (clamped to the pane,
   160×120 at least; a double-click goes back to the declared size), kept per
   artifact in the viewer's localStorage (`canvas.artifact-sizes`); the header's

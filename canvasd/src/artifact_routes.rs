@@ -45,13 +45,14 @@ fn failed(what: &str, id: &str, e: &dyn std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, format!("{what}: {e}")).into_response()
 }
 
-/// Writes the records and tells every viewer about the artifact. A failed
-/// save is an error: an artifact that would vanish on restart must not look
-/// created.
+/// Writes the records and tells every viewer about the artifact, with the
+/// files a change wrote when it knows them. A failed save is an error: an
+/// artifact that would vanish on restart must not look created.
 pub(crate) async fn save_and_publish(
     state: &AppState,
     artifacts: &Artifacts,
     id: &str,
+    changed: Option<Vec<String>>,
 ) -> Result<canvas_core::ArtifactView, Response> {
     artifacts
         .save()
@@ -59,7 +60,12 @@ pub(crate) async fn save_and_publish(
         .map_err(|e| failed("saving artifacts.json failed", id, &e))?;
     let record = artifacts.records.get(id).ok_or_else(not_found)?;
     let view = artifacts.view(record);
-    state.publish(CanvasEvent::ArtifactUpserted(Box::new(view.clone())));
+    state.publish(CanvasEvent::ArtifactUpserted(Box::new(
+        canvas_core::ArtifactView {
+            changed: changed.filter(|paths| paths.len() <= canvas_core::MAX_CHANGED_PATHS),
+            ..view.clone()
+        },
+    )));
     Ok(view)
 }
 
@@ -107,7 +113,7 @@ pub async fn new_artifact(
     }
     let id = record.id.clone();
     artifacts.records.insert(id.clone(), record);
-    match save_and_publish(&state, &artifacts, &id).await {
+    match save_and_publish(&state, &artifacts, &id, None).await {
         Ok(view) => {
             artifacts
                 .fingerprints
@@ -161,7 +167,7 @@ pub async fn relink_artifact(
     let was_updated = std::mem::replace(&mut record.updated_at, chrono::Utc::now().to_rfc3339());
     let print = artifacts::fingerprint(&root);
     let was_print = artifacts.fingerprints.insert(id.clone(), print);
-    match save_and_publish(&state, &artifacts, &id).await {
+    match save_and_publish(&state, &artifacts, &id, None).await {
         Ok(view) => {
             state.watcher.watch(&id, &root);
             artifacts.log_action(&id, Action::Relink, &actor).await;
@@ -265,10 +271,10 @@ pub async fn put_artifact(
     // their burst open until then, however long the copy takes.
     let _hold = state.watcher.hold(&id);
     let copied = tokio::task::spawn_blocking(move || {
-        artifacts::copy_into(&resolved, &folder).map(|n| (n, artifacts::fingerprint(&folder)))
+        artifacts::copy_into(&resolved, &folder).map(|w| (w, artifacts::fingerprint(&folder)))
     })
     .await;
-    let (files, print) = match copied {
+    let (written, print) = match copied {
         Ok(Ok(done)) => done,
         Ok(Err(e)) => return failed("copying into the artifact failed", &id, &e),
         Err(e) => return failed("copying into the artifact failed", &id, &e),
@@ -292,7 +298,8 @@ pub async fn put_artifact(
         artifacts.refresh_errors.remove(&id);
     }
     artifacts.fingerprints.insert(id.clone(), print);
-    match save_and_publish(&state, &artifacts, &id).await {
+    let files = written.len();
+    match save_and_publish(&state, &artifacts, &id, Some(written)).await {
         Ok(view) => {
             artifacts.log_action(&id, Action::Put, &actor).await;
             canvas_core::log::info(

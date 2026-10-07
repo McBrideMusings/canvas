@@ -3,7 +3,9 @@
    comments, and every statement ends in a semicolon. It posts each uncaught
    error and unhandled rejection to the viewer as canvas-artifact-error, and
    a click on an http(s) link as canvas-artifact-open, so the viewer opens it
-   in the default browser instead of the pane navigating away.
+   in the default browser instead of the pane navigating away. It also
+   reports the page's address and applies a change to the artifact's files
+   without the viewer reloading the pane (see canvas-artifact-changed below).
 
    The pane's opaque origin makes WebKit report nearly every error to window
    as a bare "Script error.": anything but the top level of a script fetched
@@ -94,6 +96,81 @@
       parent.postMessage({ type: "canvas-artifact-open", url }, "*");
     } catch (_) {}
   });
+  /* The page's own address goes up as it starts (start: the relay is now
+     listening for changes) and on every navigation inside it, so the viewer
+     reopens the artifact where it was left; pagehide tells the viewer the
+     relay has stopped listening. */
+  const up = (message) => {
+    try {
+      parent.postMessage(message, "*");
+    } catch (_) {}
+  };
+  const report = () => up({ type: "canvas-artifact-location", href: location.href });
+  up({ type: "canvas-artifact-location", href: location.href, start: true });
+  listen.call(window, "hashchange", report);
+  listen.call(window, "popstate", report);
+  listen.call(window, "pagehide", () => up({ type: "canvas-artifact-unload" }));
+  try {
+    for (const name of ["pushState", "replaceState"]) {
+      const original = history[name];
+      if (typeof original === "function") {
+        history[name] = function () {
+          const result = original.apply(this, arguments);
+          report();
+          return result;
+        };
+      }
+    }
+  } catch (_) {}
+
+  /* When the artifact's files change the viewer posts canvas-artifact-changed
+     {stamp, paths} (paths null when it can't name them), acknowledged on
+     receipt with canvas-artifact-ack {stamp}, instead of reloading the pane. The
+     page sees it as a cancelable canvas-artifact-changed event on window whose
+     detail is {paths}; a page that calls preventDefault() applies the change
+     itself and keeps its state. Otherwise a change only to stylesheets the
+     page links is swapped in place, and anything else reloads the page at
+     the address it shows, hash and all. */
+  const base = (/^\/artifacts\/[^/]+\//.exec(location.pathname) || [""])[0];
+  const swapStyles = (paths) => {
+    const swapped = new Set();
+    for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
+      let url;
+      try {
+        url = new URL(link.href);
+      } catch (_) {
+        continue;
+      }
+      if (!base || url.protocol !== location.protocol || url.host !== location.host || !url.pathname.startsWith(base)) continue;
+      let path;
+      try {
+        path = decodeURIComponent(url.pathname.slice(base.length));
+      } catch (_) {
+        continue;
+      }
+      if (!paths.includes(path)) continue;
+      swapped.add(path);
+      url.searchParams.set("canvas-reload", String(Date.now()));
+      const next = link.cloneNode();
+      next.href = url.href;
+      listen.call(next, "load", () => link.remove());
+      listen.call(next, "error", () => location.reload());
+      link.after(next);
+    }
+    return paths.every((path) => swapped.has(path));
+  };
+  listen.call(window, "message", (e) => {
+    const data = e.data;
+    if (e.source !== parent || !data || data.type !== "canvas-artifact-changed") return;
+    up({ type: "canvas-artifact-ack", stamp: data.stamp });
+    const paths = Array.isArray(data.paths) ? data.paths.map(String) : null;
+    const change = new CustomEvent("canvas-artifact-changed", { cancelable: true, detail: { paths } });
+    window.dispatchEvent(change);
+    if (change.defaultPrevented) return;
+    if (paths && paths.length && paths.every((path) => /\.css$/i.test(path)) && swapStyles(paths)) return;
+    location.reload();
+  });
+
   try {
     for (const name of ["setTimeout", "setInterval", "requestAnimationFrame", "requestIdleCallback", "queueMicrotask"]) {
       const original = window[name];
