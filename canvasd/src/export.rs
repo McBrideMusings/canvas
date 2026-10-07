@@ -53,7 +53,7 @@ pub fn export_card(
     // A file one reference left as a link while another put it in the page
     // isn't missing from the page.
     warnings
-        .retain(|w| w.kind != ExportWarningKind::FetchFailed || !cdn.present.contains(&w.target));
+        .retain(|w| w.kind != ExportWarningKind::FetchFailed || !cdn.present().contains(&w.target));
     let title = escape_text(&card_title(&card.html));
     let mut html = String::with_capacity(body.len() + 1024);
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
@@ -295,10 +295,11 @@ fn rewrite<F: cdn::Fetch>(
                     }
                     continue;
                 }
-                match cdn.get(&url, warnings) {
-                    Some(bytes) => {
+                let body = cdn.inline(&url, warnings, |_, bytes, _| Some(bytes));
+                match body {
+                    Some(body) => {
                         out.push_str(&without_attr(tag, "src", src));
-                        out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
+                        out.push_str(&escape_raw(&String::from_utf8_lossy(&body), "script"));
                         // Whatever the element held is dropped with its src.
                         pos = text_end.unwrap_or(end);
                     }
@@ -310,13 +311,15 @@ fn rewrite<F: cdn::Fetch>(
                     out.push_str(tag);
                     continue;
                 };
-                match cdn.get(&url, warnings) {
-                    Some(bytes) => {
-                        cdn.importing.push(url.clone());
-                        let from = cdn.source_url(&url);
-                        let css =
-                            cdn.css(&String::from_utf8_lossy(&bytes), Some(&from), 0, warnings);
-                        cdn.importing.pop();
+                let css = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
+                    cdn.importing.push(url.clone());
+                    let from = cdn.source_url(&url);
+                    let css = cdn.css(&String::from_utf8_lossy(&bytes), Some(&from), 0, warnings);
+                    cdn.importing.pop();
+                    Some(css)
+                });
+                match css {
+                    Some(css) => {
                         match find_attr_value(tag, "media") {
                             Some(media) => out.push_str(&format!(
                                 "<style media=\"{}\">",
@@ -430,142 +433,188 @@ impl<'a> StylePiece<'a> {
     }
 }
 
-/// Downloads for one export: each URL fetched once, all of them within one
-/// time budget, and at most `MAX_INLINED_BYTES` inlined in total. A URL that
-/// isn't inlined warns once; `export_card` drops the warning when another
-/// reference put the URL in the page (`present`).
-struct Cdn<F> {
-    fetch: F,
-    budget: Duration,
-    deadline: Instant,
-    cache: HashMap<String, Result<Fetched, String>>,
-    warned: HashSet<String>,
-    /// Every URL whose content went into the page, in order, so a
-    /// stylesheet's expansion that is thrown away can drop its own.
-    present: Vec<String>,
-    inlined: usize,
-    /// Bytes `get` has refused for the inlining total, so an `@import` that
-    /// missed it can tell how much room it lacked. Outside the record `undo`
-    /// takes back: a try reads only how much it grew while the try ran.
-    refused: usize,
-    /// The stylesheets being expanded, outermost first, so an `@import`
-    /// that closes a cycle is dropped.
-    importing: Vec<String>,
-    /// Every `@import` written out as a link, in order, so a stylesheet
-    /// about to be wrapped in a block can tell whether it holds one.
-    linked: Vec<String>,
-    /// Every module a module script reaches on the CDN hosts, in the order
-    /// fetched, as its URL and its source with each URL-like specifier
-    /// written absolute, for the page's import map.
-    modules: Vec<(String, String)>,
-    /// Every module URL `module_graph` has taken up, so each is read once.
-    module_seen: HashSet<String>,
+use record::Cdn;
+
+/// The part of [`Cdn`] that keeps the record of the page. A body comes out
+/// of it only inside [`Cdn::inline`], which takes the body's record back
+/// out when the caller throws the body away, so outside this module nothing
+/// can drop a body and leave it recorded as in the page.
+mod record {
+    use super::*;
+
+    /// Downloads for one export: each URL fetched once, all of them within one
+    /// time budget, and at most `MAX_INLINED_BYTES` inlined in total. A URL that
+    /// isn't inlined warns once; `export_card` drops the warning when another
+    /// reference put the URL in the page ([`Cdn::present`]).
+    pub(super) struct Cdn<F> {
+        fetch: F,
+        budget: Duration,
+        deadline: Instant,
+        cache: HashMap<String, Result<Fetched, String>>,
+        pub(super) warned: HashSet<String>,
+        /// Every URL whose content went into the page, in order, so a
+        /// stylesheet's expansion that is thrown away can drop its own.
+        present: Vec<String>,
+        inlined: usize,
+        /// Bytes `inline` has refused for the inlining total, so an `@import`
+        /// that missed it can tell how much room it lacked. Outside the record
+        /// `undo` takes back: a try reads only how much it grew while the try ran.
+        refused: usize,
+        /// The stylesheets being expanded, outermost first, so an `@import`
+        /// that closes a cycle is dropped.
+        pub(super) importing: Vec<String>,
+        /// Every `@import` written out as a link, in order, so a stylesheet
+        /// about to be wrapped in a block can tell whether it holds one.
+        pub(super) linked: Vec<String>,
+        /// Every module a module script reaches on the CDN hosts, in the order
+        /// fetched, as its URL and its source with each URL-like specifier
+        /// written absolute, for the page's import map.
+        pub(super) modules: Vec<(String, String)>,
+        /// Every module URL `module_graph` has taken up, so each is read once.
+        pub(super) module_seen: HashSet<String>,
+    }
+
+    impl<F: cdn::Fetch> Cdn<F> {
+        pub(super) fn new(fetch: F, budget: Duration) -> Self {
+            Cdn {
+                fetch,
+                budget,
+                deadline: Instant::now() + budget,
+                cache: HashMap::new(),
+                warned: HashSet::new(),
+                present: Vec::new(),
+                inlined: 0,
+                refused: 0,
+                importing: Vec::new(),
+                linked: Vec::new(),
+                modules: Vec::new(),
+                module_seen: HashSet::new(),
+            }
+        }
+
+        /// Every URL whose content is in the page, in the order it went in.
+        pub(super) fn present(&self) -> &[String] {
+            &self.present
+        }
+
+        /// The bytes inlined into the page so far.
+        pub(super) fn inlined(&self) -> usize {
+            self.inlined
+        }
+
+        /// The bytes refused for the inlining total so far.
+        pub(super) fn refused(&self) -> usize {
+            self.refused
+        }
+
+        /// Where the record of the page stands now, for [`Cdn::since`].
+        pub(super) fn mark(&self) -> Mark {
+            Mark {
+                bytes: self.inlined,
+                present: self.present.len(),
+                linked: self.linked.len(),
+            }
+        }
+
+        /// What went into the record of the page after `mark`.
+        pub(super) fn since(&self, mark: Mark) -> Added {
+            Added {
+                bytes: self.inlined - mark.bytes,
+                present: mark.present..self.present.len(),
+                linked: mark.linked..self.linked.len(),
+            }
+        }
+
+        /// Takes `added` back out of the record of the page, for content that
+        /// went in and was then thrown away. Later entries move down.
+        pub(super) fn undo(&mut self, added: &Added) {
+            self.inlined -= added.bytes;
+            self.present.drain(added.present.clone());
+            self.linked.drain(added.linked.clone());
+        }
+
+        /// The URL `url`'s body came from after any redirects, which its own
+        /// relative references resolve against; `url` itself until it is fetched.
+        pub(super) fn source_url(&self, url: &str) -> String {
+            match self.cache.get(url) {
+                Some(Ok(fetched)) => fetched.url.clone(),
+                _ => url.to_string(),
+            }
+        }
+
+        /// Records the body of `url` as in the page and hands it to `put`,
+        /// which answers what it made of it, or None when it throws it away;
+        /// then everything recorded since the body went in comes back out, the
+        /// records of whatever `put` inlined from it included. None, without
+        /// calling `put`, after a `fetch-failed` warning naming `url`.
+        pub(super) fn inline<T>(
+            &mut self,
+            url: &str,
+            warnings: &mut Vec<ExportWarning>,
+            put: impl FnOnce(&mut Self, Vec<u8>, &mut Vec<ExportWarning>) -> Option<T>,
+        ) -> Option<T> {
+            let mark = self.mark();
+            let bytes = self.get(url, warnings)?;
+            let made = put(self, bytes, warnings);
+            if made.is_none() {
+                self.undo(&self.since(mark));
+            }
+            made
+        }
+
+        /// The body of `url`, recorded as in the page, or None after a
+        /// `fetch-failed` warning naming it. Only [`Cdn::inline`] calls it.
+        fn get(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<Vec<u8>> {
+            if !self.cache.contains_key(url) {
+                let left = self.deadline.saturating_duration_since(Instant::now());
+                let result = if left.is_zero() {
+                    Err(format!(
+                        "skipped: the export's {}s download time ran out",
+                        self.budget.as_secs()
+                    ))
+                } else {
+                    self.fetch
+                        .fetch(url, left.min(cdn::TIMEOUT))
+                        .and_then(|fetched| {
+                            if fetched.body.len() > MAX_ASSET_BYTES {
+                                Err(format!("over {} KB", MAX_ASSET_BYTES / 1024))
+                            } else {
+                                Ok(fetched)
+                            }
+                        })
+                };
+                self.cache.insert(url.to_string(), result);
+            }
+            let result = match self.cache.get(url) {
+                Some(Ok(fetched)) if self.inlined + fetched.body.len() > MAX_INLINED_BYTES => {
+                    self.refused += fetched.body.len();
+                    Err(format!(
+                        "skipped: the export already inlined {} MB",
+                        MAX_INLINED_BYTES / (1024 * 1024)
+                    ))
+                }
+                Some(Ok(fetched)) => Ok(fetched.body.clone()),
+                Some(Err(reason)) => Err(reason.clone()),
+                None => return None,
+            };
+            match result {
+                Ok(bytes) => {
+                    self.inlined += bytes.len();
+                    self.present.push(url.to_string());
+                    Some(bytes)
+                }
+                Err(reason) => {
+                    self.warn(url, reason, warnings);
+                    None
+                }
+            }
+        }
+    }
 }
 
 impl<F: cdn::Fetch> Cdn<F> {
-    fn new(fetch: F, budget: Duration) -> Self {
-        Cdn {
-            fetch,
-            budget,
-            deadline: Instant::now() + budget,
-            cache: HashMap::new(),
-            warned: HashSet::new(),
-            present: Vec::new(),
-            inlined: 0,
-            refused: 0,
-            importing: Vec::new(),
-            linked: Vec::new(),
-            modules: Vec::new(),
-            module_seen: HashSet::new(),
-        }
-    }
-
-    /// Where the record of the page stands now, for [`Cdn::since`].
-    fn mark(&self) -> Mark {
-        Mark {
-            bytes: self.inlined,
-            present: self.present.len(),
-            linked: self.linked.len(),
-        }
-    }
-
-    /// What went into the record of the page after `mark`.
-    fn since(&self, mark: Mark) -> Added {
-        Added {
-            bytes: self.inlined - mark.bytes,
-            present: mark.present..self.present.len(),
-            linked: mark.linked..self.linked.len(),
-        }
-    }
-
-    /// Takes `added` back out of the record of the page, for content that
-    /// went in and was then thrown away. Later entries move down.
-    fn undo(&mut self, added: &Added) {
-        self.inlined -= added.bytes;
-        self.present.drain(added.present.clone());
-        self.linked.drain(added.linked.clone());
-    }
-
-    /// The URL `url`'s body came from after any redirects, which its own
-    /// relative references resolve against; `url` itself until it is fetched.
-    fn source_url(&self, url: &str) -> String {
-        match self.cache.get(url) {
-            Some(Ok(fetched)) => fetched.url.clone(),
-            _ => url.to_string(),
-        }
-    }
-
-    /// The body of `url`, recorded as in the page, or None after a
-    /// `fetch-failed` warning naming it. Every caller puts the body in the
-    /// page, or undoes the record ([`Cdn::undo`]) when it throws it away.
-    fn get(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<Vec<u8>> {
-        if !self.cache.contains_key(url) {
-            let left = self.deadline.saturating_duration_since(Instant::now());
-            let result = if left.is_zero() {
-                Err(format!(
-                    "skipped: the export's {}s download time ran out",
-                    self.budget.as_secs()
-                ))
-            } else {
-                self.fetch
-                    .fetch(url, left.min(cdn::TIMEOUT))
-                    .and_then(|fetched| {
-                        if fetched.body.len() > MAX_ASSET_BYTES {
-                            Err(format!("over {} KB", MAX_ASSET_BYTES / 1024))
-                        } else {
-                            Ok(fetched)
-                        }
-                    })
-            };
-            self.cache.insert(url.to_string(), result);
-        }
-        let result = match self.cache.get(url) {
-            Some(Ok(fetched)) if self.inlined + fetched.body.len() > MAX_INLINED_BYTES => {
-                self.refused += fetched.body.len();
-                Err(format!(
-                    "skipped: the export already inlined {} MB",
-                    MAX_INLINED_BYTES / (1024 * 1024)
-                ))
-            }
-            Some(Ok(fetched)) => Ok(fetched.body.clone()),
-            Some(Err(reason)) => Err(reason.clone()),
-            None => return None,
-        };
-        match result {
-            Ok(bytes) => {
-                self.inlined += bytes.len();
-                self.present.push(url.to_string());
-                Some(bytes)
-            }
-            Err(reason) => {
-                self.warn(url, reason, warnings);
-                None
-            }
-        }
-    }
-
     /// A `fetch-failed` warning that `url` stays a link, once per URL;
-    /// `export_card` drops it if `url` ends up in `present`.
+    /// `export_card` drops it if `url` ends up in [`Cdn::present`].
     fn warn(&mut self, url: &str, reason: String, warnings: &mut Vec<ExportWarning>) {
         if self.warned.insert(url.to_string()) {
             warnings.push(ExportWarning {
@@ -591,40 +640,38 @@ impl<F: cdn::Fetch> Cdn<F> {
             queue.push_back(key.clone());
         }
         while let Some(next) = queue.pop_front() {
-            let mark = self.mark();
-            let Some(bytes) = self.get(&next, warnings) else {
-                continue;
-            };
-            let source = String::from_utf8_lossy(&bytes);
-            match esm::specifiers(&source) {
-                Ok(specifiers) => {
-                    let base = url::Url::parse(&self.source_url(&next)).ok();
-                    let mut text = String::with_capacity(source.len());
-                    let mut copied = 0;
-                    for s in specifiers {
-                        let Some(target) = resolve_specifier(&s.value, base.as_ref()) else {
-                            continue;
-                        };
-                        if cdn::allowed(&target) && self.module_seen.insert(target.clone()) {
-                            queue.push_back(target.clone());
+            self.inline(&next, warnings, |cdn, bytes, warnings| {
+                let source = String::from_utf8_lossy(&bytes);
+                match esm::specifiers(&source) {
+                    Ok(specifiers) => {
+                        let base = url::Url::parse(&cdn.source_url(&next)).ok();
+                        let mut text = String::with_capacity(source.len());
+                        let mut copied = 0;
+                        for s in specifiers {
+                            let Some(target) = resolve_specifier(&s.value, base.as_ref()) else {
+                                continue;
+                            };
+                            if cdn::allowed(&target) && cdn.module_seen.insert(target.clone()) {
+                                queue.push_back(target.clone());
+                            }
+                            text.push_str(&source[copied..s.range.start]);
+                            text.push_str(&serde_json::to_string(&target).unwrap_or_default());
+                            copied = s.range.end;
                         }
-                        text.push_str(&source[copied..s.range.start]);
-                        text.push_str(&serde_json::to_string(&target).unwrap_or_default());
-                        copied = s.range.end;
+                        text.push_str(&source[copied..]);
+                        cdn.modules.push((next.clone(), text));
+                        Some(())
                     }
-                    text.push_str(&source[copied..]);
-                    self.modules.push((next, text));
+                    Err(e) => {
+                        cdn.warn(
+                            &next,
+                            format!("not a module the export can read: {e}"),
+                            warnings,
+                        );
+                        None
+                    }
                 }
-                Err(e) => {
-                    let added = self.since(mark);
-                    self.undo(&added);
-                    self.warn(
-                        &next,
-                        format!("not a module the export can read: {e}"),
-                        warnings,
-                    );
-                }
-            }
+            });
         }
         self.modules.iter().any(|(k, _)| *k == key).then_some(key)
     }
@@ -839,24 +886,23 @@ impl<F: cdn::Fetch> Cdn<F> {
                     self.warn(u, reason, warnings);
                     None
                 } else {
-                    let start = self.mark();
-                    self.get(u, warnings).and_then(|bytes| {
-                        self.importing.push(u.clone());
-                        let from = self.source_url(u);
-                        let text = self.css(
+                    self.inline(u, warnings, |cdn, bytes, warnings| {
+                        let linked = cdn.linked.len();
+                        cdn.importing.push(u.clone());
+                        let from = cdn.source_url(u);
+                        let text = cdn.css(
                             &closed_at_end(&String::from_utf8_lossy(&bytes)),
                             Some(&from),
                             depth + 1,
                             warnings,
                         );
-                        self.importing.pop();
-                        match (import.block(), self.linked.get(start.linked)) {
+                        cdn.importing.pop();
+                        match (import.block(), cdn.linked.get(linked)) {
                             (Some(block), Some(nested)) => {
                                 let reason = format!(
                                     "kept as a link: its @import of {nested} would be ignored inside {block}"
                                 );
-                                self.undo(&self.since(start));
-                                self.warn(u, reason, warnings);
+                                cdn.warn(u, reason, warnings);
                                 None
                             }
                             _ => Some(text),
@@ -894,10 +940,10 @@ impl<F: cdn::Fetch> Cdn<F> {
         let mut freed = Vec::new();
         loop {
             let start = self.mark();
-            let (warned, refused) = (warnings.len(), self.refused);
+            let (warned, refused) = (warnings.len(), self.refused());
             let (text, url) = self.import(import, base, depth, written, warnings);
             let added = self.since(start);
-            if !prelude(&text).0 || ruled.is_empty() || self.refused == refused {
+            if !prelude(&text).0 || ruled.is_empty() || self.refused() == refused {
                 return Tried {
                     text,
                     url,
@@ -906,7 +952,8 @@ impl<F: cdn::Fetch> Cdn<F> {
                     freed,
                 };
             }
-            let short = (self.inlined + self.refused - refused).saturating_sub(MAX_INLINED_BYTES);
+            let short =
+                (self.inlined() + self.refused() - refused).saturating_sub(MAX_INLINED_BYTES);
             self.undo(&added);
             for w in warnings.drain(warned..) {
                 self.warned.remove(&w.target);
@@ -981,14 +1028,17 @@ impl<F: cdn::Fetch> Cdn<F> {
             None => (absolute.as_str(), ""),
         };
         if cdn::allowed(target) {
-            if let Some(bytes) = self.get(target, warnings) {
+            let uri = self.inline(target, warnings, |_, bytes, _| {
                 let path = target.split('?').next().unwrap_or(target);
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
-                return Some(format!(
+                Some(format!(
                     "url(\"data:{};base64,{}{fragment}\")",
                     mime.essence_str(),
                     base64(&bytes)
-                ));
+                ))
+            });
+            if uri.is_some() {
+                return uri;
             }
         }
         (absolute != reference).then(|| format!("url(\"{}\")", absolute.replace('"', "%22")))
@@ -3001,13 +3051,14 @@ mod tests {
         let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
         let mut warnings = Vec::new();
         for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
-            assert!(cdn
-                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
-                .is_some());
-        }
-        assert!(cdn
-            .get("https://unpkg.com/pad.css", &mut warnings)
+            assert!(keep(
+                &mut cdn,
+                &format!("https://unpkg.com/big{n}.css"),
+                &mut warnings
+            )
             .is_some());
+        }
+        assert!(keep(&mut cdn, "https://unpkg.com/pad.css", &mut warnings).is_some());
         let out = cdn.css(a, Some("https://unpkg.com/a.css"), 0, &mut warnings);
         assert_eq!(
             out,
@@ -3030,7 +3081,7 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - MAX_ASSET_BYTES + 10);
+        assert_eq!(cdn.inlined(), MAX_INLINED_BYTES - MAX_ASSET_BYTES + 10);
     }
 
     #[test]
@@ -3052,9 +3103,12 @@ mod tests {
         let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
         let mut warnings = Vec::new();
         for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
-            assert!(cdn
-                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
-                .is_some());
+            assert!(keep(
+                &mut cdn,
+                &format!("https://unpkg.com/big{n}.css"),
+                &mut warnings
+            )
+            .is_some());
         }
         let out = cdn.css(
             "@import \"s.css\";@import \"j.css\";",
@@ -3066,7 +3120,7 @@ mod tests {
             out,
             format!(r#"@import url("https://unpkg.com/s.css");{k}p{{}}"#)
         );
-        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - 281);
+        assert_eq!(cdn.inlined(), MAX_INLINED_BYTES - 281);
         assert_eq!(cdn.linked, ["https://unpkg.com/s.css"]);
         let got: Vec<_> = warnings.iter().map(|w| w.target.as_str()).collect();
         assert_eq!(got, ["https://unpkg.com/s.css"]);
@@ -3093,9 +3147,12 @@ mod tests {
         let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
         let mut warnings = Vec::new();
         for n in 0..MAX_INLINED_BYTES / MAX_ASSET_BYTES - 1 {
-            assert!(cdn
-                .get(&format!("https://unpkg.com/big{n}.css"), &mut warnings)
-                .is_some());
+            assert!(keep(
+                &mut cdn,
+                &format!("https://unpkg.com/big{n}.css"),
+                &mut warnings
+            )
+            .is_some());
         }
         let out = cdn.css(
             "@import \"s.css\";@import \"x.css\";",
@@ -3107,10 +3164,10 @@ mod tests {
             out,
             format!(r#"@import url("https://unpkg.com/s.css");{a}{b}"#)
         );
-        assert_eq!(cdn.inlined, MAX_INLINED_BYTES - 300);
+        assert_eq!(cdn.inlined(), MAX_INLINED_BYTES - 300);
         assert_eq!(cdn.linked, ["https://unpkg.com/s.css"]);
         assert_eq!(
-            cdn.present[cdn.present.len() - 3..],
+            cdn.present()[cdn.present().len() - 3..],
             [
                 "https://unpkg.com/x.css",
                 "https://unpkg.com/a.css",
@@ -3134,11 +3191,47 @@ mod tests {
     fn downloads_past_the_time_budget_are_skipped() {
         let mut cdn = Cdn::new(|_: &str, _: Duration| Ok(b"x".to_vec()), Duration::ZERO);
         let mut warnings = Vec::new();
-        assert_eq!(cdn.get("https://unpkg.com/a.js", &mut warnings), None);
+        assert_eq!(
+            keep(&mut cdn, "https://unpkg.com/a.js", &mut warnings),
+            None
+        );
         assert_eq!(
             warnings[0].reason,
             "skipped: the export's 0s download time ran out"
         );
+    }
+
+    /// The body of `url`, kept in the page.
+    fn keep<F: cdn::Fetch>(
+        cdn: &mut Cdn<F>,
+        url: &str,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<Vec<u8>> {
+        cdn.inline(url, warnings, |_, bytes, _| Some(bytes))
+    }
+
+    #[test]
+    fn a_body_thrown_away_leaves_nothing_in_the_record() {
+        // a.css is thrown away after b.css went in from inside it, so
+        // neither is recorded as in the page; c.css, kept, is.
+        let fetch = |url: &str, _: Duration| match url {
+            "https://unpkg.com/a.css" => Ok(b"aaa".to_vec()),
+            "https://unpkg.com/b.css" => Ok(b"bb".to_vec()),
+            "https://unpkg.com/c.css" => Ok(b"c".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let mut cdn = Cdn::new(fetch, Duration::from_secs(10));
+        let mut warnings = Vec::new();
+        let dropped = cdn.inline("https://unpkg.com/a.css", &mut warnings, |cdn, _, w| {
+            assert!(keep(cdn, "https://unpkg.com/b.css", w).is_some());
+            assert_eq!(cdn.present().len(), 2);
+            None::<()>
+        });
+        assert_eq!(dropped, None);
+        assert!(keep(&mut cdn, "https://unpkg.com/c.css", &mut warnings).is_some());
+        assert_eq!(cdn.present(), ["https://unpkg.com/c.css"]);
+        assert_eq!(cdn.inlined(), 1);
+        assert!(warnings.is_empty());
     }
 
     #[test]
