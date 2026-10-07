@@ -320,7 +320,9 @@ parent.postMessage({ type: 'canvas-state-get' }, '*');
 addEventListener('message', (e) => {
   if (e.source !== parent) return;
   if (e.data.type === 'canvas-state') {
-    // e.data.values: { 'quiz-3': { picked: 'b' }, ... }, {} when nothing is saved
+    // e.data.values: { 'quiz-3': { picked: 'b' }, ... }, {} when nothing is saved.
+    // e.data.ok === false (with e.data.error) means the read failed: do not
+    // treat that as an empty state and overwrite it.
   } else if (e.data.type === 'canvas-state-ack') {
     // e.data: { key, ok: true } or { key, ok: false, error: 'why' }
   }

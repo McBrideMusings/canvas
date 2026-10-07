@@ -76,6 +76,11 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// Whether a path component is the state folder (APFS ignores case).
+pub fn is_data_dir_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|n| n.eq_ignore_ascii_case(DIR))
+}
+
 pub fn valid_key(key: &str) -> bool {
     let bytes = key.as_bytes();
     (1..=64).contains(&bytes.len())
@@ -157,6 +162,22 @@ fn entries(dir: &Path) -> Result<Vec<(String, PathBuf, u64)>, Error> {
     Ok(out)
 }
 
+/// Removes temp files a crash left behind; callers hold [`WRITES`].
+fn sweep_temps(dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.filter_map(Result::ok) {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Stores `body` (one JSON value) under `key`, atomically.
 pub fn set(source: &Path, key: &str, body: &[u8]) -> Result<(), Error> {
     if !valid_key(key) {
@@ -175,6 +196,7 @@ pub fn set(source: &Path, key: &str, body: &[u8]) -> Result<(), Error> {
             return Err(Error::Unsafe(format!("{key}.json is not a regular file")));
         }
     }
+    sweep_temps(&dir);
     let others: u64 = entries(&dir)?
         .iter()
         .filter(|(k, _, _)| k != key)
@@ -223,7 +245,16 @@ pub fn get(source: &Path, key: &str) -> Result<Option<serde_json::Value>, Error>
     if !valid_key(key) {
         return Err(Error::BadKey);
     }
-    Ok(get_all(source)?.remove(key))
+    let Some(dir) = data_dir(source, false)? else {
+        return Ok(None);
+    };
+    let path = key_file(&dir, key);
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => Ok(std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())),
+        _ => Ok(None),
+    }
 }
 
 /// Deletes every value and the folder when nothing else is in it; answers how
@@ -236,15 +267,7 @@ pub fn clear(source: &Path) -> Result<usize, Error> {
     for (_, path, _) in &found {
         std::fs::remove_file(path)?;
     }
-    for entry in std::fs::read_dir(&dir)?.filter_map(Result::ok) {
-        let name = entry.file_name();
-        if name
-            .to_str()
-            .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp"))
-        {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    sweep_temps(&dir);
     let _ = std::fs::remove_dir(&dir);
     Ok(found.len())
 }

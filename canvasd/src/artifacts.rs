@@ -757,7 +757,7 @@ pub fn fingerprint(folder: &Path) -> u64 {
         for entry in read.filter_map(Result::ok) {
             let path = entry.path();
             // A page's saved state is not part of the page.
-            if dir == folder && entry.file_name() == crate::artifact_state::DIR {
+            if crate::artifact_state::is_data_dir_name(&entry.file_name()) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else {

@@ -2255,7 +2255,9 @@
         fetch(base)
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((values) => reply({ type: "canvas-state", values }))
-          .catch(() => reply({ type: "canvas-state", values: {} }));
+          .catch((e) =>
+            reply({ type: "canvas-state", values: {}, ok: false, error: String(e.message || e) })
+          );
         return;
       }
       const key = typeof data.key === "string" ? data.key : "";
