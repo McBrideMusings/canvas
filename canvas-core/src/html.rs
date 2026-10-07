@@ -1827,7 +1827,7 @@ pub fn first_heading(html: &str) -> Option<String> {
         }
         let name = tag_name(&html[start..end]);
         if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
-            let text = read_visible(html, &mut scan, end, Some(level))?;
+            let text = visible_text_until(html, &mut scan, level)?;
             let text = collapse_whitespace(&text);
             return (!text.is_empty()).then_some(text);
         }
@@ -1878,19 +1878,23 @@ const BLOCK_TAGS: &[&str] = &[
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
 /// written, since the parser decodes nothing there.
 fn visible_text(html: &str) -> String {
-    read_visible(html, &mut tags(html), 0, None).unwrap_or_default()
+    let (text, _) = read_visible(html, &mut tags(html), None);
+    text
 }
 
-/// [`visible_text`] of what `scan` passes over from `pos`: up to the end tag
-/// `</close>` outside a `<template>` (`None` when it never comes), or to the
-/// end of `html` when `close` is `None`.
-fn read_visible(
-    html: &str,
-    scan: &mut Tags,
-    mut pos: usize,
-    close: Option<&str>,
-) -> Option<String> {
+/// [`visible_text`] of what `scan` reads from where it stopped up to the end
+/// tag `</close>` outside a `<template>`; `None` when that never comes.
+fn visible_text_until(html: &str, scan: &mut Tags, close: &str) -> Option<String> {
+    let (text, closed) = read_visible(html, scan, Some(close));
+    closed.then_some(text)
+}
+
+/// [`visible_text`] of what `scan` reads from where it stopped, and whether
+/// it stopped at the end tag `</close>` outside a `<template>`; with no such
+/// tag it runs to the end of `html`.
+fn read_visible(html: &str, scan: &mut Tags, close: Option<&str>) -> (String, bool) {
     let mut out = String::new();
+    let mut pos = scan.pos;
     // Whether the text after the last tag is inside a `<template>`.
     let mut hidden = scan.in_template();
     while let Some(Tag {
@@ -1907,7 +1911,7 @@ fn read_visible(
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
         if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
-            return Some(out);
+            return (out, true);
         }
         match name.as_deref() {
             Some("script" | "style" | "iframe" | "noembed" | "noframes") => {
@@ -1930,13 +1934,10 @@ fn read_visible(
         }
         hidden = scan.in_template();
     }
-    if close.is_some() {
-        return None;
-    }
     if pos < html.len() && !hidden {
         out.push_str(&decode_entities(&html[pos..]));
     }
-    Some(out)
+    (out, false)
 }
 
 /// `s` with every character reference decoded once, as the HTML parser
@@ -3089,6 +3090,11 @@ mod tests {
         assert_eq!(
             card_label("<p>intro</p><h2>The <b>plan</b>\n now</h2>").as_deref(),
             Some("The plan now")
+        );
+        // A heading never closed is no heading: the first line stands in.
+        assert_eq!(
+            card_label("<h1>never closed<p>body").as_deref(),
+            Some("never closed")
         );
     }
 
