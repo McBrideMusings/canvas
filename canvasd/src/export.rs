@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use canvas_core::html::{
     card_title, decode_entities, escape_attr, escape_text, find_attr_value, replace_attr_value,
-    tag_name, tags, AttrValue, Tag,
+    tag_name, tags, AttrValue, Tag, TextKind,
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
@@ -128,10 +128,12 @@ fn rewrite<F: cdn::Fetch>(
     while let Some(Tag {
         start,
         end,
-        text_end,
+        text: raw_text,
+        opened,
         foreign,
     }) = scan.next()
     {
+        let text_end = raw_text.map(|t| t.end);
         let text = &html[pos..start];
         let tag = &html[start..end];
         pos = end;
@@ -149,10 +151,13 @@ fn rewrite<F: cdn::Fetch>(
                     }
                     piece => pieces.push(piece),
                 }
-                if let Some(text_end) = text_end {
-                    let name = tag_name(tag).unwrap_or_default();
-                    pieces.push(StylePiece::Raw(&html[end..text_end], name));
-                    pos = text_end;
+                if let Some(raw) = raw_text {
+                    let body = &html[end..raw.end];
+                    pieces.push(match raw.kind {
+                        TextKind::Raw => StylePiece::Raw(body, tag),
+                        TextKind::Escapable => StylePiece::Escapable(body),
+                    });
+                    pos = raw.end;
                 }
                 continue;
             }
@@ -286,10 +291,7 @@ fn rewrite<F: cdn::Fetch>(
                         pos = text_end;
                     }
                     // Its CSS follows unless it closed itself.
-                    None if !tag.ends_with("/>") => {
-                        markup_style = scan.current().map(|id| (id, Vec::new()))
-                    }
-                    None => {}
+                    None => markup_style = opened.map(|id| (id, Vec::new())),
                 }
             }
             _ => out.push_str(tag),
@@ -539,8 +541,12 @@ enum StylePiece<'a> {
     /// from but which keeps the tree's shape, as the page writes it.
     Element(Cow<'a, str>),
     /// The text of a child element the scan read as raw text, such as an
-    /// HTML `<title>` inside a `<foreignObject>`, and that element's name.
-    Raw(&'a str, String),
+    /// HTML `<script>` inside a `<foreignObject>`, and that element's opening
+    /// tag.
+    Raw(&'a str, &'a str),
+    /// The text of a child element the scan read as escapable raw text, such
+    /// as an HTML `<title>` inside a `<foreignObject>`.
+    Escapable(&'a str),
 }
 
 impl<'a> StylePiece<'a> {
@@ -568,22 +574,16 @@ impl<'a> StylePiece<'a> {
             StylePiece::Text(raw)
             | StylePiece::Cdata(raw)
             | StylePiece::Comment(raw)
-            | StylePiece::Raw(raw, _) => raw,
+            | StylePiece::Raw(raw, _)
+            | StylePiece::Escapable(raw) => raw,
             StylePiece::Element(raw) => raw,
         }
-    }
-
-    /// Whether the piece is raw text whose character references the browser
-    /// decodes, as in `<title>` and `<textarea>`.
-    fn rcdata(name: &str) -> bool {
-        matches!(name, "title" | "textarea")
     }
 
     /// What the browser reads from the piece as CSS.
     fn css(&self) -> String {
         match self {
-            StylePiece::Text(text) => decode_entities(text),
-            StylePiece::Raw(text, name) if StylePiece::rcdata(name) => decode_entities(text),
+            StylePiece::Text(text) | StylePiece::Escapable(text) => decode_entities(text),
             StylePiece::Raw(text, _) => text.to_string(),
             StylePiece::Cdata(tag) => {
                 let body = &tag["<![CDATA[".len()..];
@@ -920,8 +920,8 @@ impl<F: cdn::Fetch> Cdn<F> {
                 result.push_str(&changed.replace("]]>", "]]]]><![CDATA[>"));
                 result.push_str("]]>");
             }
-            StylePiece::Raw(_, name) if !StylePiece::rcdata(name) => {
-                result.push_str(&escape_raw(changed, name))
+            StylePiece::Raw(_, tag) => {
+                result.push_str(&escape_raw(changed, &tag_name(tag).unwrap_or_default()))
             }
             _ => result.push_str(&escape_text(changed)),
         }
@@ -2488,6 +2488,16 @@ mod tests {
             assert!(r.html.contains(want), "{html}\n{}", r.html);
             assert!(r.warnings.is_empty(), "{html}: {:?}", r.warnings);
         }
+    }
+
+    #[test]
+    fn a_style_a_select_drops_reads_no_css() {
+        // A select drops a `<style>` start tag, so what follows is the
+        // select's text, never CSS (WebKit builds no style element).
+        let html = r#"<select><style></style><option>.f{src:url(https://cdnjs.cloudflare.com/x/font/f.woff2?v=1)}</option></select>"#;
+        let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+        assert!(r.html.contains(html), "{}", r.html);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     }
 
     #[test]

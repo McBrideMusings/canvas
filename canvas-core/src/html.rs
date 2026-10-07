@@ -81,7 +81,7 @@ enum Tok {
 /// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
 /// `<title>`, `<textarea>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>` or
 /// `<noscript>` element holds no tags, so after its opening tag the scan
-/// resumes at its closing tag, which the tag's `text_end` holds; after
+/// resumes at its closing tag, which the tag's `text` holds; after
 /// `<plaintext>` the rest of the HTML is its text. The scan reads HTML as a
 /// document with scripting on, as a card frame, an artifact and an exported
 /// page all run, which is what makes `<noscript>` raw text. In
@@ -109,16 +109,20 @@ fn scan(html: &str, max_open: usize) -> Tags<'_> {
         templates: Vec::new(),
         shadow_hosts: HashSet::new(),
         raw_close: None,
+        opened: None,
         freeze: None,
         reopened: 0,
     }
 }
 
 /// One tag from [`tags`]: the [`next_tag`] range `[start, end)`, and for
-/// the opening tag of an element the scan read as raw text, `text_end`: its
-/// closing tag (or the end of the HTML), where the scan resumes, so
-/// `[end, text_end)` is the element's text. Any other tag, an SVG or MathML
-/// `<style>` included, has none and the scan resumes at `end`. `foreign`
+/// the opening tag of an element the scan read as raw text, `text`: where
+/// that text ends and how the browser reads it. Any other tag, an SVG or
+/// MathML `<style>` included, has none and the scan resumes at `end`.
+/// `opened` is the id of the element a start tag opened and left open, for
+/// [`Tags::is_open`], which answers for it after any later tag too, since
+/// no two elements share an id; a void or self-closed one, or a tag that
+/// opened nothing, has none. `foreign`
 /// is true for a start tag that opened an SVG or MathML element, `<svg>` and
 /// `<math>` themselves included: the browser gives such an element none of
 /// its HTML namesake's behavior, so an SVG `<link>` loads no stylesheet and
@@ -127,8 +131,28 @@ fn scan(html: &str, max_open: usize) -> Tags<'_> {
 pub struct Tag {
     pub start: usize,
     pub end: usize,
-    pub text_end: Option<usize>,
+    pub text: Option<Text>,
+    pub opened: Option<usize>,
     pub foreign: bool,
+}
+
+/// The text of an element the scan read as raw text: it runs from the
+/// opening tag's end to `end`, its closing tag (or the end of the HTML),
+/// where the scan resumes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Text {
+    pub end: usize,
+    pub kind: TextKind,
+}
+
+/// How the browser reads an element's raw text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextKind {
+    /// As written: `<script>`, `<style>`, `<xmp>`, `<iframe>`, `<noembed>`,
+    /// `<noframes>`, `<noscript>` and `<plaintext>`.
+    Raw,
+    /// With character references decoded: `<title>` and `<textarea>`.
+    Escapable,
 }
 
 pub struct Tags<'a> {
@@ -191,6 +215,8 @@ pub struct Tags<'a> {
     /// tree builder reads that tag in its "text" mode, which closes the
     /// element whatever the insertion mode would do with the tag.
     raw_close: Option<usize>,
+    /// The id of the element the tag being read opened, for [`Tag::opened`].
+    opened: Option<usize>,
     /// Set by the first tag the older WebKit Canvas.app runs reprocesses in
     /// the same mode forever, or that stalls it another way: see [`Freeze`].
     freeze: Option<Freeze>,
@@ -702,21 +728,15 @@ impl Tags<'_> {
         self.pos = self.pos.max(pos);
     }
 
-    /// An id for the innermost open element, which after a start tag that
-    /// opened an element is that element.
-    pub fn current(&self) -> Option<usize> {
-        self.open.last().map(|e| e.id)
-    }
-
-    /// Whether the element [`Tags::current`] named `id` is still open.
+    /// Whether the element a [`Tag::opened`] named `id` is still open.
     pub fn is_open(&self, id: usize) -> bool {
         self.open.holds(id)
     }
 
-    /// Updates the open elements for the start tag `tag`, and returns where
-    /// its text ends when the scan reads it as raw text, and whether it
-    /// opened an SVG or MathML element.
-    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
+    /// Updates the open elements for the start tag `tag`, and returns its
+    /// text when the scan reads it as raw text, and whether it opened an SVG
+    /// or MathML element.
+    fn start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<Text>, bool) {
         // A select holds only HTML, so its mode reads every tag.
         if matches!(self.mode, Mode::Select | Mode::SelectInTable) {
             return self.select_start_tag(tag, name, end);
@@ -757,15 +777,16 @@ impl Tags<'_> {
         }
         self.insert(tag, name);
         if !self_closing {
-            self.open_element(name, ns, integration_point(tag, name, ns == Ns::Math));
+            let id = self.open_element(name, ns, integration_point(tag, name, ns == Ns::Math));
+            self.opened = Some(id);
         }
         (None, true)
     }
 
     /// Updates the open elements for the HTML start tag `<name>`, closing
     /// what the tree builder closes before inserting it, and returns where
-    /// its text ends when it is a raw-text element.
-    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<usize> {
+    /// its text when it is a raw-text element.
+    fn html_start_tag(&mut self, tag: &str, name: &str, end: usize) -> Option<Text> {
         // A card is already in a body, where `<html>` and `<body>` only add
         // attributes to the open ones and `<head>` is dropped.
         if !self.table_start_tag(name) || matches!(name, "html" | "body" | "head") {
@@ -799,6 +820,7 @@ impl Tags<'_> {
         }
         if !VOID_TAGS.contains(&name) {
             let id = self.push_html(name);
+            self.opened = Some(id);
             if let Some(template) = self.open.elements.last_mut().filter(|_| shadow_root) {
                 template.detached = true;
             }
@@ -809,14 +831,17 @@ impl Tags<'_> {
                 self.form = Some(id);
             }
         }
-        match name {
+        let (end, kind) = match name {
             // In HTML `<style/>` still opens its text.
-            "iframe" | "noembed" | "noframes" | "noscript" | "script" | "style" | "textarea"
-            | "title" | "xmp" => Some(closing_tag_start(self.html, end, name)),
+            "iframe" | "noembed" | "noframes" | "noscript" | "script" | "style" | "xmp" => {
+                (closing_tag_start(self.html, end, name), TextKind::Raw)
+            }
+            "textarea" | "title" => (closing_tag_start(self.html, end, name), TextKind::Escapable),
             // Nothing after `<plaintext>` is a tag, its own end tag included.
-            "plaintext" => Some(self.html.len()),
-            _ => None,
-        }
+            "plaintext" => (self.html.len(), TextKind::Raw),
+            _ => return None,
+        };
+        Some(Text { end, kind })
     }
 
     /// Whether the "in body" rules reopen the formatting elements before
@@ -1384,9 +1409,9 @@ impl Tags<'_> {
     }
 
     /// Applies the select modes' rules for the start tag `tag` named `name`
-    /// and returns where its text ends when it opens raw text; a select opens
+    /// and returns its text when it opens raw text; a select opens
     /// no SVG or MathML element.
-    fn select_start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<usize>, bool) {
+    fn select_start_tag(&mut self, tag: &str, name: &str, end: usize) -> (Option<Text>, bool) {
         let closes = match name {
             "select" => {
                 self.close_select();
@@ -1428,14 +1453,17 @@ impl Tags<'_> {
                 }
                 self.insert(tag, name);
                 if name != "hr" {
-                    self.push_html(name);
+                    self.opened = Some(self.push_html(name));
                 }
                 (None, false)
             }
             "script" | "template" => {
                 self.insert(tag, name);
-                self.push_html(name);
-                let text = (name == "script").then(|| closing_tag_start(self.html, end, name));
+                self.opened = Some(self.push_html(name));
+                let text = (name == "script").then(|| Text {
+                    end: closing_tag_start(self.html, end, name),
+                    kind: TextKind::Raw,
+                });
                 (text, false)
             }
             _ => (None, false),
@@ -2232,7 +2260,8 @@ impl Iterator for Tags<'_> {
         self.begin_token();
         let tag = &self.html[start..end];
         let raw_close = self.raw_close.take() == Some(start);
-        let (text_end, foreign) = if raw_close {
+        self.opened = None;
+        let (text, foreign) = if raw_close {
             self.open.pop();
             (None, false)
         } else if tag.as_bytes()[1].is_ascii_alphabetic() {
@@ -2261,12 +2290,13 @@ impl Iterator for Tags<'_> {
             }
             (None, false)
         };
-        self.raw_close = text_end;
-        self.pos = text_end.unwrap_or(end);
+        self.raw_close = text.map(|t| t.end);
+        self.pos = self.raw_close.unwrap_or(end);
         Some(Tag {
             start,
             end,
-            text_end,
+            text,
+            opened: self.opened,
             foreign,
         })
     }
@@ -2666,20 +2696,19 @@ impl VisibleText {
         let &Tag {
             start,
             end,
-            text_end,
-            foreign,
+            text,
+            opened,
+            ..
         } = tag;
         self.muted = self.muted.filter(|id| scan.is_open(*id));
         let raw = &html[start..end];
         let quiet = self.hidden || self.muted.is_some();
         match tag_name(&raw.replacen("</", "<", 1)).as_deref() {
             Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
-                match text_end {
-                    Some(text_end) => self.pos = text_end,
+                match text {
+                    Some(text) => self.pos = text.end,
                     // Its text follows unless it closed itself.
-                    None if foreign && self.muted.is_none() && !raw.ends_with("/>") => {
-                        self.muted = scan.current()
-                    }
+                    None if self.muted.is_none() => self.muted = opened,
                     None => {}
                 }
             }
@@ -2688,11 +2717,11 @@ impl VisibleText {
                 if !quiet {
                     self.out.push('\n');
                 }
-                if let Some(text_end) = text_end {
+                if let Some(text) = text {
                     if !quiet {
-                        self.out.push_str(&html[end..text_end]);
+                        self.out.push_str(&html[end..text.end]);
                     }
-                    self.pos = text_end;
+                    self.pos = text.end;
                 }
             }
             Some(name) if !quiet && BLOCK_TAGS.contains(&name) => self.out.push('\n'),
@@ -3540,10 +3569,10 @@ mod tests {
     }
 
     #[test]
-    fn text_end_marks_only_tags_read_as_raw_text() {
+    fn text_marks_only_tags_read_as_raw_text() {
         let html = "<style></style><style/>a{}</style><svg><style></style><style/></svg><b>";
         let ends: Vec<(&str, Option<usize>)> = tags(html)
-            .map(|t| (&html[t.start..t.end], t.text_end))
+            .map(|t| (&html[t.start..t.end], t.text.map(|t| t.end)))
             .collect();
         assert_eq!(
             ends,
@@ -3558,6 +3587,55 @@ mod tests {
                 ("<style/>", None),
                 ("</svg>", None),
                 ("<b>", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_kind_says_whether_the_browser_decodes_references() {
+        for (html, kind) in [
+            ("<script>", TextKind::Raw),
+            ("<style>", TextKind::Raw),
+            ("<xmp>", TextKind::Raw),
+            ("<iframe>", TextKind::Raw),
+            ("<noembed>", TextKind::Raw),
+            ("<noframes>", TextKind::Raw),
+            ("<noscript>", TextKind::Raw),
+            ("<plaintext>", TextKind::Raw),
+            ("<select><script>", TextKind::Raw),
+            ("<title>", TextKind::Escapable),
+            ("<textarea>", TextKind::Escapable),
+            ("<svg><foreignObject><title>", TextKind::Escapable),
+        ] {
+            let text = tags(html).last().and_then(|t| t.text);
+            assert_eq!(text.map(|t| t.kind), Some(kind), "{html}");
+        }
+    }
+
+    #[test]
+    fn opened_names_the_element_a_start_tag_left_open() {
+        // `<img>` is void, so the `<b>` reopened before it is not its element.
+        let html = "<p><b></p><img><svg><style/><style></style></svg><br></br>";
+        let mut scan = tags(html);
+        let mut opened = Vec::new();
+        while let Some(t) = scan.next() {
+            let open = t.opened.map(|id| scan.is_open(id));
+            opened.push((&html[t.start..t.end], open));
+        }
+        assert_eq!(
+            opened,
+            [
+                ("<p>", Some(true)),
+                ("<b>", Some(true)),
+                ("</p>", None),
+                ("<img>", None),
+                ("<svg>", Some(true)),
+                ("<style/>", None),
+                ("<style>", Some(true)),
+                ("</style>", None),
+                ("</svg>", None),
+                ("<br>", None),
+                ("</br>", None),
             ]
         );
     }
@@ -3624,10 +3702,14 @@ mod tests {
     #[test]
     fn raw_text_elements_and_plaintext_hold_text() {
         let html = "<plaintext><b>x</b></plaintext>";
-        let ends: Vec<(&str, Option<usize>)> = tags(html)
-            .map(|t| (&html[t.start..t.end], t.text_end))
+        let ends: Vec<(&str, Option<Text>)> = tags(html)
+            .map(|t| (&html[t.start..t.end], t.text))
             .collect();
-        assert_eq!(ends, [("<plaintext>", Some(html.len()))]);
+        let text = Text {
+            end: html.len(),
+            kind: TextKind::Raw,
+        };
+        assert_eq!(ends, [("<plaintext>", Some(text))]);
         // How many `<b>` elements WebKit and Chromium build from each. In the
         // `<foreignObject>` cases, `</foreignObject>` closes the island only
         // while it is the current node: then `<style/>` closes itself in the
