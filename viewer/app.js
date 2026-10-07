@@ -1131,11 +1131,17 @@
     );
   }
 
-  // Puts each declarative shadow root's contents where its template stands,
-  // as the card frame renders them. DOMParser attaches none, so each stays an
-  // ordinary template: the first with shadowrootmode open or closed on a host
-  // is the one the frame attaches, and a template at the card's start, which
-  // DOMParser puts in <head>, attaches to the element around the card.
+  // Puts each declarative shadow root's contents in place of its host's
+  // children, as the card frame renders them. DOMParser attaches none, so
+  // each stays an ordinary template: the first with shadowrootmode open or
+  // closed on a host is the one the frame attaches, and a template at the
+  // card's start, which DOMParser puts in <head>, attaches to the element
+  // around the card. Each <slot> in the root then holds the host's children
+  // assigned to it, as canvas-core's place_light does: an element child goes
+  // to the first slot whose name equals its slot attribute (absent is
+  // empty), a text child to the first slot with no name, and a child no slot
+  // takes is dropped. The slot stays, so it can itself be assigned to a slot
+  // of a host further in.
   function unwrapShadowRoots(doc) {
     const hosts = new Set();
     for (;;) {
@@ -1154,12 +1160,35 @@
       if (!template) return;
       const host = template.parentElement;
       hosts.add(host);
-      if (host === doc.head) {
-        doc.body.prepend(template.content);
-        template.remove();
-      } else {
-        template.replaceWith(template.content);
+      const root = template.content;
+      template.remove();
+      const shown = host === doc.head ? doc.body : host;
+      // An SVG or MathML element named slot is no slot.
+      const htmlSlots = Array.from(root.querySelectorAll("slot")).filter(
+        (slot) => slot.namespaceURI === "http://www.w3.org/1999/xhtml"
+      );
+      const slots = new Map();
+      for (const slot of htmlSlots) {
+        const name = slot.getAttribute("name") ?? "";
+        if (!slots.has(name)) slots.set(name, []);
       }
+      for (const child of Array.from(shown.childNodes)) {
+        const name =
+          child.nodeType === Node.ELEMENT_NODE
+            ? child.getAttribute("slot") ?? ""
+            : child.nodeType === Node.TEXT_NODE
+              ? ""
+              : null;
+        slots.get(name)?.push(child);
+      }
+      for (const slot of htmlSlots) {
+        const assigned = slots.get(slot.getAttribute("name") ?? "");
+        if (assigned?.length) {
+          slot.replaceChildren(...assigned);
+          assigned.length = 0;
+        }
+      }
+      shown.replaceChildren(root);
     }
   }
 

@@ -2635,8 +2635,7 @@ pub fn card_title(html: &str) -> String {
 }
 
 /// The text of a card's first `<h1>`–`<h3>`, else its first line of visible
-/// text (script, style and template contents skipped, a declarative shadow
-/// root's kept), whitespace collapsed.
+/// text ([`visible_text`]), whitespace collapsed.
 /// `None` for a card with no text at all.
 fn card_label(html: &str) -> Option<String> {
     first_heading(html).or_else(|| {
@@ -2647,23 +2646,51 @@ fn card_label(html: &str) -> Option<String> {
     })
 }
 
-/// The visible text of the first `<h1>`–`<h3>` outside an inert
-/// `<template>`, whitespace collapsed. `None` when it is empty or never
-/// closed.
+/// The visible text of the first `<h1>`–`<h3>` the page shows, in the order
+/// it shows them ([`visible_text`]), whitespace collapsed. `None` when it is
+/// empty or never closed.
 pub fn first_heading(html: &str) -> Option<String> {
     let mut scan = tags(html);
-    while let Some(Tag { start, end, .. }) = scan.next() {
-        if scan.in_inert_template() {
-            continue;
-        }
-        let name = tag_name(&html[start..end]);
-        if let Some(level @ ("h1" | "h2" | "h3")) = name.as_deref() {
-            let text = visible_text_until(html, &mut scan, level)?;
-            let text = collapse_whitespace(&text);
-            return (!text.is_empty()).then_some(text);
+    let mut text = VisibleText::new(html);
+    let mut heading = Heading::default();
+    while let Some(tag) = scan.next() {
+        text.step(&scan, &tag);
+        if let Some(found) = heading.read(text.shown()) {
+            return found;
         }
     }
-    None
+    heading.read(&text.finish()).flatten()
+}
+
+/// Reads [`Piece`]s for the first heading, as many at a time as are shown.
+#[derive(Default)]
+struct Heading {
+    /// How many pieces it has read.
+    read: usize,
+    /// The level of the heading it is inside.
+    level: Option<u8>,
+    text: String,
+}
+
+impl Heading {
+    /// Reads `pieces` past those it has read. `Some` once the first heading
+    /// closes: its text, whitespace collapsed, or `None` when that is empty.
+    fn read(&mut self, pieces: &[Piece]) -> Option<Option<String>> {
+        for piece in &pieces[self.read..] {
+            self.read += 1;
+            match (piece, self.level) {
+                (Piece::Open(level), None) => self.level = Some(*level),
+                (Piece::Text(text), Some(_)) => self.text.push_str(text),
+                (Piece::Break, Some(_)) => self.text.push('\n'),
+                (Piece::Close(level), Some(open)) if *level == open => {
+                    let text = collapse_whitespace(&self.text);
+                    return Some((!text.is_empty()).then_some(text));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 /// Tags that start a new line of text, opening or closing.
@@ -2704,39 +2731,42 @@ const BLOCK_TAGS: &[&str] = &[
 
 /// `html` with every tag removed, the contents of `<script>`, `<style>`,
 /// `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>` and `<template>`
-/// dropped (an SVG or MathML one's child elements' text with it; a
-/// declarative shadow root's template kept, as the page shows it), each block
+/// dropped (an SVG or MathML one's child elements' text with it), each block
 /// tag starting a new line, and every character reference decoded once
 /// ([`decode_entities`]), each run of text between two tags on its own, as
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
-/// written, since the parser decodes nothing there.
+/// written, since the parser decodes nothing there. A declarative shadow
+/// root's template is kept where its host is, as the page shows it: each
+/// `<slot>` in it holds the host's children assigned to it, else its own,
+/// and a child no slot takes is dropped ([`Flat`]).
 fn visible_text(html: &str) -> String {
     let mut scan = tags(html);
-    let mut text = VisibleText::new(&scan);
+    let mut text = VisibleText::new(html);
     while let Some(tag) = scan.next() {
-        text.step(html, &scan, &tag);
+        text.step(&scan, &tag);
     }
-    text.finish(html)
+    let mut out = String::new();
+    write_text(&text.finish(), &mut out);
+    out
 }
 
-/// [`visible_text`] of what `scan` reads from where it stopped up to and
-/// including the end tag `</close>` outside an inert `<template>` (so ending
-/// with the line break a block end tag adds); `None` when that never comes.
-fn visible_text_until(html: &str, scan: &mut Tags, close: &str) -> Option<String> {
-    let mut text = VisibleText::new(scan);
-    while let Some(tag) = scan.next() {
-        if text.step(html, scan, &tag).as_deref() == Some(close) {
-            return Some(text.out);
+/// Appends the text of `pieces` to `out`, a slot's own children for a slot.
+fn write_text(pieces: &[Piece], out: &mut String) {
+    for piece in pieces {
+        match piece {
+            Piece::Text(text) => out.push_str(text),
+            Piece::Break => out.push('\n'),
+            Piece::Slot { fallback, .. } => write_text(fallback, out),
+            Piece::Open(_) | Piece::Close(_) => {}
         }
     }
-    None
 }
 
 /// The text [`visible_text`] gathers, fed by its caller one tag at a time:
 /// [`step`](Self::step) takes a tag and the text ahead of it, and
 /// [`finish`](Self::finish) the text after the last one.
-struct VisibleText {
-    out: String,
+struct VisibleText<'a> {
+    html: &'a str,
     /// Where the text not yet read starts.
     pos: usize,
     /// Whether the text after the last tag is inside an inert `<template>`.
@@ -2745,40 +2775,74 @@ struct VisibleText {
     /// last tag is inside: the browser renders none of its text, its child
     /// elements' included.
     muted: Option<usize>,
+    flat: Flat,
 }
 
-impl VisibleText {
-    /// A reader starting where `scan` stopped.
-    fn new(scan: &Tags) -> Self {
+impl<'a> VisibleText<'a> {
+    fn new(html: &'a str) -> Self {
         Self {
-            out: String::new(),
-            pos: scan.pos,
-            hidden: scan.in_inert_template(),
+            html,
+            pos: 0,
+            hidden: false,
             muted: None,
+            flat: Flat::new(shadow_hosts(html)),
         }
     }
 
     /// Takes the text between the last tag and `tag`, then `tag`, which `scan`
-    /// has just read. Returns the tag's name when it is an end tag outside an
-    /// inert `<template>`.
-    fn step(&mut self, html: &str, scan: &Tags, tag: &Tag) -> Option<String> {
+    /// has just read.
+    fn step(&mut self, scan: &Tags, tag: &Tag) {
+        let html = self.html;
         let &Tag {
-            start,
-            end,
-            text,
-            opened,
-            ..
+            start, end, opened, ..
         } = tag;
-        if !self.hidden && self.muted.is_none() {
-            self.out.push_str(&decode_entities(&html[self.pos..start]));
+        if !self.hidden && self.muted.is_none() && self.pos < start {
+            self.flat
+                .push(Piece::Text(decode_entities(&html[self.pos..start])));
         }
         self.pos = end;
         self.muted = self.muted.filter(|id| scan.is_open(*id));
         let raw = &html[start..end];
-        let closes = !self.hidden && raw.starts_with("</");
         let quiet = self.hidden || self.muted.is_some();
-        let name = tag_name(&raw.replacen("</", "<", 1));
-        match name.as_deref() {
+        if raw.starts_with("</") {
+            // What an end tag adds belongs to the element it closes.
+            let name = tag_name(&raw.replacen("</", "<", 1));
+            if let Some(level) = name.as_deref().and_then(heading_level) {
+                if !self.hidden {
+                    self.flat.push(Piece::Close(level));
+                }
+            }
+            self.tag_text(name.as_deref(), tag, quiet);
+            self.flat.settle(scan);
+        } else {
+            self.flat.settle(scan);
+            let name = tag_name(raw);
+            let shown = !scan.in_inert_template();
+            let alone = shown && self.flat.open_child(scan, raw, tag);
+            if let Some(level) = name.as_deref().and_then(heading_level) {
+                if shown {
+                    self.flat.push(Piece::Open(level));
+                }
+            }
+            self.tag_text(name.as_deref(), tag, quiet);
+            if alone {
+                self.flat.fold_top();
+            } else if shown {
+                self.flat.open_inside(scan, raw, opened);
+            }
+        }
+        self.hidden = scan.in_inert_template();
+    }
+
+    /// Adds what the tag named `name` adds to the text: a line break for a
+    /// block tag, and the raw text an `<xmp>` or `<plaintext>` opens; past
+    /// the raw text of a `<script>` or the like, or into the SVG or MathML one
+    /// it opened.
+    fn tag_text(&mut self, name: Option<&str>, tag: &Tag, quiet: bool) {
+        let &Tag {
+            end, text, opened, ..
+        } = tag;
+        match name {
             Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
                 match text {
                     Some(text) => self.pos = text.end,
@@ -2790,29 +2854,371 @@ impl VisibleText {
             // Both open and close a block; the opening tag's raw text follows.
             Some("xmp" | "plaintext") => {
                 if !quiet {
-                    self.out.push('\n');
+                    self.flat.push(Piece::Break);
                 }
                 if let Some(text) = text {
                     if !quiet {
-                        self.out.push_str(&html[end..text.end]);
+                        self.flat
+                            .push(Piece::Text(self.html[end..text.end].to_string()));
                     }
                     self.pos = text.end;
                 }
             }
-            Some(name) if !quiet && BLOCK_TAGS.contains(&name) => self.out.push('\n'),
+            Some(name) if !quiet && BLOCK_TAGS.contains(&name) => {
+                self.flat.push(Piece::Break);
+            }
             _ => {}
         }
-        self.hidden = scan.in_inert_template();
-        name.filter(|_| closes)
     }
 
-    /// The text gathered, with whatever follows the last tag.
-    fn finish(mut self, html: &str) -> String {
-        if self.pos < html.len() && !self.hidden && self.muted.is_none() {
-            self.out.push_str(&decode_entities(&html[self.pos..]));
+    /// What the text holds, with whatever follows the last tag.
+    fn finish(mut self) -> Vec<Piece> {
+        if self.pos < self.html.len() && !self.hidden && self.muted.is_none() {
+            self.flat
+                .push(Piece::Text(decode_entities(&self.html[self.pos..])));
+        }
+        self.flat.finish()
+    }
+
+    /// The pieces the page shows first, which nothing read later moves.
+    fn shown(&self) -> &[Piece] {
+        &self.flat.out
+    }
+}
+
+/// The level of an `<h1>`–`<h3>` named `name`.
+fn heading_level(name: &str) -> Option<u8> {
+    match name {
+        "h1" => Some(1),
+        "h2" => Some(2),
+        "h3" => Some(3),
+        _ => None,
+    }
+}
+
+/// One piece of the text a page shows.
+enum Piece {
+    Text(String),
+    /// The line break a block tag starts.
+    Break,
+    /// An `<h1>`–`<h3>` start tag outside an inert template, by level.
+    Open(u8),
+    /// An `<h1>`–`<h3>` end tag outside an inert template, by level.
+    Close(u8),
+    /// A `<slot>` in a shadow root, before its host places what it shows:
+    /// `order` counts slots in the order they open, which is tree order, and
+    /// `fallback` is its own children.
+    Slot {
+        name: String,
+        order: usize,
+        fallback: Vec<Piece>,
+    },
+}
+
+/// The ids of the shadow hosts in `html` ([`Tags::shadow_hosts`]), read by
+/// a scan of its own, since a host's children before its template are
+/// already its light children. A page with no `shadowrootmode` attribute
+/// has none, and that scan is skipped.
+fn shadow_hosts(html: &str) -> HashSet<Option<usize>> {
+    const ATTR: &[u8] = b"shadowrootmode";
+    if !html
+        .as_bytes()
+        .windows(ATTR.len())
+        .any(|w| w.eq_ignore_ascii_case(ATTR))
+    {
+        return HashSet::new();
+    }
+    let mut scan = tags(html);
+    scan.by_ref().for_each(drop);
+    scan.shadow_hosts
+}
+
+/// Puts [`Piece`]s in the order the page shows them. A shadow host shows its
+/// shadow root, not its children (its light children): each `<slot>` in the
+/// root shows the children assigned to it, else its own children, and a
+/// child no slot takes is never shown. An element child is assigned to the
+/// first slot, in tree order, whose `name` equals its `slot` attribute
+/// (absent counts as empty), and a text child to the first slot with no
+/// name; a comment to none. So what an element inside a host holds waits
+/// here until the host closes and every piece's place is known.
+struct Flat {
+    /// The pieces placed, which nothing read later moves.
+    out: Vec<Piece>,
+    /// The elements whose pieces wait for their place, innermost last.
+    held: Vec<Held>,
+    /// The ids of the shadow hosts ([`shadow_hosts`]).
+    hosts: HashSet<Option<usize>>,
+    /// How many `<slot>`s in a shadow root have opened.
+    slots: usize,
+}
+
+/// An element whose pieces wait for their place: `id` is the element's, or
+/// `None` for the element around the card or a light child that holds no
+/// element open.
+struct Held {
+    id: Option<usize>,
+    kind: HeldKind,
+    pieces: Vec<Piece>,
+}
+
+enum HeldKind {
+    /// A shadow host: its shadow root's pieces once that closes, each light
+    /// child's slot name and pieces, and what its own end tag adds.
+    Host {
+        shadow: Vec<Piece>,
+        light: Vec<(String, Vec<Piece>)>,
+        after: Vec<Piece>,
+    },
+    /// The host's shadow root template.
+    Shadow,
+    /// A `<slot>` in a shadow root, by name and [`Piece::Slot`] order.
+    Slot { name: String, order: usize },
+    /// A host's child, by the slot name it asks for.
+    Light(String),
+}
+
+impl Flat {
+    fn new(hosts: HashSet<Option<usize>>) -> Self {
+        let mut flat = Self {
+            out: Vec::new(),
+            held: Vec::new(),
+            hosts,
+            slots: 0,
+        };
+        if flat.hosts.contains(&None) {
+            flat.held.push(Held {
+                id: None,
+                kind: HeldKind::Host {
+                    shadow: Vec::new(),
+                    light: Vec::new(),
+                    after: Vec::new(),
+                },
+                pieces: Vec::new(),
+            });
+        }
+        flat
+    }
+
+    /// Adds `piece` to the innermost held element, or places it. Text right
+    /// inside a host is a light child of its own; anything else there comes
+    /// from the host's end tag, so it follows what the host shows.
+    fn push(&mut self, piece: Piece) {
+        match self.held.last_mut() {
+            None => self.out.push(piece),
+            Some(Held {
+                kind: HeldKind::Host { light, after, .. },
+                ..
+            }) => match piece {
+                Piece::Text(_) => light.push((String::new(), vec![piece])),
+                _ => after.push(piece),
+            },
+            Some(held) => held.pieces.push(piece),
+        }
+    }
+
+    /// Lets go of every held element the last tag closed, and those inside it.
+    fn settle(&mut self, scan: &Tags) {
+        let closed = self
+            .held
+            .iter()
+            .position(|h| h.id.is_some_and(|id| !scan.is_open(id)));
+        if let Some(i) = closed {
+            while self.held.len() > i {
+                self.fold_top();
+            }
+        }
+    }
+
+    /// Before what the shown start tag `raw` adds: holds the shadow root it
+    /// opened, or the light child it is. Returns whether that child holds no
+    /// element open (a void or self-closed one), so it ends after its tag.
+    fn open_child(&mut self, scan: &Tags, raw: &str, tag: &Tag) -> bool {
+        let Some(Held {
+            id: host,
+            kind: HeldKind::Host { .. },
+            ..
+        }) = self.held.last()
+        else {
+            return false;
+        };
+        let elements = &scan.open.elements;
+        let opened = tag
+            .opened
+            .and_then(|id| elements.last().filter(|e| e.id == id));
+        let (id, kind) = match opened {
+            Some(e) if e.detached => {
+                let below = elements.len().checked_sub(2).map(|i| elements[i].id);
+                if below != *host {
+                    return false;
+                }
+                (Some(e.id), HeldKind::Shadow)
+            }
+            Some(e) => (Some(e.id), HeldKind::Light(attr(raw, "slot"))),
+            None => {
+                let element = tag_name(raw)
+                    .is_some_and(|name| tag.foreign || VOID_TAGS.contains(&name.as_str()));
+                if !element {
+                    return false;
+                }
+                (None, HeldKind::Light(attr(raw, "slot")))
+            }
+        };
+        self.held.push(Held {
+            id,
+            kind,
+            pieces: Vec::new(),
+        });
+        id.is_none()
+    }
+
+    /// After what the shown start tag `raw` adds: holds the shadow host or
+    /// shadow root `<slot>` it opened.
+    fn open_inside(&mut self, scan: &Tags, raw: &str, opened: Option<usize>) {
+        let Some(e) = opened.and_then(|id| scan.open.last().filter(|e| e.id == id)) else {
+            return;
+        };
+        let kind = if self.hosts.contains(&Some(e.id)) {
+            HeldKind::Host {
+                shadow: Vec::new(),
+                light: Vec::new(),
+                after: Vec::new(),
+            }
+        } else if e.ns == Ns::Html
+            && e.name == "slot"
+            && self.held.iter().any(|h| matches!(h.kind, HeldKind::Shadow))
+        {
+            self.slots += 1;
+            HeldKind::Slot {
+                name: attr(raw, "name"),
+                order: self.slots,
+            }
+        } else {
+            return;
+        };
+        self.held.push(Held {
+            id: Some(e.id),
+            kind,
+            pieces: Vec::new(),
+        });
+    }
+
+    /// Lets go of the innermost held element, giving its pieces to the one
+    /// around it: a host its pieces in place, a shadow root its host, a slot
+    /// itself as one piece, and a light child its host.
+    fn fold_top(&mut self) {
+        let Some(Held { kind, pieces, .. }) = self.held.pop() else {
+            return;
+        };
+        match kind {
+            HeldKind::Host {
+                shadow,
+                light,
+                after,
+            } => {
+                for piece in place_light(shadow, light).into_iter().chain(after) {
+                    self.push(piece);
+                }
+            }
+            HeldKind::Shadow => {
+                if let Some(Held {
+                    kind: HeldKind::Host { shadow, .. },
+                    ..
+                }) = self.held.last_mut()
+                {
+                    *shadow = pieces;
+                }
+            }
+            HeldKind::Slot { name, order } => self.push(Piece::Slot {
+                name,
+                order,
+                fallback: pieces,
+            }),
+            HeldKind::Light(slot) => match self.held.last_mut() {
+                Some(Held {
+                    kind: HeldKind::Host { light, .. },
+                    ..
+                }) => light.push((slot, pieces)),
+                _ => {
+                    for piece in pieces {
+                        self.push(piece);
+                    }
+                }
+            },
+        }
+    }
+
+    /// Every piece in place, the held elements let go.
+    fn finish(mut self) -> Vec<Piece> {
+        while !self.held.is_empty() {
+            self.fold_top();
         }
         self.out
     }
+}
+
+/// The value of the attribute `name` in the start tag `tag`, decoded; empty
+/// when it is absent.
+fn attr(tag: &str, name: &str) -> String {
+    find_attr_value(tag, name)
+        .map(|v| decode_entities(&tag[v.range()]))
+        .unwrap_or_default()
+}
+
+/// What a shadow host shows: its shadow root's pieces with each slot
+/// replaced by the light children assigned to it, else by its own children.
+/// The slots in the light children belong to a shadow root around the host
+/// and stay as they are.
+fn place_light(shadow: Vec<Piece>, light: Vec<(String, Vec<Piece>)>) -> Vec<Piece> {
+    fn first_slots(pieces: &[Piece], first: &mut HashMap<String, usize>) {
+        for piece in pieces {
+            if let Piece::Slot {
+                name,
+                order,
+                fallback,
+            } = piece
+            {
+                let at = first.entry(name.clone()).or_insert(*order);
+                *at = (*at).min(*order);
+                first_slots(fallback, first);
+            }
+        }
+    }
+    fn fill(
+        pieces: Vec<Piece>,
+        first: &HashMap<String, usize>,
+        assigned: &mut HashMap<String, Vec<Piece>>,
+        out: &mut Vec<Piece>,
+    ) {
+        for piece in pieces {
+            match piece {
+                Piece::Slot {
+                    name,
+                    order,
+                    fallback,
+                } => {
+                    let children = (first.get(&name) == Some(&order))
+                        .then(|| assigned.remove(&name))
+                        .flatten();
+                    match children {
+                        Some(children) => out.extend(children),
+                        None => fill(fallback, first, assigned, out),
+                    }
+                }
+                piece => out.push(piece),
+            }
+        }
+    }
+    let mut first = HashMap::new();
+    first_slots(&shadow, &mut first);
+    let mut assigned: HashMap<String, Vec<Piece>> = HashMap::new();
+    for (slot, pieces) in light {
+        if first.contains_key(&slot) {
+            assigned.entry(slot).or_default().extend(pieces);
+        }
+    }
+    let mut out = Vec::new();
+    fill(shadow, &first, &mut assigned, &mut out);
+    out
 }
 
 /// `s` with every character reference decoded once, as the HTML parser
@@ -4977,6 +5383,135 @@ mod tests {
             ("<div><template shadowrootmode=none>hid</template></div>shown", "shown"),
         ] {
             assert_eq!(label(html), want, "{html}");
+        }
+    }
+
+    #[test]
+    fn a_shadow_host_shows_its_children_only_through_a_slot() {
+        // Each row's text is the text nodes WebKit renders for it in
+        // Canvas.app's card frame, in layout order; inline runs join.
+        let shown = |html: &str| collapse_whitespace(&visible_text(html));
+        let o = "<template shadowrootmode=open>";
+        for (html, want) in [
+            (format!("<div>{o}<p>s</p></template><h1>L</h1></div>"), "s"),
+            (format!("<div>{o}<p>s</p><slot></slot></template><h1>L</h1></div>"), "s L"),
+            (format!("<div>{o}<slot></slot><p>s</p></template><h1>L</h1></div>"), "L s"),
+            (
+                format!("<div>{o}<slot name=a></slot><p>s</p><slot></slot></template><p>D</p><p slot=a>A</p></div>"),
+                "A s D",
+            ),
+            (format!("<div>{o}<p>s</p><slot></slot></template><p slot=zz>Z</p><p>D</p></div>"), "s D"),
+            // Text goes only to the slot with no name, whitespace too.
+            (format!("<div>{o}<p>s</p><slot name=a></slot></template>bare</div>"), "s"),
+            (format!("<div>{o}<p>s</p><slot></slot></template>bare</div>"), "s bare"),
+            (format!("<div>{o}<slot><p>fb</p></slot></template></div>"), "fb"),
+            (format!("<div>{o}<slot><p>fb</p></slot></template><p>L</p></div>"), "L"),
+            (format!("<div>{o}<slot><p>fb</p></slot></template>  \n </div>"), ""),
+            (format!("<div>{o}<slot><p>fb</p></slot></template><!--c--></div>"), "fb"),
+            // The first slot of a name takes the children; the next shows its own.
+            (
+                format!("<div>{o}<slot><p>fb1</p></slot><slot><p>fb2</p></slot></template><p>L</p></div>"),
+                "L fb2",
+            ),
+            // A child ahead of the template is a light child too.
+            (
+                format!("<div><p>before</p>{o}<p>s</p><slot></slot></template><p>after</p></div>"),
+                "s before after",
+            ),
+            (format!("<div><p>before</p>{o}<p>s</p></template><p>after</p></div>"), "s"),
+            (
+                format!("<div>{o}<p>s1</p><div><span><slot></slot></span></div><p>s2</p></template><p>L</p></div>"),
+                "s1 L s2",
+            ),
+            // Only the host's own children are assigned.
+            (format!("<div>{o}<slot name=a></slot></template><div><p slot=a>X</p></div></div>"), ""),
+            // The element around the card hosts a template at its start.
+            (format!("{o}<p>s</p></template><p>rest</p>"), "s"),
+            (format!("{o}<p>s</p><slot></slot></template><p>rest</p>"), "s rest"),
+            // The first slot of a name takes the children even where it isn't shown.
+            (
+                format!("<div>{o}<slot name=a><slot name=b></slot></slot><slot name=b><p>fb</p></slot></template><p slot=a>A</p><p slot=b>B</p></div>"),
+                "A fb",
+            ),
+            // A slot passed into a host inside the shadow root carries its children.
+            (
+                format!("<div>{o}<span>{o}[<slot></slot>]</template><slot></slot></span></template><p>L</p></div>"),
+                "[ L ]",
+            ),
+            (
+                format!("<div>{o}<x-i>{o}<slot name=q></slot></template><slot slot=q></slot></x-i></template><p>L</p></div>"),
+                "L",
+            ),
+            (format!("<div>{o}<slot name=''></slot></template><p>L</p></div>"), "L"),
+            (format!("<div>{o}<slot></slot></template>t1<p>p</p>t2</div>"), "t1 p t2"),
+            // A slot outside a shadow root is an ordinary element.
+            ("<div><slot><p>ls</p></slot></div>".to_string(), "ls"),
+            // An SVG element named slot is no slot.
+            (format!("<div>{o}<svg><slot></slot></svg>s</template><p>L</p></div>"), "s"),
+            (format!("<div>{o}<p>s</p></template><span>{o}<p>inner</p></template></span></div>"), "s"),
+            (
+                format!("<div>{o}<template><slot></slot></template><p>s</p></template><p>L</p></div>"),
+                "s",
+            ),
+            // A slot name matches exactly.
+            (format!("<div>{o}<slot name=A></slot></template><p slot=a>low</p><p slot=A>up</p></div>"), "up"),
+            (
+                format!("<div>{o}<slot name=' a'></slot></template><p slot=a>plain</p><p slot=' a'>sp</p></div>"),
+                "sp",
+            ),
+            (
+                format!("<div>{o}<slot name=a><slot>[<p>fb</p>]</slot></slot></template><p>L</p></div>"),
+                "L",
+            ),
+            (format!("<h1>{o}x<slot></slot>y</template>L</h1>"), "xLy"),
+            // A void child takes a slot too, and one no slot names is dropped.
+            (format!("<div>{o}a<slot name=b></slot>c</template><br slot=b></div>"), "a c"),
+            (format!("<div>{o}a<slot name=b></slot>c</template><br slot=zz></div>"), "ac"),
+        ] {
+            assert_eq!(shown(&html), want, "{html}");
+        }
+    }
+
+    #[test]
+    fn card_label_reads_a_shadow_host_in_the_order_it_shows() {
+        let o = "<template shadowrootmode=open>";
+        for (html, want) in [
+            (
+                format!("<div>{o}<p>s</p></template><h1>light</h1></div>"),
+                "s",
+            ),
+            (
+                format!("<div>{o}<h2>s</h2><slot></slot></template><h1>light</h1></div>"),
+                "s",
+            ),
+            (
+                format!("<div>{o}<slot></slot><h2>s</h2></template><h1>light</h1></div>"),
+                "light",
+            ),
+            (
+                format!("<div>{o}<h2>s</h2><slot name=a></slot></template><h1 slot=a>L</h1></div>"),
+                "s",
+            ),
+            (
+                format!("<div>{o}<slot name=a></slot><h2>s</h2></template><h1 slot=a>L</h1></div>"),
+                "L",
+            ),
+            (
+                format!("<div>{o}<slot name=a></slot><h2>s</h2></template><h1>L</h1></div>"),
+                "s",
+            ),
+            (
+                format!("<p>first</p><h1>{o}x<slot></slot>y</template>L</h1>"),
+                "xLy",
+            ),
+            (
+                format!("{o}<slot></slot><p>s</p></template><h1>rest</h1>"),
+                "rest",
+            ),
+            // A slot outside a shadow root is an ordinary element.
+            ("<p>x</p><slot><h1>t</h1></slot>".to_string(), "t"),
+        ] {
+            assert_eq!(card_label(&html).unwrap_or_default(), want, "{html}");
         }
     }
 
