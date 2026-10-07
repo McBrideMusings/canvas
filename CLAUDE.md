@@ -201,9 +201,15 @@ beside the terminal all day.
   classic scripts and styles as blocks, fonts as `data:` URIs,
   a `<script type="module" src>` and every module it reaches on those hosts as
   `data:` URIs in one `<script type="importmap">` in the head (each module's
-  specifiers read by oxc, `canvasd/src/esm.rs`, each one naming an http(s) URL
-  written as that absolute URL; the element becomes `import "<url>";`; the card's own
-  import maps merge into that one, theirs winning, a module that can't be fetched
+  specifiers read by oxc, `canvasd/src/esm.rs`, each one resolved from the module's
+  URL through the card's own import maps, scopes included (`canvasd/src/import_map.rs`,
+  the standard's resolution; an entry relative to the page leaves the specifier to
+  the page) and written as the absolute URL it leads to; the element becomes
+  `import "<url>";`; the card's own import maps merge into that one, theirs winning,
+  each of their addresses naming a fetched module rewritten to its `data:` URI;
+  every module those maps name, and every one the card's inline `<script
+  type="module">` imports, is fetched too, a name the inline module used getting
+  its own entry; a module that can't be fetched
   or parsed staying on the network with a `fetch-failed` warning), an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and

@@ -3,6 +3,7 @@ pub mod artifacts;
 pub mod cdn;
 pub mod esm;
 pub mod export;
+pub mod import_map;
 pub mod profiles;
 pub mod provenance;
 pub mod refresh;
