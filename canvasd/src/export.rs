@@ -713,7 +713,7 @@ impl<'a> StylePiece<'a> {
     }
 }
 
-use record::{Added, Cdn};
+use record::{Cdn, Sheet};
 
 /// The warning's reason for a URL refused for the inlining total.
 fn over_total_reason() -> String {
@@ -727,9 +727,12 @@ fn over_total_reason() -> String {
 /// of it only inside [`Cdn::inline`], which takes the body's record back
 /// out when the caller throws the body away, and an inlined `@import` turns
 /// back into a link only through [`Cdn::import_making_room`] and
-/// [`Cdn::unlink`], which take its record out with it. Outside this module
-/// nothing else takes entries out, so nothing can drop a body and leave it
-/// recorded as in the page, or take out a range the record didn't hand it.
+/// [`Cdn::write_import`], which take its record out with it. Each inlined
+/// import's record stays paired with its edit inside a [`Sheet`], and a
+/// [`Tried`] carries its record into the sheet unopened, so outside this
+/// module nothing can take out a range the record didn't hand it or swap
+/// one import's range for another's. The caller still owes each `Tried` a
+/// `write_import` into the sheet it was tried against, at its own `@import`.
 mod record {
     use super::*;
 
@@ -831,8 +834,13 @@ mod record {
         }
 
         /// The `@import`s written out as links among `added`.
-        pub(super) fn links_in(&self, added: &Added) -> &[Link] {
+        fn links_in(&self, added: &Added) -> &[Link] {
             &self.linked[added.linked.clone()]
+        }
+
+        /// The first `@import` written out as a link by `tried`'s final try.
+        pub(super) fn first_link(&self, tried: &Tried) -> Option<&Link> {
+            self.links_in(&tried.added).first()
         }
 
         /// Records an `@import` written out as a link.
@@ -940,15 +948,16 @@ mod record {
             }
         }
 
-        /// [`Cdn::import`] in a sheet where every import in `ruled`, already in
-        /// `edits`, turns back into a link if this one writes a link. When every
-        /// link it writes would inline given more room, just enough of the
-        /// earliest of `ruled` to give that room turn back into links first,
-        /// since they would anyway, and it tries again. When one of its links
-        /// stays a link whatever the room, all of `ruled` would turn back, so
-        /// they do before one more try, if anything in it missed the total.
-        /// Each try ends when the import writes no link or `ruled` is empty, or
-        /// when freeing room would change nothing.
+        /// [`Cdn::import`] in `sheet`, where every import inlined as rules
+        /// turns back into a link if this one writes a link. When every link
+        /// it writes would inline given more room, just enough of the earliest
+        /// of those to give that room turn back into links first, since they
+        /// would anyway, and it tries again. When one of its links stays a
+        /// link whatever the room, all of them would turn back, so they do
+        /// before one more try, if anything in it missed the total. Each try
+        /// ends when the import writes no link or none are left inlined as
+        /// rules, or when freeing room would change nothing. The result goes
+        /// into the sheet with [`Cdn::write_import`].
         #[allow(clippy::too_many_arguments)]
         pub(super) fn import_making_room(
             &mut self,
@@ -956,8 +965,7 @@ mod record {
             base: Option<&str>,
             depth: usize,
             written: &str,
-            edits: &mut [Edit],
-            ruled: &mut Vec<Inlined>,
+            sheet: &mut Sheet,
             warnings: &mut Vec<ExportWarning>,
         ) -> Tried {
             let mut freed = Vec::new();
@@ -966,9 +974,11 @@ mod record {
                 let (warned, refused) = (warnings.len(), self.refused);
                 let (text, url) = self.import(import, base, depth, written, warnings);
                 let added = self.since(start);
+                let (links, rules) = prelude(&text);
+                let ruled = &sheet.ruled;
                 // How many of `ruled` to free before the next try, if any.
                 let n = match room_for(self.links_in(&added)) {
-                    _ if !prelude(&text).0 || ruled.is_empty() => 0,
+                    _ if !links || ruled.is_empty() => 0,
                     Some(room) => {
                         let short = (self.inlined + room).saturating_sub(MAX_INLINED_BYTES);
                         let (mut n, mut bytes) = (0, 0);
@@ -985,6 +995,8 @@ mod record {
                     return Tried {
                         text,
                         url,
+                        links,
+                        rules,
                         added,
                         freed,
                     };
@@ -993,21 +1005,56 @@ mod record {
                 for w in warnings.drain(warned..) {
                     self.warned.remove(&w.target);
                 }
-                freed.extend(self.unlink(edits, ruled, n, None));
+                freed.extend(self.unlink(sheet, n, None));
             }
         }
 
-        /// Turns the first `n` of `ruled` back into links in `edits`, moving
-        /// `later`, recorded after all of `ruled`, to where its entries sit
-        /// once theirs are out of the record of the page. Returns the URLs now
-        /// links, for the caller to warn.
-        pub(super) fn unlink(
+        /// Puts `tried`, the `@import` written as `written` at `at`, into
+        /// `sheet`. When it writes a link, every import the sheet holds
+        /// inlined as rules turns back into a link first; when it is inlined
+        /// as rules, it joins them. Returns the URLs turned back into links,
+        /// for the caller to warn.
+        pub(super) fn write_import(
             &mut self,
-            edits: &mut [Edit],
-            ruled: &mut Vec<Inlined>,
+            sheet: &mut Sheet,
+            at: Range<usize>,
+            import: &Import,
+            written: &str,
+            mut tried: Tried,
+        ) -> Vec<String> {
+            let urls = if tried.links && !sheet.ruled.is_empty() {
+                let n = sheet.ruled.len();
+                self.unlink(sheet, n, Some(&mut tried.added))
+            } else {
+                Vec::new()
+            };
+            let edit = sheet.edits.len();
+            sheet.edits.push(Edit {
+                at,
+                text: tried.text,
+            });
+            if let Some(url) = tried.url.filter(|_| tried.rules) {
+                sheet.ruled.push(Inlined {
+                    edit,
+                    link: link_text(import, Some(&url), written),
+                    url,
+                    added: tried.added,
+                });
+            }
+            urls
+        }
+
+        /// Turns the first `n` of `sheet`'s imports inlined as rules back
+        /// into links, moving `later`, recorded after all of them, to where
+        /// its entries sit once theirs are out of the record of the page.
+        /// Returns the URLs now links.
+        fn unlink(
+            &mut self,
+            sheet: &mut Sheet,
             n: usize,
             later: Option<&mut Added>,
         ) -> Vec<String> {
+            let ruled = &mut sheet.ruled;
             let taken: Vec<Inlined> = ruled.drain(..n).collect();
             // Last first, so each one's entries are where it recorded them.
             for r in taken.iter().rev() {
@@ -1016,7 +1063,7 @@ mod record {
             let mut undone = Vec::with_capacity(taken.len());
             let mut urls = Vec::with_capacity(taken.len());
             for r in taken {
-                edits[r.edit].text = r.link;
+                sheet.edits[r.edit].text = r.link;
                 self.linked.push(Link {
                     url: r.url.clone(),
                     room: Some(r.added.bytes),
@@ -1024,13 +1071,80 @@ mod record {
                 urls.push(r.url);
                 undone.push(r.added);
             }
-            for r in ruled.iter_mut() {
+            for r in sheet.ruled.iter_mut() {
                 r.added.after_undoing(&undone);
             }
             if let Some(added) = later {
                 added.after_undoing(&undone);
             }
             urls
+        }
+    }
+
+    /// One stylesheet's edits, in order, and the `@import`s among them
+    /// inlined as rules, which turn back into links when a later import
+    /// writes a link.
+    pub(super) struct Sheet {
+        edits: Vec<Edit>,
+        ruled: Vec<Inlined>,
+    }
+
+    impl Sheet {
+        pub(super) fn new() -> Self {
+            Sheet {
+                edits: Vec::new(),
+                ruled: Vec::new(),
+            }
+        }
+
+        /// Adds an edit that is not an `@import`.
+        pub(super) fn push(&mut self, edit: Edit) {
+            self.edits.push(edit);
+        }
+
+        pub(super) fn into_edits(self) -> Vec<Edit> {
+            self.edits
+        }
+    }
+
+    /// One `@import` inlined as rules, kept so it can turn back into a link:
+    /// the edit that holds its stylesheet, its URL and link form, and what its
+    /// stylesheet added to the record of the page.
+    struct Inlined {
+        edit: usize,
+        url: String,
+        link: String,
+        added: Added,
+    }
+
+    /// What [`Cdn::import_making_room`] wrote for one `@import`: its text, its
+    /// URL when inlined, whether the text holds an `@import` that stays a link
+    /// and whether it holds rules, what its final try added to the record of
+    /// the page, and the URLs of the earlier imports it turned back into links.
+    #[must_use]
+    pub(super) struct Tried {
+        text: String,
+        url: Option<String>,
+        links: bool,
+        rules: bool,
+        added: Added,
+        freed: Vec<String>,
+    }
+
+    impl Tried {
+        /// Whether its text holds an `@import` that stays a link.
+        pub(super) fn writes_link(&self) -> bool {
+            self.links
+        }
+
+        /// The stylesheet's URL when it was inlined.
+        pub(super) fn url(&self) -> Option<&str> {
+            self.url.as_deref()
+        }
+
+        /// The URLs of the earlier imports it turned back into links, once.
+        pub(super) fn take_freed(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.freed)
         }
     }
 
@@ -1044,10 +1158,10 @@ mod record {
     }
 
     /// What went into a [`Cdn`]'s record of the page between two points.
-    /// Only the record makes one and it can't be cloned, so every range it
-    /// names is one the record handed out; which one goes back is still up
-    /// to the caller of [`Cdn::unlink`].
-    pub(super) struct Added {
+    /// Only the record makes one, it can't be cloned, and nothing outside the
+    /// record reaches one, so every range it names is one the record handed
+    /// out and goes back only with the import that recorded it.
+    struct Added {
         bytes: usize,
         present: Range<usize>,
         linked: Range<usize>,
@@ -1282,12 +1396,9 @@ impl<F: cdn::Fetch> Cdn<F> {
         warnings: &mut Vec<ExportWarning>,
     ) -> Vec<Edit> {
         let b = css.as_bytes();
-        let mut edits: Vec<Edit> = Vec::new();
+        let mut sheet = Sheet::new();
         let mut pos = 0usize;
         let mut i = 0usize;
-        // The inlined imports that wrote rules, which turn back into links
-        // when a later import writes a link.
-        let mut ruled: Vec<Inlined> = Vec::new();
         // Whether a rule of the sheet's own came before the current `@import`.
         let mut after_rules = false;
         while i < b.len() {
@@ -1309,47 +1420,28 @@ impl<F: cdn::Fetch> Cdn<F> {
                         i = import.end;
                         continue;
                     }
-                    let mut tried = self.import_making_room(
-                        &import, base, depth, written, &mut edits, &mut ruled, warnings,
-                    );
-                    let (links, rules) = prelude(&tried.text);
+                    let mut tried = self
+                        .import_making_room(&import, base, depth, written, &mut sheet, warnings);
                     // Sheets freed to make room for an import that still
                     // writes a link went back for the link, as the rest do.
-                    let reason = if links {
+                    let reason = if tried.writes_link() {
                         let later = self
-                            .links_in(&tried.added)
-                            .first()
+                            .first_link(&tried)
                             .map_or(&import.reference, |l| &l.url);
                         format!("kept as a link: the later @import of {later} would be ignored after its rules")
                     } else {
-                        let later = tried.url.as_deref().unwrap_or(&import.reference);
+                        let later = tried.url().unwrap_or(&import.reference);
                         format!(
                             "kept as a link: the later @import of {later} needed its bytes under the export's {} MB total",
                             MAX_INLINED_BYTES / (1024 * 1024)
                         )
                     };
-                    for url in std::mem::take(&mut tried.freed) {
+                    for url in tried.take_freed() {
                         self.warn(&url, reason.clone(), warnings);
                     }
-                    if links && !ruled.is_empty() {
-                        let n = ruled.len();
-                        let urls = self.unlink(&mut edits, &mut ruled, n, Some(&mut tried.added));
-                        for url in urls {
-                            self.warn(&url, reason.clone(), warnings);
-                        }
-                    }
-                    let edit = edits.len();
-                    edits.push(Edit {
-                        at: i..import.end,
-                        text: tried.text,
-                    });
-                    if let Some(url) = tried.url.filter(|_| rules) {
-                        ruled.push(Inlined {
-                            edit,
-                            link: link_text(&import, Some(&url), written),
-                            url,
-                            added: tried.added,
-                        });
+                    for url in self.write_import(&mut sheet, i..import.end, &import, written, tried)
+                    {
+                        self.warn(&url, reason.clone(), warnings);
                     }
                     pos = import.end;
                     i = import.end;
@@ -1359,7 +1451,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                 {
                     let (reference, end) = url_token(css, i);
                     if let Some(text) = reference.and_then(|r| self.url(r, base, warnings)) {
-                        edits.push(Edit { at: i..end, text });
+                        sheet.push(Edit { at: i..end, text });
                     }
                     pos = end;
                     i = end;
@@ -1367,6 +1459,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                 _ => i += 1,
             }
         }
+        let mut edits = sheet.into_edits();
         edits.retain(|e| e.text != css[e.at.clone()]);
         edits
     }
@@ -1557,16 +1650,6 @@ fn splice(css: &str, edits: &[Edit]) -> String {
     out
 }
 
-/// One `@import` inlined as rules, kept so it can turn back into a link:
-/// the edit that holds its stylesheet, its URL and link form, and what its
-/// stylesheet added to the record of the page.
-struct Inlined {
-    edit: usize,
-    url: String,
-    link: String,
-    added: Added,
-}
-
 /// One `@import` written out as a link: its URL, and the bytes of room under
 /// the inlining total that would let it inline instead, or None when room
 /// would not: a reference off the CDN hosts or that doesn't resolve, a
@@ -1581,16 +1664,6 @@ struct Link {
 /// would stay a link whatever the room.
 fn room_for(links: &[Link]) -> Option<usize> {
     links.iter().map(|l| l.room).sum()
-}
-
-/// What [`Cdn::import_making_room`] wrote for one `@import`: its text, its
-/// URL when inlined, what its final try added to the record of the page,
-/// and the URLs of the earlier imports it turned back into links.
-struct Tried {
-    text: String,
-    url: Option<String>,
-    added: Added,
-    freed: Vec<String>,
 }
 
 /// `import`, written as `written`, as a link to `absolute`: made absolute
