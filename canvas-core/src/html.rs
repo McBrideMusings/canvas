@@ -79,8 +79,10 @@ enum Tok {
 }
 
 /// Every tag in `html`, in order. The text of an HTML `<script>`, `<style>`,
-/// `<title>` or `<textarea>` element holds no tags, so after its opening tag
-/// the scan resumes at its closing tag, which the tag's `text_end` holds. In
+/// `<title>`, `<textarea>`, `<xmp>`, `<iframe>`, `<noembed>` or `<noframes>`
+/// element holds no tags, so after its opening tag the scan resumes at its
+/// closing tag, which the tag's `text_end` holds; after `<plaintext>` the
+/// rest of the HTML is its text. In
 /// SVG or MathML those elements hold markup like any other, and a
 /// `<![CDATA[` section there is one tag through its `]]>`.
 pub fn tags(html: &str) -> Tags<'_> {
@@ -365,9 +367,10 @@ impl Tags<'_> {
         }
         match name {
             // In HTML `<style/>` still opens its text.
-            "script" | "style" | "title" | "textarea" => {
-                Some(closing_tag_start(self.html, end, name))
-            }
+            "iframe" | "noembed" | "noframes" | "script" | "style" | "textarea" | "title"
+            | "xmp" => Some(closing_tag_start(self.html, end, name)),
+            // Nothing after `<plaintext>` is a tag, its own end tag included.
+            "plaintext" => Some(self.html.len()),
             _ => None,
         }
     }
@@ -1770,10 +1773,12 @@ const BLOCK_TAGS: &[&str] = &[
     "ul",
 ];
 
-/// `html` with every tag removed, the contents of `<script>`, `<style>` and
-/// `<template>` dropped, each block tag starting a new line, and every
-/// character reference decoded once ([`decode_entities`]), each run of text
-/// between two tags on its own, as the parser reads it.
+/// `html` with every tag removed, the contents of `<script>`, `<style>`,
+/// `<iframe>`, `<noembed>`, `<noframes>` and `<template>` dropped, each block
+/// tag starting a new line, and every character reference decoded once
+/// ([`decode_entities`]), each run of text between two tags on its own, as
+/// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
+/// written, since the parser decodes nothing there.
 fn visible_text(html: &str) -> String {
     read_visible(html, &mut tags(html), 0, None).unwrap_or_default()
 }
@@ -1807,7 +1812,21 @@ fn read_visible(
             return Some(out);
         }
         match name.as_deref() {
-            Some("script" | "style") => pos = text_end.unwrap_or(end),
+            Some("script" | "style" | "iframe" | "noembed" | "noframes") => {
+                pos = text_end.unwrap_or(end)
+            }
+            // Both open and close a block; the opening tag's raw text follows.
+            Some("xmp" | "plaintext") => {
+                if !hidden {
+                    out.push('\n');
+                }
+                if let Some(text_end) = text_end {
+                    if !hidden {
+                        out.push_str(&html[end..text_end]);
+                    }
+                    pos = text_end;
+                }
+            }
             Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
         }
@@ -2144,6 +2163,87 @@ mod tests {
             ("<math><mtext><title><b>x</b></title></mtext></math>", 0),
             (
                 "<svg><style>.a{fill:red}</style><rect/></svg><style/><b>x</b></style>",
+                0,
+            ),
+        ] {
+            let names: Vec<&str> = tags(html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{html}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xmp_iframe_noembed_noframes_and_plaintext_hold_text() {
+        let html = "<plaintext><b>x</b></plaintext>";
+        let ends: Vec<(&str, Option<usize>)> = tags(html)
+            .map(|t| (&html[t.start..t.end], t.text_end))
+            .collect();
+        assert_eq!(ends, [("<plaintext>", Some(html.len()))]);
+        // How many `<b>` elements WebKit and Chromium build from each. In the
+        // `<foreignObject>` cases, `</foreignObject>` closes the island only
+        // while it is the current node: then `<style/>` closes itself in the
+        // `<svg>` and its `<b>` counts; with an HTML element left open,
+        // `<style/>` opens HTML raw text and the count is 0.
+        for (html, bs) in [
+            ("<xmp><b>x</b></xmp>", 0),
+            ("<iframe><b>x</b></iframe>", 0),
+            ("<noembed><b>x</b></noembed>", 0),
+            ("<noframes><b>x</b></noframes>", 0),
+            ("<iframe><b>x</b>", 0),
+            ("<plaintext><b>x</b></plaintext><b>y</b>", 0),
+            ("<xmp></xmp><b>x</b>", 1),
+            ("<XMP><b>x</b></XmP><b>y</b>", 1),
+            ("<iframe src=a></iframe><b>x</b>", 1),
+            ("<template><xmp><b>x</b></xmp></template><b>y</b>", 1),
+            // A table foster-parents them, still as raw text.
+            ("<table><iframe><b>x</b></iframe></table>", 0),
+            ("<table><noframes><b>x</b></noframes></table>", 0),
+            ("<table><tr><td><xmp><b>x</b></xmp></td></tr></table>", 0),
+            // In SVG they are foreign elements holding markup; at a MathML
+            // text integration point they are HTML again.
+            ("<svg><iframe><b>x</b></iframe></svg>", 1),
+            ("<math><mi><xmp><b>x</b></xmp></mi></math>", 0),
+            // Read as markup, the `<div>` would stay open.
+            (
+                "<svg><foreignObject><iframe><div></iframe></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<svg><foreignObject><noembed><div></noembed></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<svg><foreignObject><noframes><div></noframes></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<svg><foreignObject><xmp><div></xmp></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            // `<xmp>` reopens the closed `<strong>` before it opens; nothing
+            // reopens it inside an `<iframe>`.
+            (
+                "<svg><foreignObject><p><strong></p><xmp>t</xmp></foreignObject><style/><b>x</b></style>",
+                0,
+            ),
+            (
+                "<svg><foreignObject><p><strong></p><iframe>t</iframe></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            // `<xmp>` and `<plaintext>` close an open `<p>`; `<iframe>` does not.
+            (
+                "<svg><foreignObject><p><xmp>t</xmp></foreignObject><style/><b>x</b></style>",
+                1,
+            ),
+            (
+                "<svg><foreignObject><p><iframe>t</iframe></foreignObject><style/><b>x</b></style>",
+                0,
+            ),
+            (
+                "<svg><foreignObject><p><plaintext></foreignObject><style/><b>x</b></style>",
                 0,
             ),
         ] {
@@ -2567,6 +2667,22 @@ mod tests {
             card_label("<svg><title/></svg><b>y</b>").as_deref(),
             Some("y")
         );
+    }
+
+    #[test]
+    fn card_label_skips_unrendered_raw_text_and_keeps_xmp_text_as_written() {
+        for (html, label) in [
+            ("<iframe src=x><p>fallback</p></iframe><p>Real</p>", "Real"),
+            ("<noembed>no &amp; embed</noembed><p>Real</p>", "Real"),
+            ("<noframes><p>no</p></noframes><p>Real</p>", "Real"),
+            ("<xmp><b>&lt;</b></xmp>", "<b>&lt;</b>"),
+            ("<plaintext>a &amp; <b>", "a &amp; <b>"),
+            ("<template><xmp>x</xmp></template><p>Real</p>", "Real"),
+            ("Intro<xmp>code</xmp>", "Intro"),
+            ("<xmp>code</xmp>after", "code"),
+        ] {
+            assert_eq!(card_label(html).as_deref(), Some(label), "{html}");
+        }
     }
 
     #[test]
