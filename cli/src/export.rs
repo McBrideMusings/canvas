@@ -19,7 +19,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use canvas_core::export::{self as card_export, Exported};
-use canvas_core::html::{card_label, escape_attr, escape_text};
+use canvas_core::html::{card_title, escape_attr, escape_text};
 use canvas_core::{Card, ExportWarning, ExportWarningKind, Session};
 use serde::Serialize;
 use zip::write::SimpleFileOptions;
@@ -271,7 +271,7 @@ fn index_html(cards: &[&Card], sessions: &HashMap<&str, &str>) -> String {
             .get(card.session_id.as_str())
             .copied()
             .unwrap_or(&card.session_id);
-        let label = card_label(&card.html).unwrap_or_else(|| "Canvas post".to_string());
+        let label = card_title(&card.html);
         rows.push_str(&format!(
             "<li><a href=\"{href}\">{label}</a><span class=\"meta\"><span>{session}</span><time datetime=\"{at}\">{when}</time></span></li>\n",
             href = escape_attr(&format!("{}.html", card.id)),

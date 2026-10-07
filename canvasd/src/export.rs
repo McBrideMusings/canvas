@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use canvas_core::html::{
-    card_label, decode_entities, escape_attr, escape_text, find_attr_value, replace_attr_value,
+    card_title, decode_entities, escape_attr, escape_text, find_attr_value, replace_attr_value,
     tag_name, tags, AttrValue, Tag,
 };
 use canvas_core::{
@@ -48,7 +48,7 @@ pub fn export_card(
     // isn't missing from the page.
     warnings
         .retain(|w| w.kind != ExportWarningKind::FetchFailed || !cdn.present.contains(&w.target));
-    let title = escape_text(&card_label(&card.html).unwrap_or_else(|| "Canvas post".into()));
+    let title = escape_text(&card_title(&card.html));
     let mut html = String::with_capacity(body.len() + 1024);
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");

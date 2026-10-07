@@ -1799,11 +1799,16 @@ pub fn replace_attr_value(tag: &str, old: AttrValue, value: &str) -> String {
     )
 }
 
-/// What names a card in a list or a page title: the text of its first
-/// `<h1>`–`<h3>`, else its first line of visible text (script, style and
-/// template contents skipped), whitespace collapsed. `None` for a card with
-/// no text at all.
-pub fn card_label(html: &str) -> Option<String> {
+/// What names a card in a list or a page title: its label, else
+/// "Canvas post" for a card with no text at all.
+pub fn card_title(html: &str) -> String {
+    card_label(html).unwrap_or_else(|| "Canvas post".to_string())
+}
+
+/// The text of a card's first `<h1>`–`<h3>`, else its first line of visible
+/// text (script, style and template contents skipped), whitespace collapsed.
+/// `None` for a card with no text at all.
+fn card_label(html: &str) -> Option<String> {
     first_heading(html).or_else(|| {
         visible_text(html)
             .lines()
@@ -3111,6 +3116,12 @@ mod tests {
         );
         assert_eq!(card_label("<p>one</p><p>two</p>").as_deref(), Some("one"));
         assert_eq!(card_label("<img src=x><script>x</script>"), None);
+    }
+
+    #[test]
+    fn card_title_names_a_card_with_no_text_canvas_post() {
+        assert_eq!(card_title("<img src=x><script>x</script>"), "Canvas post");
+        assert_eq!(card_title("<h2>Plan</h2>"), "Plan");
     }
 
     #[test]

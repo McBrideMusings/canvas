@@ -205,14 +205,14 @@ beside the terminal all day.
   carried; `prefers-color-scheme` rules stay, so the reader's system picks.
   The route answers `{html, warnings}` (`ExportResult` in `canvas-core`,
   which also holds the shared `base64` and the `html` tag scanner, with
-  `card_label`: a card's first heading, else first line of text); canvasd
+  `card_title`: a card's first heading, else first line of text, else "Canvas post"); canvasd
   logs `card exported`.
   `canvas export --all [--session <id>] [-o file.zip]` (`cli/src/export.rs`)
   reads every card canvasd holds from `/api/state` (or one session's; an
   unknown id exits 1), exports each through that route one at a time, and
   writes a zip (`canvas-export.zip` by default; stored entries, the `zip`
   crate): `<card_id>.html` per card plus `index.html`, newest first by `at`,
-  each row linking its page with the session name, `card_label` and the time,
+  each row linking its page with the session name, `card_title` and the time,
   self-contained and following the reader's light/dark setting. It prints
   `{"path", "cards", "warnings"}`, each warning carrying its `card_id`; a card
   evicted mid-run is a `card-gone` warning and one whose export canvasd answers
