@@ -216,7 +216,8 @@ const MAX_REOPENED: usize = 1_000_000;
 /// WebKit's cap on its stack of open elements
 /// (`defaultMaximumHTMLParserDOMTreeDepth`), less the `<html>`, `<body>` and
 /// wrapper `<div>` that the viewer's card frame and an exported page both put
-/// around a card.
+/// around a card. Two tests read `viewer/app.js` and `canvasd/src/export.rs`
+/// and fail when either frame holds a different count open.
 const MAX_OPEN: usize = 512 - 3;
 
 /// WebKit's cap less the `<html>` and `<body>` around a whole page, such as
@@ -2632,6 +2633,64 @@ mod tests {
             while scan.next().is_some() {}
             assert_eq!(scan.open.len(), open, "{unit}");
         }
+    }
+
+    /// The elements a frame holds open where it writes the card: its
+    /// `<html>` and `<body>`, plus whatever `prefix`, the markup between its
+    /// `<body>` and the card, leaves open.
+    fn frame_depth(prefix: &str) -> usize {
+        let mut scan = tags(prefix);
+        while scan.next().is_some() {}
+        2 + scan.open.len()
+    }
+
+    /// The text from just past the one `<body>` in `source` up to `end`.
+    fn after_body<'a>(source: &'a str, end: impl FnOnce(&'a str) -> usize) -> &'a str {
+        assert_eq!(
+            source.matches("<body>").count(),
+            1,
+            "one <body> in the frame"
+        );
+        let rest = &source[source.find("<body>").unwrap() + "<body>".len()..];
+        &rest[..end(rest)]
+    }
+
+    #[test]
+    fn max_open_counts_the_viewer_frame_around_a_card() {
+        // buildIframeDoc writes the card at `${html}`; a frame that adds or
+        // drops an element around it moves the cap WebKit leaves the card.
+        let app = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../viewer/app.js"))
+            .unwrap();
+        let prefix = after_body(&app, |rest| rest.find("${html}").unwrap());
+        assert_eq!(frame_depth(prefix), 512 - MAX_OPEN, "{prefix}");
+    }
+
+    #[test]
+    fn max_open_counts_the_exported_page_around_a_card() {
+        // export.rs writes the card with the next push after the string
+        // literal holding `<body>`, which ends at the first quote not escaped.
+        let export = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../canvasd/src/export.rs"
+        ))
+        .unwrap();
+        let literal = after_body(&export, |rest| {
+            let mut escaped = false;
+            rest.find(|c| {
+                let end = c == '"' && !escaped;
+                escaped = c == '\\' && !escaped;
+                end
+            })
+            .unwrap()
+        });
+        let after = &export[export.find("<body>").unwrap() + "<body>".len() + literal.len()..];
+        let next: String = after.split_whitespace().take(3).collect();
+        assert_eq!(
+            next, "\",);html.push_str(&body);",
+            "the card follows <body>"
+        );
+        let prefix = literal.replace("\\\"", "\"");
+        assert_eq!(frame_depth(&prefix), 512 - MAX_OPEN, "{prefix}");
     }
 
     #[test]
