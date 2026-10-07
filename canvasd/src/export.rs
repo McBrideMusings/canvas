@@ -603,10 +603,10 @@ fn module_import(specifier: &str) -> String {
 
 /// A module the page's import map serves, fetched from `url`: its `source`,
 /// and for each of its specifiers, where it sits in the source and the URL
-/// the card's maps resolve it to from `url` (None when they resolve it to
-/// nothing the card could load: an address relative to the page, which its
-/// CSP refuses, a blocked entry, a bare name with no entry, or a URL that
-/// isn't http(s)).
+/// the card's maps resolve it to from `url`. None when they resolve it to
+/// nothing the card could load: a blocked entry, a bare name with no entry,
+/// a URL that isn't http(s), or one its CSP refuses (an address relative to
+/// the page, or one off the CDN hosts).
 struct Module {
     url: String,
     source: String,
@@ -1267,9 +1267,10 @@ impl<F: cdn::Fetch> Cdn<F> {
     /// the import map serves it from a `data:` URI, with no path to resolve
     /// a relative one against and no URL a scope would match. Answers the key
     /// `url` is kept under, or None when it can't be fetched or read (after a
-    /// `fetch-failed` warning naming it). A module it reaches that can't
-    /// stays out of the map, so an import of it loads its URL from the
-    /// network.
+    /// `fetch-failed` warning naming it). A module on the CDN hosts it
+    /// reaches that can't stays out of the map, so an import of it loads its
+    /// URL from the network; an import off those hosts is blocked, as the
+    /// card's CSP blocked it.
     fn module_graph(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<String> {
         let key = module_url(url::Url::parse(url).ok()?)?;
         let mut queue = VecDeque::new();
@@ -1303,9 +1304,11 @@ impl<F: cdn::Fetch> Cdn<F> {
                             let target = cdn
                                 .import_map
                                 .resolve(&s.value, base.as_ref())
-                                .and_then(module_url);
+                                .and_then(module_url)
+                                // The card's CSP refused one off the CDN hosts.
+                                .filter(|target| cdn::allowed(target));
                             if let Some(target) = &target {
-                                if cdn::allowed(target) && cdn.module_seen.insert(target.clone()) {
+                                if cdn.module_seen.insert(target.clone()) {
                                     queue.push_back(target.clone());
                                 }
                             }
@@ -3318,7 +3321,7 @@ mod tests {
         assert_eq!(
             page_map(&r.html),
             serde_json::json!({"imports": {
-                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/a@1/+esm";export*from"https://cdn.jsdelivr.net/npm/lit@3/b.js";import{c}from"canvas-export:blocked";import"https://example.com/x.js";const r=/import"\/npm\/x"/;"#),
+                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/a@1/+esm";export*from"https://cdn.jsdelivr.net/npm/lit@3/b.js";import{c}from"canvas-export:blocked";import"canvas-export:blocked";const r=/import"\/npm\/x"/;"#),
                 "canvas-export:blocked": null,
                 "https://cdn.jsdelivr.net/npm/a@1/+esm": js_data(r#"export default 1;import("https://cdn.jsdelivr.net/npm/lazy/+esm");import"https://cdn.jsdelivr.net/npm/lit@3/+esm";"#),
                 "https://cdn.jsdelivr.net/npm/lit@3/b.js": js_data("export const b=2;"),
