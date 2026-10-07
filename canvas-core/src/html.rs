@@ -95,6 +95,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         form: None,
         mode: Mode::Body,
         templates: Vec::new(),
+        freezes: false,
     }
 }
 
@@ -153,6 +154,13 @@ pub struct Tags<'a> {
     /// Only `</template>` pops it, so like WebKit's it outlives a template
     /// the depth cap closed.
     templates: Vec<Mode>,
+    /// Set once an end tag that closes a table, section or row reached the
+    /// cell mode with no cell in table scope, the depth cap having closed it.
+    /// The spec has the end tag close the cell first, and WebKit's "close
+    /// the cell" finds none, so the older WebKit Canvas.app runs reprocesses
+    /// that end tag in the same mode forever. The scan goes on as a newer
+    /// WebKit does, in the row mode.
+    freezes: bool,
 }
 
 /// WebKit's cap on its stack of open elements
@@ -841,9 +849,12 @@ impl Tags<'_> {
                     if self.in_table_scope(&[name]).is_none() {
                         return true;
                     }
-                    if let Some(i) = self.in_table_scope(&["td", "th"]) {
-                        self.open.truncate(i);
-                        self.clear_to_marker();
+                    match self.in_table_scope(&["td", "th"]) {
+                        Some(i) => {
+                            self.open.truncate(i);
+                            self.clear_to_marker();
+                        }
+                        None => self.freezes = true,
                     }
                     self.mode = Mode::Row;
                 }
@@ -1606,6 +1617,19 @@ impl Iterator for Tags<'_> {
     }
 }
 
+/// The offset of the first end tag in `html` that freezes Canvas.app's
+/// WebKit (see `Tags::freezes`): a card holding one must never reach a
+/// viewer, and `None` when it holds none.
+pub fn webkit_freeze(html: &str) -> Option<usize> {
+    let mut scan = tags(html);
+    while let Some(tag) = scan.next() {
+        if scan.freezes {
+            return Some(tag.start);
+        }
+    }
+    None
+}
+
 /// The offset of the first `</name` at or after `from`, any case, or the end
 /// of the HTML. It reads only as far as the match, so a page of many raw-text
 /// elements costs its length once, not once per element.
@@ -2027,6 +2051,39 @@ mod tests {
         // the browser does, one hash at a time.
         let bs: String = (0..5_000).map(|i| format!("<b id={i}>t")).collect();
         assert_eq!(tags(&bs).count(), 5_000);
+    }
+
+    #[test]
+    fn an_end_tag_reaching_a_cell_the_depth_cap_closed_freezes_webkit() {
+        // Inside `k` `<div>`s, the cap closes the `<td>` when the next node
+        // goes in (at 505 that is the `<svg>`; at 506 and 507 the `<td>`
+        // itself closes the `<tr>` first), and the cell mode stays. An end
+        // tag for a table part still in table scope then loops in WebKit.
+        let deep = |k: usize, tail: &str| format!("{}{tail}", "<div>".repeat(k));
+        for (k, tail) in [
+            (505, "<table><tr><td><svg></table>"),
+            (506, "<table><tr><td><b></table>"),
+            (507, "<table><tr><td><svg></table>"),
+            (505, "<table><tr><td><svg></tr>"),
+            (506, "<table><tr><td><svg></tbody>"),
+            // `</td>` with no cell to close is dropped, and the mode stays.
+            (505, "<table><tr><td><svg></td></table>"),
+        ] {
+            let html = deep(k, tail);
+            let end = html.rfind("</").unwrap();
+            assert_eq!(webkit_freeze(&html), Some(end), "{k} {tail}");
+        }
+        for (k, tail) in [
+            // The cell stays open.
+            (504, "<table><tr><td><svg></table>"),
+            (505, "<table><tr><td></table>"),
+            // The cap closed the table, so `</table>` has nothing to close.
+            (508, "<table><tr><td><svg></table>"),
+            // The row is closed too, so `</tr>` has nothing to close.
+            (506, "<table><tr><td><svg></tr>"),
+        ] {
+            assert_eq!(webkit_freeze(&deep(k, tail)), None, "{k} {tail}");
+        }
     }
 
     #[test]

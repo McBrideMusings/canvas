@@ -140,12 +140,35 @@ fn resolve_image_placeholders(html: &str, card_id: &str) -> String {
     out
 }
 
+/// A 400 naming the end tag, when `html` holds one that would freeze
+/// Canvas.app's WebKit (`canvas_core::html::webkit_freeze`): a card that
+/// reached a viewer would pin it at 100% CPU, and come back on every reload.
+fn refuse_freezing(html: &str) -> Option<Response> {
+    let at = canvas_core::html::webkit_freeze(html)?;
+    let end = canvas_core::html::next_tag(html, at).map_or(html.len(), |(_, end)| end);
+    // An end tag may hold newlines before its `>`; the reason stays one line.
+    let tag = html[at..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    canvas_core::log::warn("card refused", &[("tag", &tag), ("byte", &at)]);
+    let message = format!(
+        "card refused: its {tag} at byte {at} closes a table cell nested past \
+         WebKit's 512-element limit, which freezes Canvas.app; nest the table less deeply"
+    );
+    Some((StatusCode::BAD_REQUEST, message).into_response())
+}
+
 /// Every post creates its own card — no open/closed lifecycle, no merging
-/// into a prior card from the same session.
+/// into a prior card from the same session. HTML that would freeze the
+/// viewer is refused before anything is created.
 pub async fn post_explicit(
     State(state): State<AppState>,
     Json(req): Json<PostRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Some(refused) = refuse_freezing(&req.html) {
+        return refused;
+    }
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
@@ -228,7 +251,8 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
 /// with `updated_at` set to now, which moves it to the top of the Timeline.
 /// 404s rather than creating one: an id an agent doesn't already hold is
 /// never a valid target, unlike `post_explicit`'s session id, which a
-/// restarted daemon may legitimately not know yet.
+/// restarted daemon may legitimately not know yet. HTML that would freeze
+/// the viewer is refused and the card keeps what it had.
 pub async fn update_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -239,6 +263,9 @@ pub async fn update_card(
         let Some(idx) = inner.cards.iter().position(|c| c.id == id) else {
             return StatusCode::NOT_FOUND.into_response();
         };
+        if let Some(refused) = refuse_freezing(&req.html) {
+            return refused;
+        }
         let card = Card {
             id: id.clone(),
             session_id: inner.cards[idx].session_id.clone(),

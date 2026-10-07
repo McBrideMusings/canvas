@@ -97,6 +97,25 @@ fn card_prints_the_posted_html_and_ids() {
 }
 
 #[test]
+fn post_fails_with_canvasds_reason_for_html_that_would_freeze_the_viewer() {
+    let daemon = spawn_daemon();
+    let html = format!("{}<table><tr><td><svg></table>", "<div>".repeat(505));
+    let output = run(
+        &daemon,
+        &["post", "-", "--format", "html"],
+        Some(html.as_bytes()),
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "card refused: its </table> at byte 2545 closes a table \
+         cell nested past WebKit's 512-element limit, which freezes Canvas.app; \
+         nest the table less deeply"
+    );
+}
+
+#[test]
 fn card_fails_loudly_for_an_unknown_id() {
     let daemon = spawn_daemon();
     let output = run(&daemon, &["card", "no-such-card"], None);

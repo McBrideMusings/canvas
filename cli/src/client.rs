@@ -79,19 +79,6 @@ fn call_with_headers(
         .map_err(|e| Failure::Transport(e.to_string()))
 }
 
-/// Serialize `body` and POST it to `path`. A body that fails to serialize
-/// still gets sent (as `null`) rather than panicking or short-circuiting the
-/// request. The raw result is returned unchanged so each caller keeps its own
-/// handling: the hook calls just propagate it, while `post_explicit` maps it
-/// to its one-line error messages.
-fn post_json<T: serde::Serialize>(path: &str, body: T) -> Result<Response, Failure> {
-    call(
-        "POST",
-        path,
-        Some(&serde_json::to_value(body).unwrap_or_default()),
-    )
-}
-
 fn into_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
     serde_json::from_slice(&response.body)
         .map_err(|e| format!("canvasd returned malformed JSON: {e}"))
@@ -112,7 +99,12 @@ pub fn end_session(session_id: &str) -> Result<(), String> {
 /// every failure instead of the raw `Failure`, and returns the card the
 /// daemon created on success so the caller can report its id.
 pub fn post_explicit(body: PostRequest) -> Result<Card, String> {
-    let result = post_json("/api/posts", body);
+    let result = call_any_status(
+        "POST",
+        "/api/posts",
+        Some(&serde_json::to_value(body).unwrap_or_default()),
+        timeout(),
+    );
     handle_card_response(result)
 }
 
@@ -131,10 +123,11 @@ pub fn update_card(
         images,
         targets,
     };
-    let result = call(
+    let result = call_any_status(
         "PUT",
         &format!("/api/cards/{card_id}"),
         Some(&serde_json::to_value(body).unwrap_or_default()),
+        timeout(),
     );
     handle_card_response(result)
 }
@@ -374,7 +367,12 @@ pub fn snapshot(id: &str) -> Result<Snapshot, String> {
 /// `canvas card`: one card as the daemon holds it, for an agent handed a
 /// card id (from a pasted post link) to read the HTML the viewer renders.
 pub fn get_card(card_id: &str) -> Result<Card, String> {
-    handle_card_response(call("GET", &format!("/api/cards/{card_id}"), None))
+    handle_card_response(call_any_status(
+        "GET",
+        &format!("/api/cards/{card_id}"),
+        None,
+        timeout(),
+    ))
 }
 
 /// Every session and card canvasd holds, cards oldest first.
@@ -398,12 +396,13 @@ pub fn get_stream() -> Result<Stream, String> {
 }
 
 fn handle_card_response(result: Result<Response, Failure>) -> Result<Card, String> {
-    match result {
-        Ok(response) => into_json(response),
-        Err(Failure::Status(404)) => {
-            Err("canvasd returned HTTP 404 (no card with that id)".to_string())
-        }
-        Err(e) => Err(e.to_string()),
+    let response = result.map_err(|e| e.to_string())?;
+    match response.status {
+        200..=299 => into_json(response),
+        404 => Err("canvasd returned HTTP 404 (no card with that id)".to_string()),
+        // canvasd's own error text, when it sent one, is the whole line.
+        status => Err(canvas_core::log::error_text(&response.body)
+            .unwrap_or_else(|| Failure::Status(status).to_string())),
     }
 }
 

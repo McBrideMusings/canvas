@@ -122,6 +122,18 @@ fn load(path: &Path, now: DateTime<Utc>) -> Inner {
             &[("count", &skipped), ("path", &path.display())],
         );
     }
+    // A card stored before canvasd refused HTML that freezes Canvas.app's
+    // WebKit would freeze every viewer that loads it.
+    inner.cards.retain(|card| {
+        let freezes = canvas_core::html::webkit_freeze(&card.html).is_some();
+        if freezes {
+            canvas_core::log::warn(
+                "card dropped on reload: it freezes WebKit",
+                &[("card", &card.id)],
+            );
+        }
+        !freezes
+    });
     inner.prune_before(now - Duration::hours(RETENTION_HOURS));
     inner
 }

@@ -281,6 +281,37 @@ async fn entries_older_than_24_hours_are_dropped() {
 }
 
 #[tokio::test]
+async fn a_stored_card_that_would_freeze_the_viewer_is_dropped_on_reload() {
+    let dir = temp_dir();
+    let at = chrono::Utc::now().to_rfc3339();
+    let session = |id: &str| json!({"op": "session_upserted", "data": {"id": id, "cwd": "/a", "name": "a", "startedAt": at}});
+    let card = |id: &str, sid: &str, html: &str| json!({"op": "card_upserted", "data": {"id": id, "sessionId": sid, "at": at, "html": html, "images": [], "targets": []}});
+    let freezing = format!("{}<table><tr><td><svg></table>", "<div>".repeat(506));
+    let lines = [
+        session("frozen"),
+        card("c-frozen", "frozen", &freezing),
+        session("live"),
+        card("c-live", "live", "<p>x</p>"),
+        card("c-live-frozen", "live", &freezing),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(dir.join("stream.jsonl"), body).unwrap();
+
+    let app = build_router(AppState::open(&dir).await);
+    let state = state_of(&app).await;
+    let cards: Vec<&str> = state["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(cards, ["c-live"]);
+    // A session left with no card goes too.
+    assert_eq!(state["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(line_count(&dir), 2);
+}
+
+#[tokio::test]
 async fn torn_last_line_is_skipped() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;

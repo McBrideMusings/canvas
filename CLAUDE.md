@@ -482,6 +482,11 @@ beside the terminal all day.
   (canvas-17z), but only by posting it up to the viewer, never by fetching
   anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
+- canvasd refuses a post or update (400, logged `card refused`) whose HTML would
+  freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag
+  closing a table, section or row while the cell mode's cell is one the
+  512-element depth cap already closed), and drops such a card from
+  `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`).
 - An artifact's page is never themed, width-capped or sized to its content by
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without
   `allow-same-origin`. canvasd serves its files only from inside its folder
