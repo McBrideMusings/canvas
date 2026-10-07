@@ -2449,54 +2449,87 @@ const BLOCK_TAGS: &[&str] = &[
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
 /// written, since the parser decodes nothing there.
 fn visible_text(html: &str) -> String {
-    let (text, _) = read_visible(html, &mut tags(html), None);
-    text
+    let mut scan = tags(html);
+    let mut text = VisibleText::new(&scan);
+    while let Some(tag) = scan.next() {
+        text.before(html, &tag);
+        text.tag(html, &scan, &tag);
+    }
+    text.finish(html)
 }
 
 /// [`visible_text`] of what `scan` reads from where it stopped up to the end
 /// tag `</close>` outside a `<template>`; `None` when that never comes.
 fn visible_text_until(html: &str, scan: &mut Tags, close: &str) -> Option<String> {
-    let (text, closed) = read_visible(html, scan, Some(close));
-    closed.then_some(text)
+    let mut text = VisibleText::new(scan);
+    while let Some(tag) = scan.next() {
+        text.before(html, &tag);
+        let raw = &html[tag.start..tag.end];
+        if !text.hidden
+            && raw.starts_with("</")
+            && tag_name(&raw.replacen("</", "<", 1)).as_deref() == Some(close)
+        {
+            return Some(text.out);
+        }
+        text.tag(html, scan, &tag);
+    }
+    None
 }
 
-/// [`visible_text`] of what `scan` reads from where it stopped, and whether
-/// it stopped at the end tag `</close>` outside a `<template>`; with no such
-/// tag it runs to the end of `html`.
-fn read_visible(html: &str, scan: &mut Tags, close: Option<&str>) -> (String, bool) {
-    let mut out = String::new();
-    let mut pos = scan.pos;
-    // Whether the text after the last tag is inside a `<template>`.
-    let mut hidden = scan.in_template();
-    // The SVG or MathML `<script>`, `<style>` or the like the text after the
-    // last tag is inside: the browser renders none of its text, its child
-    // elements' included.
-    let mut muted = None;
-    while let Some(Tag {
-        start,
-        end,
-        text_end,
-        foreign,
-    }) = scan.next()
-    {
-        if !hidden && muted.is_none() {
-            out.push_str(&decode_entities(&html[pos..start]));
+/// The text [`visible_text`] gathers, fed by its caller one tag at a time:
+/// [`before`](Self::before) takes the text ahead of a tag,
+/// [`tag`](Self::tag) the tag itself, and [`finish`](Self::finish) the text
+/// after the last one.
+struct VisibleText {
+    out: String,
+    /// Where the text not yet read starts.
+    pos: usize,
+    /// Whether the text after the last tag is inside a `<template>`.
+    hidden: bool,
+    /// The SVG or MathML `<script>`, `<style>` or the like the text after the
+    /// last tag is inside: the browser renders none of its text, its child
+    /// elements' included.
+    muted: Option<usize>,
+}
+
+impl VisibleText {
+    /// A reader starting where `scan` stopped.
+    fn new(scan: &Tags) -> Self {
+        Self {
+            out: String::new(),
+            pos: scan.pos,
+            hidden: scan.in_template(),
+            muted: None,
         }
-        pos = end;
-        muted = muted.filter(|id| scan.is_open(*id));
-        let tag = &html[start..end];
-        let name = tag_name(&tag.replacen("</", "<", 1));
-        if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
-            return (out, true);
+    }
+
+    /// Takes the text between the last tag and `tag`.
+    fn before(&mut self, html: &str, tag: &Tag) {
+        if !self.hidden && self.muted.is_none() {
+            self.out
+                .push_str(&decode_entities(&html[self.pos..tag.start]));
         }
-        let quiet = hidden || muted.is_some();
-        match name.as_deref() {
+        self.pos = tag.end;
+    }
+
+    /// Takes `tag`, which `scan` has just read, after [`before`](Self::before).
+    fn tag(&mut self, html: &str, scan: &Tags, tag: &Tag) {
+        let &Tag {
+            start,
+            end,
+            text_end,
+            foreign,
+        } = tag;
+        self.muted = self.muted.filter(|id| scan.is_open(*id));
+        let raw = &html[start..end];
+        let quiet = self.hidden || self.muted.is_some();
+        match tag_name(&raw.replacen("</", "<", 1)).as_deref() {
             Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
                 match text_end {
-                    Some(text_end) => pos = text_end,
+                    Some(text_end) => self.pos = text_end,
                     // Its text follows unless it closed itself.
-                    None if foreign && muted.is_none() && !tag.ends_with("/>") => {
-                        muted = scan.current()
+                    None if foreign && self.muted.is_none() && !raw.ends_with("/>") => {
+                        self.muted = scan.current()
                     }
                     None => {}
                 }
@@ -2504,24 +2537,28 @@ fn read_visible(html: &str, scan: &mut Tags, close: Option<&str>) -> (String, bo
             // Both open and close a block; the opening tag's raw text follows.
             Some("xmp" | "plaintext") => {
                 if !quiet {
-                    out.push('\n');
+                    self.out.push('\n');
                 }
                 if let Some(text_end) = text_end {
                     if !quiet {
-                        out.push_str(&html[end..text_end]);
+                        self.out.push_str(&html[end..text_end]);
                     }
-                    pos = text_end;
+                    self.pos = text_end;
                 }
             }
-            Some(name) if !quiet && BLOCK_TAGS.contains(&name) => out.push('\n'),
+            Some(name) if !quiet && BLOCK_TAGS.contains(&name) => self.out.push('\n'),
             _ => {}
         }
-        hidden = scan.in_template();
+        self.hidden = scan.in_template();
     }
-    if pos < html.len() && !hidden && muted.is_none() {
-        out.push_str(&decode_entities(&html[pos..]));
+
+    /// The text gathered, with whatever follows the last tag.
+    fn finish(mut self, html: &str) -> String {
+        if self.pos < html.len() && !self.hidden && self.muted.is_none() {
+            self.out.push_str(&decode_entities(&html[self.pos..]));
+        }
+        self.out
     }
-    (out, false)
 }
 
 /// `s` with every character reference decoded once, as the HTML parser
@@ -4325,6 +4362,23 @@ mod tests {
             first_heading("<h1>A<script>'</h1>'</script>B</h1>").as_deref(),
             Some("AB")
         );
+    }
+
+    #[test]
+    fn a_heading_reads_its_body_as_visible_text_does() {
+        for body in [
+            "A<template></h1></template>B",
+            "A<svg><script>s<g>t</g></script></svg>B",
+            "a &amp;lt; b<p>c &copy x",
+            "<xmp>&amp;</xmp>y",
+            "A<svg><style/>s</svg>B",
+        ] {
+            assert_eq!(
+                first_heading(&format!("<h1>{body}</h1>")),
+                Some(collapse_whitespace(&visible_text(body))),
+                "{body}"
+            );
+        }
     }
 
     #[test]
