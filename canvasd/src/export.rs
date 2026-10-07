@@ -2267,7 +2267,10 @@ impl PageMap {
     /// isn't in the page, or null when it loads nothing. Each module counts
     /// toward the inlining total once per entry the map writes it in; one
     /// that would pass the total stays out of the page, after a warning, so
-    /// its entries keep its URL. None when there is nothing to map.
+    /// its entries keep its URL and it loads from there, without its
+    /// `computed-import` warning. What it imports still resolves through
+    /// this map, so the modules it reaches stay in. None when there is
+    /// nothing to map.
     fn finish<F: cdn::Fetch>(
         mut self,
         cdn: &mut Cdn<F>,
@@ -2340,6 +2343,10 @@ impl PageMap {
             let written = data[m.url.as_str()].len() * copies.get(&m.url).copied().unwrap_or(0);
             if !cdn.settle_module(&m.url, m.counted, written) {
                 data.remove(m.url.as_str());
+                // It loads from its own address now, so an import computed
+                // from that address works.
+                warnings
+                    .retain(|w| w.kind != ExportWarningKind::ComputedImport || w.target != m.url);
                 cdn.warn(&m.url, over_total_reason(), warnings);
             }
         }
@@ -4345,6 +4352,43 @@ mod tests {
         assert_eq!(
             page_map(&r.html),
             serde_json::json!({"imports": {A: A, B: js_data("export{}")}})
+        );
+    }
+
+    #[test]
+    fn a_module_left_out_at_the_total_keeps_what_it_reaches_and_drops_its_computed_warning() {
+        // As in `a_module_counts_once_per_map_entry_that_writes_it`: two
+        // copies of a.js don't fit. Left out, it loads from its URL, where
+        // its computed import works and its import of b.js still resolves
+        // through the page's map. b.js stays in, warning still.
+        const A: &str = "https://unpkg.com/a.js";
+        const B: &str = "https://unpkg.com/b.js";
+        let a = format!(
+            "import\"./b.js\";import(x);/*{}*/",
+            "x".repeat(MAX_ASSET_BYTES - 30)
+        );
+        let c = card(
+            &format!(
+                r#"{}<script type="importmap">{{"imports":{{"m":"{A}"}}}}</script><script type="module">import "m";</script>"#,
+                filled(14)
+            ),
+            &[],
+            &[],
+        );
+        let fetch = move |url: &str, _: Duration| match url {
+            A => Ok(a.clone().into_bytes()),
+            B => Ok(b"import(y);".to_vec()),
+            _ => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let b_computed = "computes an import from its own address, which the export makes a \
+                          data: URI, so it fails when the page runs: y at line 1, column 8";
+        let mut want = vec![(B.to_string(), b_computed.to_string())];
+        want.extend(over_total(A));
+        assert_eq!(warned(&r), want);
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({"imports": {"m": A, A: A, B: js_data("import(y);")}})
         );
     }
 
