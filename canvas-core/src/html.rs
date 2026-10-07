@@ -3,7 +3,7 @@
 //! attribute lookups over the byte string.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
@@ -95,11 +95,13 @@ pub fn tags(html: &str) -> Tags<'_> {
         open: OpenElements::default(),
         formatting: Vec::new(),
         next_id: 0,
+        token_ids: 0,
         form: None,
         mode: Mode::Body,
         templates: Vec::new(),
         raw_close: None,
         freeze: None,
+        reopened: 0,
     }
 }
 
@@ -132,8 +134,9 @@ pub struct Tags<'a> {
     /// tag can close the SVG opened inside its element. An HTML start tag
     /// first closes what the tree builder closes for it (a `<p>` before a
     /// block, a sibling list item or cell), and a formatting end tag runs the
-    /// adoption agency's rounds. Like WebKit's, the stack holds at most
-    /// [`MAX_OPEN`] elements: see [`Tags::insert`].
+    /// adoption agency's rounds. Like WebKit's, the stack is capped at
+    /// [`MAX_OPEN`] elements, though elements one token opens can go past
+    /// it: see [`Tags::insert`].
     open: OpenElements,
     /// The tree builder's list of active formatting elements, oldest first,
     /// `None` for a marker. An entry outlives its element's place on the
@@ -142,6 +145,11 @@ pub struct Tags<'a> {
     formatting: Vec<Option<Formatting>>,
     /// The id the next opened element gets.
     next_id: usize,
+    /// The first id opened by the token being read. The browser queues the
+    /// nodes a token inserts and attaches them only when the token ends, so
+    /// an element with an id from here up has no parent yet: see
+    /// [`Tags::insert`].
+    token_ids: usize,
     /// The tree builder's form element pointer: the id of the last `<form>`
     /// opened outside a `<template>`. Only a `</form>` outside a template
     /// clears it, so it outlives the form's place on the stack, and while it
@@ -163,8 +171,10 @@ pub struct Tags<'a> {
     /// element whatever the insertion mode would do with the tag.
     raw_close: Option<usize>,
     /// Set by the first tag the older WebKit Canvas.app runs reprocesses in
-    /// the same mode forever: see [`Freeze`].
+    /// the same mode forever, or that stalls it another way: see [`Freeze`].
     freeze: Option<Freeze>,
+    /// How many formatting elements the scan has reopened.
+    reopened: usize,
 }
 
 /// A tag that freezes Canvas.app's WebKit, which reprocesses it in the same
@@ -180,7 +190,19 @@ enum Freeze {
     /// table scope, closes the select first, and there is none in select
     /// scope. The scan drops the tag.
     Select,
+    /// The text or tag before this tag took the elements WebKit has reopened
+    /// before text or a start tag past [`MAX_REOPENED`]. Each reopening of a run of closed
+    /// formatting elements builds a copy of each one, so a page that keeps
+    /// closing and reopening a long run builds a tree that grows with the
+    /// square of its length, which stalls Canvas.app. From here the scan
+    /// reopens only the newest element.
+    Reopen,
 }
+
+/// How many formatting elements the scan lets WebKit reopen in one page
+/// before it counts the page as [`Freeze::Reopen`]: a page that misnests a
+/// few `<b>`s around each paragraph reopens a handful per paragraph.
+const MAX_REOPENED: usize = 1_000_000;
 
 /// WebKit's cap on its stack of open elements
 /// (`defaultMaximumHTMLParserDOMTreeDepth`), less the `<html>`, `<body>` and
@@ -188,14 +210,62 @@ enum Freeze {
 /// around a card.
 const MAX_OPEN: usize = 512 - 3;
 
-/// The stack of open elements, innermost last, and how many of them are HTML
-/// `<template>`s, kept as it changes so asking whether the scan is inside one
-/// costs nothing: card_label asks after every tag. Reads go through the
-/// slice; every change goes through a method here, which keeps the count.
+/// The stack of open elements, innermost last, with indexes kept as it
+/// changes: which ids are open, and for each HTML element name and each [`Group`]
+/// the positions holding one, ascending. Past the depth cap the stack can
+/// hold far more than 509 elements (see [`Tags::insert`]), and the tree
+/// builder asks for the innermost element of a name or kind after nearly
+/// every tag, so each such question reads an index rather than walking the
+/// stack. Finding where an open id sits still walks down from the top, as
+/// the browser's own search for it does. Reads go through the slice; every
+/// change goes through a method here, which keeps the indexes. A change
+/// below the top re-indexes the elements above it.
 #[derive(Default)]
 struct OpenElements {
     elements: Vec<Element>,
-    templates: usize,
+    /// Whether the element with each id is open, by id: ids count up from
+    /// 0, so this costs a byte per element the scan has opened.
+    open_ids: Vec<bool>,
+    names: HashMap<String, Vec<usize>>,
+    groups: [Vec<usize>; GROUPS],
+}
+
+/// The kinds of open element the tree builder looks for by kind rather
+/// than by name: each is a bit in [`Element::groups`] and has a list of
+/// positions in [`OpenElements`].
+#[derive(Clone, Copy)]
+enum Group {
+    /// An HTML `<h1>` to `<h6>`.
+    Heading,
+    /// A special element: an end tag for another element never closes past it.
+    Special,
+    /// A special element that stops a `<li>`, `<dd>` or `<dt>` from closing
+    /// a sibling below it: any but `<address>`, `<div>` and `<p>`.
+    ListBreak,
+    /// An HTML element "reset the insertion mode" reads a mode off.
+    Mode,
+    /// An element that bounds the scope, one group per [`Scope`].
+    ScopeEnd(Scope),
+}
+
+const GROUPS: usize = 8;
+
+// Each group is a bit of `Element::groups`.
+const _: () = assert!(GROUPS <= u8::BITS as usize);
+
+impl Group {
+    fn index(self) -> usize {
+        match self {
+            Group::Heading => 0,
+            Group::Special => 1,
+            Group::ListBreak => 2,
+            Group::Mode => 3,
+            Group::ScopeEnd(Scope::Default) => 4,
+            Group::ScopeEnd(Scope::ListItem) => 5,
+            Group::ScopeEnd(Scope::Button) => 6,
+            Group::ScopeEnd(Scope::Table) => 7,
+        }
+    }
 }
 
 impl std::ops::Deref for OpenElements {
@@ -208,24 +278,14 @@ impl std::ops::Deref for OpenElements {
 
 impl OpenElements {
     fn push(&mut self, element: Element) {
-        self.insert(self.elements.len(), element);
-    }
-
-    fn insert(&mut self, i: usize, element: Element) {
-        self.templates += usize::from(element.is_template());
-        self.elements.insert(i, element);
+        self.index(self.elements.len(), &element);
+        self.elements.push(element);
     }
 
     fn pop(&mut self) -> Option<Element> {
         let element = self.elements.pop()?;
-        self.templates -= usize::from(element.is_template());
+        self.unindex(&element);
         Some(element)
-    }
-
-    fn remove(&mut self, i: usize) -> Element {
-        let element = self.elements.remove(i);
-        self.templates -= usize::from(element.is_template());
-        element
     }
 
     fn truncate(&mut self, len: usize) {
@@ -234,30 +294,158 @@ impl OpenElements {
         }
     }
 
-    fn retain(&mut self, keep: impl Fn(&Element) -> bool) {
-        let templates = &mut self.templates;
-        self.elements.retain(|e| {
-            let kept = keep(e);
-            *templates -= usize::from(!kept && e.is_template());
-            kept
-        });
+    /// Moves the element at `lo` up to `hi`, the elements above it down one,
+    /// as the adoption agency moves a formatting element above its block when
+    /// nothing between them leaves. Only the indexes of elements in
+    /// `lo..=hi` change, so it costs as much as that range, not the stack
+    /// above it.
+    fn lift(&mut self, lo: usize, hi: usize) {
+        fn shift(list: &mut [usize], lo: usize, hi: usize) {
+            let from = list.partition_point(|&p| p < lo);
+            let to = list.partition_point(|&p| p <= hi);
+            let range = &mut list[from..to];
+            if range.first() == Some(&lo) {
+                range.rotate_left(1);
+                if let Some(last) = range.last_mut() {
+                    *last = hi + 1;
+                }
+            }
+            for p in range {
+                *p -= 1;
+            }
+        }
+        let mut names: Vec<&str> = self.elements[lo..=hi]
+            .iter()
+            .filter(|e| !e.is_foreign())
+            .map(|e| e.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            if let Some(list) = self.names.get_mut(name) {
+                shift(list, lo, hi);
+            }
+        }
+        let groups = self.elements[lo..=hi].iter().fold(0, |g, e| g | e.groups);
+        for (i, list) in self.groups.iter_mut().enumerate() {
+            if groups & (1 << i) != 0 {
+                shift(list, lo, hi);
+            }
+        }
+        self.elements[lo..=hi].rotate_left(1);
     }
 
     fn set_id(&mut self, i: usize, id: usize) {
+        self.mark(self.elements[i].id, false);
+        self.mark(id, true);
         self.elements[i].id = id;
+    }
+
+    /// Changes the elements from `i` up, innermost last, in one step: they
+    /// leave the indexes, `change` edits them, and they go back.
+    fn rebuild_from(&mut self, i: usize, change: impl FnOnce(&mut Vec<Element>)) {
+        let mut above = Vec::with_capacity(self.elements.len().saturating_sub(i));
+        while self.elements.len() > i {
+            above.extend(self.pop());
+        }
+        above.reverse();
+        change(&mut above);
+        for element in above {
+            self.push(element);
+        }
+    }
+
+    fn remove(&mut self, i: usize) -> Element {
+        let mut removed = None;
+        self.rebuild_from(i, |above| removed = Some(above.remove(0)));
+        removed.expect("an element at i")
+    }
+
+    /// Adds the element about to go in at the top, position `at`, to the
+    /// indexes.
+    fn index(&mut self, at: usize, element: &Element) {
+        self.mark(element.id, true);
+        if !element.is_foreign() {
+            match self.names.get_mut(&element.name) {
+                Some(list) => list.push(at),
+                None => {
+                    self.names.insert(element.name.clone(), vec![at]);
+                }
+            }
+        }
+        for (i, list) in self.groups.iter_mut().enumerate() {
+            if element.groups & (1 << i) != 0 {
+                list.push(at);
+            }
+        }
+    }
+
+    /// Removes the element just taken off the top from the indexes, where
+    /// its position is the last of each list it is in.
+    fn unindex(&mut self, element: &Element) {
+        self.mark(element.id, false);
+        if !element.is_foreign() {
+            if let Some(list) = self.names.get_mut(&element.name) {
+                list.pop();
+            }
+        }
+        for (i, list) in self.groups.iter_mut().enumerate() {
+            if element.groups & (1 << i) != 0 {
+                list.pop();
+            }
+        }
+    }
+
+    /// Records whether the element `id` is open.
+    fn mark(&mut self, id: usize, open: bool) {
+        if self.open_ids.len() <= id {
+            self.open_ids.resize(id + 1, false);
+        }
+        self.open_ids[id] = open;
+    }
+
+    /// Whether the element `id` is open.
+    fn holds(&self, id: usize) -> bool {
+        self.open_ids.get(id).copied().unwrap_or(false)
+    }
+
+    /// The position of the innermost open HTML element `name`.
+    fn last_named(&self, name: &str) -> Option<usize> {
+        self.names.get(name)?.last().copied()
+    }
+
+    /// The position of the innermost open HTML element `name` below `i`.
+    fn last_named_below(&self, name: &str, i: usize) -> Option<usize> {
+        let list = self.names.get(name)?;
+        list[..list.partition_point(|&p| p < i)].last().copied()
+    }
+
+    /// The position of the innermost open element of `group`.
+    fn last_in(&self, group: Group) -> Option<usize> {
+        self.groups[group.index()].last().copied()
+    }
+
+    /// The position of the outermost open element of `group` above `i`.
+    fn first_in_above(&self, group: Group, i: usize) -> Option<usize> {
+        let list = &self.groups[group.index()];
+        list.get(list.partition_point(|&p| p <= i)).copied()
+    }
+
+    /// Whether the scan is inside an HTML `<template>`.
+    fn in_template(&self) -> bool {
+        self.last_named("template").is_some()
     }
 }
 
 /// One open element. `id` tells it from a copy the adoption agency or a
-/// reopening made of it. `special` is whether the tree builder counts it as
-/// special: an end tag for another element never closes past it. It is read
-/// on every walk down the stack, so it is worked out once.
+/// reopening made of it. `groups` holds a bit per [`Group`] it is in, worked
+/// out once when it opens.
 struct Element {
     id: usize,
     name: String,
     ns: Ns,
     point: Point,
-    special: bool,
+    groups: u8,
 }
 
 /// An entry in the list of active formatting elements: the open or closed
@@ -278,6 +466,42 @@ enum Ns {
 }
 
 impl Element {
+    fn new(id: usize, name: &str, ns: Ns, point: Point) -> Element {
+        let mut element = Element {
+            id,
+            name: name.to_string(),
+            ns,
+            point,
+            groups: 0,
+        };
+        let html = ns == Ns::Html;
+        let special = match ns {
+            Ns::Html => SPECIAL_TAGS.contains(&name),
+            _ => element.ends_foreign_scope(),
+        };
+        let scope = |s| (Group::ScopeEnd(s), element.ends_scope(s));
+        let groups = [
+            (Group::Heading, html && is_heading(name)),
+            (Group::Special, special),
+            (
+                Group::ListBreak,
+                special && !(html && matches!(name, "address" | "div" | "p")),
+            ),
+            (
+                Group::Mode,
+                html && (name == "html" || name == "select" || mode_of(name).is_some()),
+            ),
+            scope(Scope::Default),
+            scope(Scope::ListItem),
+            scope(Scope::Button),
+            scope(Scope::Table),
+        ];
+        for (group, member) in groups {
+            element.groups |= u8::from(member) << group.index();
+        }
+        element
+    }
+
     fn is_foreign(&self) -> bool {
         self.ns != Ns::Html
     }
@@ -290,10 +514,6 @@ impl Element {
 
     fn is_template(&self) -> bool {
         !self.is_foreign() && self.name == "template"
-    }
-
-    fn is_special(&self) -> bool {
-        self.special
     }
 
     /// The SVG and MathML elements that bound every scope but table scope.
@@ -525,20 +745,30 @@ impl Tags<'_> {
         let Some(Some(newest)) = self.formatting.last() else {
             return;
         };
-        if self.open_index(newest.id).is_some() {
+        if self.open.holds(newest.id) {
             return;
         }
-        let open: HashSet<usize> = self.open.iter().map(|e| e.id).collect();
         let last = self.formatting.len() - 1;
         let mut first = last;
-        while let Some(Some(entry)) = first.checked_sub(1).map(|i| &self.formatting[i]) {
-            if open.contains(&entry.id) {
-                break;
+        // Past the budget, finding the first closed entry would cost as
+        // much as reopening them all.
+        if self.reopened <= MAX_REOPENED {
+            while let Some(Some(entry)) = first.checked_sub(1).map(|i| &self.formatting[i]) {
+                if self.open.holds(entry.id) {
+                    break;
+                }
+                first -= 1;
             }
-            first -= 1;
+            self.reopened += last + 1 - first;
         }
-        let mut i = first;
-        while i <= last {
+        if self.reopened > MAX_REOPENED {
+            self.freeze_at(Freeze::Reopen);
+            first = last;
+        }
+        // With the stack full, the first copy closes the current element;
+        // each later one goes inside the copy before it, which has no parent
+        // until the token ends, so the cap closes none of them.
+        for i in first..=last {
             let Some(entry) = &self.formatting[i] else {
                 return;
             };
@@ -547,14 +777,6 @@ impl Tags<'_> {
             let id = self.push_html(&name);
             if let Some(entry) = &mut self.formatting[i] {
                 entry.id = id;
-            }
-            // With the stack full, each later entry's insertion closes the
-            // one before it, so only the newest stays open.
-            if self.open.len() >= MAX_OPEN && i + 1 < last {
-                self.open.pop();
-                i = last;
-            } else {
-                i += 1;
             }
         }
     }
@@ -599,30 +821,30 @@ impl Tags<'_> {
 
     /// The index on the stack of the open element `id`.
     fn open_index(&self, id: usize) -> Option<usize> {
+        if !self.open.holds(id) {
+            return None;
+        }
         self.open.iter().rposition(|e| e.id == id)
+    }
+
+    /// The index in the list of the element `id`'s entry. An open element's
+    /// entry is usually among the newest, so the search starts there.
+    fn entry_of(&self, id: usize) -> Option<usize> {
+        self.formatting
+            .iter()
+            .rposition(|f| f.as_ref().is_some_and(|f| f.id == id))
     }
 
     /// Whether the element `id` has an entry in the list.
     fn listed(&self, id: usize) -> bool {
-        self.formatting.iter().flatten().any(|f| f.id == id)
+        self.entry_of(id).is_some()
     }
 
     /// Opens an element and returns its id.
     fn open_element(&mut self, name: &str, ns: Ns, point: Point) -> usize {
         let id = self.next_id;
         self.next_id += 1;
-        let mut element = Element {
-            id,
-            name: name.to_string(),
-            ns,
-            point,
-            special: false,
-        };
-        element.special = match ns {
-            Ns::Html => SPECIAL_TAGS.contains(&name),
-            _ => element.ends_foreign_scope(),
-        };
-        self.open.push(element);
+        self.open.push(Element::new(id, name, ns, point));
         id
     }
 
@@ -661,14 +883,28 @@ impl Tags<'_> {
         self.push_html(name);
     }
 
+    /// Starts the next token: every element open now has its parent.
+    fn begin_token(&mut self) {
+        self.token_ids = self.next_id;
+    }
+
     /// Applies WebKit's depth cap before the tree builder attaches a node to
     /// the innermost element: with the stack full, that element is closed and
     /// the node goes to its parent instead. Every element counts (void and
     /// self-closed ones too, which push nothing), as does a comment, but not
     /// text or a node foster-parented out of a table. `tag` and `name` are
     /// the start tag being inserted, empty for a comment.
+    ///
+    /// WebKit closes the innermost element only when it has a parent node,
+    /// and it attaches a token's nodes when the token ends, so an element the
+    /// same token opened stays open and the stack grows past the cap: the
+    /// `<tbody>` a `<tr>` implies holds the row, and each formatting element
+    /// reopened before text holds the next.
     fn insert(&mut self, tag: &str, name: &str) {
-        if self.open.len() >= MAX_OPEN && !self.fostered(tag, name) {
+        if self.open.len() >= MAX_OPEN
+            && self.open.last().is_some_and(|e| e.id < self.token_ids)
+            && !self.fostered(tag, name)
+        {
             self.open.pop();
         }
     }
@@ -739,53 +975,50 @@ impl Tags<'_> {
     /// A select is "in select in table" when a table holds it before any
     /// template does.
     fn reset_mode(&mut self) {
-        let html = |e: &&Element| !e.is_foreign();
-        self.mode = self
-            .open
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, e)| html(e))
-            .find_map(|(i, e)| match e.name.as_str() {
-                "html" => Some(Mode::Body),
-                "template" => Some(self.templates.last().copied().unwrap_or(Mode::Template)),
-                "select" => Some(
-                    match self.open[..i]
-                        .iter()
-                        .rev()
-                        .filter(html)
-                        .find(|e| matches!(e.name.as_str(), "table" | "template"))
-                    {
-                        Some(e) if e.name == "table" => Mode::SelectInTable,
-                        _ => Mode::Select,
-                    },
-                ),
-                name => mode_of(name),
-            })
-            .unwrap_or(Mode::Body);
+        let Some(i) = self.open.last_in(Group::Mode) else {
+            self.mode = Mode::Body;
+            return;
+        };
+        self.mode = match self.open[i].name.as_str() {
+            "html" => Mode::Body,
+            "template" => self.templates.last().copied().unwrap_or(Mode::Template),
+            "select" => {
+                let below = |name| self.open.last_named_below(name, i);
+                match (below("table"), below("template")) {
+                    (Some(table), template) if template.is_none_or(|t| t < table) => {
+                        Mode::SelectInTable
+                    }
+                    _ => Mode::Select,
+                }
+            }
+            name => mode_of(name).unwrap_or(Mode::Body),
+        };
+    }
+
+    /// The position of the innermost open HTML element named in `names`.
+    fn last_of(&self, names: &[&str]) -> Option<usize> {
+        names.iter().filter_map(|n| self.open.last_named(n)).max()
+    }
+
+    /// The position of `found`, when it is in `scope`: no element above it
+    /// bounds the scope.
+    fn scoped(&self, found: Option<usize>, scope: Scope) -> Option<usize> {
+        let found = found?;
+        let bound = self.open.last_in(Group::ScopeEnd(scope));
+        bound.is_none_or(|b| b <= found).then_some(found)
     }
 
     /// The index of the innermost open HTML element named in `names`, when
     /// it is in table scope.
     fn in_table_scope(&self, names: &[&str]) -> Option<usize> {
-        for (i, e) in self.open.iter().enumerate().rev() {
-            if !e.is_foreign() && names.contains(&e.name.as_str()) {
-                return Some(i);
-            }
-            if e.ends_scope(Scope::Table) {
-                return None;
-            }
-        }
-        None
+        self.scoped(self.last_of(names), Scope::Table)
     }
 
     /// Closes elements down to the innermost open HTML element named in
     /// `names` or a `<template>`, as the table modes' "clear the stack back
     /// to a context" steps do. With neither open, that is every element.
     fn clear_to(&mut self, names: &[&str]) {
-        let keep = self.open.iter().rposition(|e| {
-            !e.is_foreign() && (names.contains(&e.name.as_str()) || e.name == "template")
-        });
+        let keep = self.last_of(names).max(self.open.last_named("template"));
         self.open.truncate(keep.map_or(0, |i| i + 1));
     }
 
@@ -1152,16 +1385,11 @@ impl Tags<'_> {
             }
             "li" | "dd" | "dt" => {
                 let siblings: &[&str] = if name == "li" { &["li"] } else { &["dd", "dt"] };
-                for i in (0..self.open.len()).rev() {
-                    let e = &self.open[i];
-                    if !e.is_foreign() && siblings.contains(&e.name.as_str()) {
+                // The innermost sibling closes unless a special element
+                // other than an `<address>`, `<div>` or `<p>` is above it.
+                if let Some(i) = self.last_of(siblings) {
+                    if self.open.last_in(Group::ListBreak).is_none_or(|b| b <= i) {
                         self.open.truncate(i);
-                        break;
-                    }
-                    if e.is_special()
-                        && (e.is_foreign() || !matches!(e.name.as_str(), "address" | "div" | "p"))
-                    {
-                        break;
                     }
                 }
                 self.close_p();
@@ -1185,8 +1413,12 @@ impl Tags<'_> {
                 if let Some(i) = self.formatting_element(name) {
                     let id = self.formatting[i].as_ref().map(|f| f.id);
                     self.adopt(name);
-                    self.formatting.retain(|f| f.as_ref().map(|f| f.id) != id);
-                    self.open.retain(|e| Some(e.id) != id);
+                    if let Some(j) = id.and_then(|id| self.entry_of(id)) {
+                        self.formatting.remove(j);
+                    }
+                    if let Some(i) = id.and_then(|id| self.open_index(id)) {
+                        self.open.remove(i);
+                    }
                 }
             }
             "nobr" => {
@@ -1261,17 +1493,14 @@ impl Tags<'_> {
                 self.formatting.remove(i);
                 return;
             };
-            if self.open[fe + 1..]
-                .iter()
-                .any(|e| e.ends_scope(Scope::Default))
+            if self
+                .open
+                .last_in(Group::ScopeEnd(Scope::Default))
+                .is_some_and(|b| b > fe)
             {
                 return;
             }
-            let Some(block) = self.open[fe + 1..]
-                .iter()
-                .position(Element::is_special)
-                .map(|j| fe + 1 + j)
-            else {
+            let Some(block) = self.open.first_in_above(Group::Special, fe) else {
                 self.open.truncate(fe);
                 self.formatting.remove(i);
                 return;
@@ -1279,26 +1508,23 @@ impl Tags<'_> {
             // The copy of the formatting element goes into the list after
             // the copy of the element nearest the block, else in its place.
             let mut after = None;
-            let mut removed = 0;
+            let mut gone = HashSet::new();
+            let mut copies = Vec::new();
             for (inner, node) in (fe + 1..block).rev().enumerate() {
                 let id = self.open[node].id;
-                let mut entry = self
-                    .formatting
-                    .iter()
-                    .position(|f| f.as_ref().is_some_and(|f| f.id == id));
+                let mut entry = self.entry_of(id);
                 if inner >= 3 {
                     if let Some(j) = entry.take() {
                         self.formatting.remove(j);
                     }
                 }
                 let Some(j) = entry else {
-                    self.open.remove(node);
-                    removed += 1;
+                    gone.insert(id);
                     continue;
                 };
                 let copy = self.next_id;
                 self.next_id += 1;
-                self.open.set_id(node, copy);
+                copies.push((node, copy));
                 if let Some(f) = &mut self.formatting[j] {
                     f.id = copy;
                 }
@@ -1306,41 +1532,47 @@ impl Tags<'_> {
             }
             let copy = self.next_id;
             self.next_id += 1;
-            let Some(i) = self
-                .formatting
-                .iter()
-                .position(|f| f.as_ref().is_some_and(|f| f.id == fe_id))
-            else {
-                return;
-            };
-            if let Some(mut entry) = self.formatting.remove(i) {
-                entry.id = copy;
-                let at = after
-                    .and_then(|a| {
-                        self.formatting
-                            .iter()
-                            .position(|f| f.as_ref().is_some_and(|f| f.id == a))
-                    })
-                    .map_or(i, |j| j + 1);
-                self.formatting.insert(at, Some(entry));
+            let listed = self.entry_of(fe_id);
+            if let Some(i) = listed {
+                if let Some(mut entry) = self.formatting.remove(i) {
+                    entry.id = copy;
+                    let at = after.and_then(|a| self.entry_of(a)).map_or(i, |j| j + 1);
+                    self.formatting.insert(at, Some(entry));
+                }
             }
-            // Removing the formatting element shifts the block down one
-            // more; its copy goes back in just above the block.
-            let mut element = self.open.remove(fe);
-            element.id = copy;
-            self.open.insert(block - removed, element);
+            // The copies take their ids, the unlisted elements go, and the
+            // formatting element's copy goes back in just above the block.
+            for (node, id) in copies {
+                self.open.set_id(node, id);
+            }
+            if listed.is_none() {
+                self.open.rebuild_from(fe, |above| {
+                    above.retain(|e| !gone.contains(&e.id));
+                });
+                return;
+            }
+            self.open.set_id(fe, copy);
+            if gone.is_empty() {
+                self.open.lift(fe, block);
+            } else {
+                self.open.rebuild_from(fe, |above| {
+                    let element = above.remove(0);
+                    above.retain(|e| !gone.contains(&e.id));
+                    above.insert(block - fe - gone.len(), element);
+                });
+            }
         }
     }
 
     /// The index of the innermost open HTML `<template>`.
     fn template_index(&self) -> Option<usize> {
-        self.open.iter().rposition(Element::is_template)
+        self.open.last_named("template")
     }
 
     /// Whether the scan is inside an HTML `<template>`, whose contents the
     /// browser never shows.
     fn in_template(&self) -> bool {
-        self.open.templates > 0
+        self.open.in_template()
     }
 
     /// Pops foreign elements until the innermost is HTML or an integration
@@ -1449,9 +1681,10 @@ impl Tags<'_> {
         let Some(i) = self.form.take().and_then(|id| self.open_index(id)) else {
             return;
         };
-        if self.open[i + 1..]
-            .iter()
-            .any(|e| e.ends_scope(Scope::Default))
+        if self
+            .open
+            .last_in(Group::ScopeEnd(Scope::Default))
+            .is_some_and(|b| b > i)
         {
             return;
         }
@@ -1463,14 +1696,9 @@ impl Tags<'_> {
     /// the innermost open HTML element `name` and everything inside it,
     /// unless a special element is open inside it.
     fn other_end_tag(&mut self, name: &str) {
-        for i in (0..self.open.len()).rev() {
-            let e = &self.open[i];
-            if !e.is_foreign() && e.name == name {
+        if let Some(i) = self.open.last_named(name) {
+            if self.open.last_in(Group::Special).is_none_or(|s| s <= i) {
                 self.open.truncate(i);
-                return;
-            }
-            if e.is_special() {
-                return;
             }
         }
     }
@@ -1478,22 +1706,12 @@ impl Tags<'_> {
     /// The index of the innermost HTML element `</name>` ends, when it is in
     /// `scope`. A heading's end tag ends any heading.
     fn in_scope(&self, name: &str, scope: Scope) -> Option<usize> {
-        for i in (0..self.open.len()).rev() {
-            let e = &self.open[i];
-            let ends = !e.is_foreign()
-                && if is_heading(name) {
-                    is_heading(&e.name)
-                } else {
-                    e.name == name
-                };
-            if ends {
-                return Some(i);
-            }
-            if e.ends_scope(scope) {
-                return None;
-            }
-        }
-        None
+        let found = if is_heading(name) {
+            self.open.last_in(Group::Heading)
+        } else {
+            self.open.last_named(name)
+        };
+        self.scoped(found, scope)
     }
 }
 
@@ -1790,6 +2008,7 @@ impl Iterator for Tags<'_> {
 
     fn next(&mut self) -> Option<Tag> {
         let (start, mut end) = next_tag(self.html, self.pos)?;
+        self.begin_token();
         self.text(start);
         let cdata = self.html[start..].starts_with("<![CDATA[") && self.cdata_allowed();
         if cdata {
@@ -1800,8 +2019,10 @@ impl Iterator for Tags<'_> {
                 .map_or(self.html.len(), |e| body + e);
             end = (text_end + "]]>".len()).min(self.html.len());
             self.pos = body;
+            self.begin_token();
             self.text(text_end);
         }
+        self.begin_token();
         let tag = &self.html[start..end];
         let raw_close = self.raw_close.take() == Some(start);
         let (text_end, foreign) = if raw_close {
@@ -1882,6 +2103,13 @@ pub fn webkit_freeze_reason(html: &str) -> Option<String> {
     let (closes, nest) = match freeze {
         Freeze::Cell => ("closes a table cell", "the table"),
         Freeze::Select => ("closes a select in a table", "the select"),
+        Freeze::Reopen => {
+            return Some(format!(
+                "by its <{slash}{name}> at byte {at}, WebKit has reopened more than \
+                 {MAX_REOPENED} closed formatting elements such as <b>, which stalls \
+                 Canvas.app; close each formatting element where it should end"
+            ))
+        }
     };
     Some(format!(
         "its <{slash}{name}> at byte {at} {closes} nested past WebKit's \
@@ -2317,22 +2545,23 @@ mod tests {
         );
         assert_eq!(tags(&html).count(), 40_003);
         assert_eq!(card_label(&html).as_deref(), Some("end"));
-        // Whatever opens the elements, the stack never holds more than the
-        // cap, so no walk over it costs more than 509 steps.
-        for unit in [
-            "<div>",
-            "<span>",
-            "<b>",
-            "<svg><g>",
-            "<table><tr><td>",
-            "<table><caption>",
-            "<math><mi>",
+        // A token that opens one element keeps the stack at the cap. One
+        // that opens two, as a `<tr>` with the `<tbody>` it implies does,
+        // goes one past it each time.
+        for (unit, open) in [
+            ("<div>", MAX_OPEN),
+            ("<span>", MAX_OPEN),
+            ("<b>", MAX_OPEN),
+            ("<svg><g>", MAX_OPEN),
+            ("<table><caption>", MAX_OPEN),
+            ("<math><mi>", MAX_OPEN),
+            // 509, then one more for each of the 1,873 units past the cap.
+            ("<table><tr><td>", 2_382),
         ] {
             let html = unit.repeat(2_000);
             let mut scan = tags(&html);
-            while scan.next().is_some() {
-                assert!(scan.open.len() <= MAX_OPEN, "{unit}: {}", scan.open.len());
-            }
+            while scan.next().is_some() {}
+            assert_eq!(scan.open.len(), open, "{unit}");
         }
     }
 
@@ -2360,8 +2589,31 @@ mod tests {
         assert!(label < scan * 3, "card_label {label:?}, scan {scan:?}");
     }
 
+    /// Panics unless the stack's indexes are what a walk of its elements
+    /// finds.
+    fn assert_indexed(open: &OpenElements, context: &str) {
+        let ids: HashSet<usize> = open.iter().map(|e| e.id).collect();
+        let marked: HashSet<usize> = (0..open.open_ids.len())
+            .filter(|&id| open.holds(id))
+            .collect();
+        assert_eq!(marked, ids, "ids: {context:.60}");
+        let mut names: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, e) in open.iter().enumerate().filter(|(_, e)| !e.is_foreign()) {
+            names.entry(e.name.clone()).or_default().push(i);
+        }
+        let mut indexed = open.names.clone();
+        indexed.retain(|_, list| !list.is_empty());
+        assert_eq!(indexed, names, "names: {context:.60}");
+        for (g, list) in open.groups.iter().enumerate() {
+            let walked: Vec<usize> = (0..open.len())
+                .filter(|&i| open[i].groups & (1 << g) != 0)
+                .collect();
+            assert_eq!(*list, walked, "group {g}: {context:.60}");
+        }
+    }
+
     #[test]
-    fn the_template_count_matches_the_open_elements() {
+    fn the_indexes_match_the_open_elements() {
         for html in [
             "<template><div><template><b>x</template></div></template>y",
             "<div><template><table><tr><td>x</template></div>",
@@ -2369,6 +2621,10 @@ mod tests {
             "<template><a>x<div><a>y</a></div></template>z",
             "<template><form><div>x</form></div></template><form>y</form>",
             "<svg><template><foreignObject><template>x</svg></template>",
+            "<b><i><u><s><div>x</b>y</div><a>1<p><a>2</p><h1><h2>z</h3>",
+            "<b><div><div><div><div><div><div><div><div><div><div>x</b>y",
+            "<ul><li><div><li><dl><dd><dt>x</dl><select><option>a<optgroup>b</select>",
+            "<form><div></form><p>x</p><table><caption>y</caption><col><tr><td>z</table>",
             &format!("{}<template>x</div></template>", "<div>".repeat(600)),
             &format!("<template>{}</template>x", "<b><i>".repeat(400)),
             &format!(
@@ -2376,56 +2632,57 @@ mod tests {
                 "<template><div>".repeat(400),
                 "</template>".repeat(400)
             ),
+            &format!("{}<b><i><u><span>x<p>y</b>z", "<div>".repeat(520)),
         ] {
             let mut scan = tags(html);
             while scan.next().is_some() {
-                let walked = scan.open.iter().filter(|e| e.is_template()).count();
-                assert_eq!(scan.open.templates, walked, "{html:.60}");
+                assert_indexed(&scan.open, html);
             }
         }
     }
 
     #[test]
-    fn every_change_to_the_open_elements_keeps_the_template_count() {
-        // Each change, on a stack holding HTML and SVG templates, whether or
-        // not a tag can make it remove one.
-        let element = |id, name: &str, ns| Element {
-            id,
-            name: name.to_string(),
-            ns,
-            point: Point::None,
-            special: false,
-        };
+    fn every_change_to_the_open_elements_keeps_the_indexes() {
+        let element = |id, name: &str, ns| Element::new(id, name, ns, Point::None);
         let mut open = OpenElements::default();
         open.push(element(0, "template", Ns::Html));
         open.push(element(1, "template", Ns::Svg));
-        open.insert(1, element(2, "template", Ns::Html));
+        open.push(element(2, "td", Ns::Html));
         open.push(element(3, "div", Ns::Html));
-        assert_eq!(open.templates, 2);
-        open.remove(1);
-        assert_eq!(open.templates, 1);
-        open.retain(|e| e.id != 0);
-        assert_eq!(open.templates, 0);
-        open.push(element(4, "template", Ns::Html));
+        open.push(element(4, "b", Ns::Html));
+        assert_indexed(&open, "push");
+        assert_eq!(open.remove(1).id, 1);
+        assert_indexed(&open, "remove");
+        open.rebuild_from(1, |above| {
+            above[0].id = 7;
+            above.swap(1, 2);
+            above.push(element(5, "h2", Ns::Html));
+        });
+        assert_indexed(&open, "rebuild");
+        assert_eq!(open.last_in(Group::Heading), Some(4));
+        assert_eq!(open.first_in_above(Group::Special, 0), Some(1));
         open.truncate(1);
-        assert_eq!((open.len(), open.templates), (1, 0));
+        assert_indexed(&open, "truncate");
+        assert!(open.in_template() && !open.holds(7));
     }
 
     #[test]
     fn a_long_list_of_formatting_elements_scans_in_one_pass() {
         // Distinct attributes keep every `<b>` listed. Past the depth cap
-        // each text run reopens the 300 closed ones, as the browser does, but
-        // only the newest stays open, so it pushes one element instead of
-        // 300 and checks each entry against the stack in one step, not 509.
+        // each `<b>` closes the one before it, and the first text run reopens
+        // the 292 closed ones, as the browser does: they open inside one
+        // another in one token, so all stay open and the stack holds 800.
+        // From then on each text reopens only the `<b>` its `<div>` closed,
+        // and checks each entry against the stack in one step, not 800.
         let bs: String = (0..800).map(|i| format!("<b id={i}>")).collect();
         let html = bs + &"<div>x</div>".repeat(4_000);
         let mut scan = tags(&html);
         let mut n = 0;
         while scan.next().is_some() {
             n += 1;
-            assert!(scan.open.len() <= MAX_OPEN);
+            assert!(scan.open.len() <= 800);
         }
-        assert_eq!(n, 8_800);
+        assert_eq!((n, scan.open.len()), (8_800, 800));
         // Noah's Ark compares each new entry with every one before it, as
         // the browser does, one hash at a time.
         let bs: String = (0..5_000).map(|i| format!("<b id={i}>t")).collect();
@@ -2539,6 +2796,98 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// The elements open around text at the end of `html`, outermost first,
+    /// a run of one name written `name*count`: the chain of parents WebKit
+    /// gives that text, less the frame's `<html>`, `<body>` and wrapper.
+    fn chain_at_end(html: &str) -> String {
+        let mut scan = tags(html);
+        while scan.next().is_some() {}
+        scan.begin_token();
+        scan.text(html.len());
+        let mut runs: Vec<(&str, usize)> = Vec::new();
+        for e in scan.open.iter() {
+            match runs.last_mut() {
+                Some((name, n)) if *name == e.name => *n += 1,
+                _ => runs.push((&e.name, 1)),
+            }
+        }
+        runs.iter()
+            .map(|&(name, n)| match n {
+                1 => name.to_string(),
+                _ => format!("{name}*{n}"),
+            })
+            .collect::<Vec<_>>()
+            .join(">")
+    }
+
+    #[test]
+    fn the_depth_cap_closes_no_element_its_own_token_opened() {
+        // WebKit attaches a token's nodes when the token ends, and its depth
+        // cap closes the innermost element only when that has a parent, so
+        // what one token opens stays open past the 509 a card's `<div>`s
+        // leave. Each chain is the one WebKit builds around the final text:
+        // Canvas.app's for the cases without a table, Playwright's for the
+        // tables, since a table past the cap can freeze Canvas.app.
+        let deep = |k: usize, tail: &str| format!("{}{tail}", "<div>".repeat(k));
+        for (k, tail, chain) in [
+            // The first copy reopened before text closes the `<span>`; each
+            // later one goes inside the copy before it.
+            (509, "<b><i><u><span>Q", "div*508>b>i>u"),
+            (509, "<b><i><u><span><p>Q", "div*508>b>i>u"),
+            // So does the start tag the copies open before.
+            (509, "<b><i><u><span><em>Q", "div*508>b>i>u>em"),
+            (509, "<b><i><u><span><svg><g>Q", "div*508>b>i>u>g"),
+            (508, "<b><i><u><span><s>Q1<em>Q", "div*508>b>i>u>em"),
+            (
+                509,
+                "<b id=1><b id=2><b id=3><b id=4><span>Q1<div>Q2</div>Q",
+                "div*507>b*4",
+            ),
+            (509, "<b><i><span>Q1</b>Q", "div*508>i"),
+            (505, "<a>x<div><a>Q", "div*506>a"),
+            // The `<tbody>` a `<tr>` implies keeps the row past the cap, then
+            // the cell, which the cap puts beside the closed row.
+            (507, "<table><tr><td>Q", "div*507>table>tbody>td"),
+            (506, "<table><col><col><tr><td>Q", "div*506>table>tbody>td"),
+            (508, "<table><tr><td>Q", "div*508>tbody>td"),
+            (507, "<table><td>Q", "div*507>table>tbody>tr>td"),
+            (505, "<table><tr><td>Q", "div*505>table>tbody>tr>td"),
+        ] {
+            assert_eq!(chain_at_end(&deep(k, tail)), chain, "{k} {tail}");
+        }
+        // With the `<tbody>` open past the cap, an end tag the cell mode
+        // reads closes a section or table the cap left in table scope, and
+        // finds the cell closed.
+        for tail in [
+            "<table><tr><td><svg></tbody>",
+            "<table><tr></tr><tr><td><svg></table>",
+        ] {
+            let html = deep(507, tail);
+            assert_eq!(webkit_freeze(&html), html.rfind("</"), "{tail}");
+        }
+    }
+
+    #[test]
+    fn reopening_a_million_formatting_elements_freezes_webkit() {
+        // Each text run in a `<div>` reopens the 400 `<b>`s the `</p>`
+        // closed, and the `</div>` closes them again: WebKit builds 400
+        // copies per run, and the 2,501st run takes it past 1,000,000.
+        let bs: String = (0..400).map(|i| format!("<b id={i}>")).collect();
+        let page = |runs: usize| format!("<p>{bs}</p>{}", "<div>x</div>".repeat(runs));
+        assert_eq!(webkit_freeze(&page(2_500)), None);
+        let html = page(2_600);
+        let at = html.len() - 99 * "<div>x</div>".len() - "</div>".len();
+        assert_eq!(webkit_freeze(&html), Some(at));
+        assert_eq!(
+            webkit_freeze_reason(&html),
+            Some(format!(
+                "by its </div> at byte {at}, WebKit has reopened more than 1000000 \
+                 closed formatting elements such as <b>, which stalls Canvas.app; \
+                 close each formatting element where it should end"
+            ))
+        );
     }
 
     #[test]
@@ -2957,6 +3306,24 @@ mod tests {
                 "{html}: {names:?}"
             );
         }
+        // The agency leaves a formatting element below a cell or table
+        // where it is, and moves one above a block at most eight times. Each chain is the
+        // one WebKit builds around the final text.
+        for (html, chain) in [
+            ("<b><table><tr><td>x</b>", "b>table>tbody>tr>td"),
+            ("<b><table></b><tr><td>x", "b>table>tbody>tr>td"),
+            (
+                "<b><div><div><div><div><div><div><div><div><div><div>x</b>",
+                "div*8>b>div*2",
+            ),
+        ] {
+            assert_eq!(chain_at_end(html), chain, "{html}");
+        }
+        // A row in a template closes nothing below the template.
+        assert_eq!(
+            card_title("<template><tr><td>hidden</td></tr></template>shown"),
+            "shown"
+        );
     }
 
     #[test]
