@@ -203,9 +203,13 @@ beside the terminal all day.
   `data:` URIs in one `<script type="importmap">` in the head (each module's
   specifiers read by oxc, `canvasd/src/esm.rs`, each one resolved from the module's
   URL through the card's own import maps, scopes included (`canvasd/src/import_map.rs`,
-  the standard's resolution; an entry relative to the page leaves the specifier to
-  the page) and written as the absolute URL it leads to; the element becomes
-  `import "<url>";`; the card's own import maps merge into that one, theirs winning,
+  the standard's resolution) and, once every card map is read, written as the
+  absolute URL it leads to, or, where the page's map would send that URL
+  elsewhere, as the reserved name `canvas-export:<url>` the page's map holds
+  exactly (`PageMap::specifier`); one that leads to nothing the card could load (an
+  address relative to the page, which the card CSP refuses, a blocked entry, a bare
+  name with no entry) is written `canvas-export:blocked`, mapped to null; the
+  element becomes `import "<url or name>";`; the card's own import maps merge into that one, theirs winning,
   each of their addresses naming a fetched module rewritten to its `data:` URI;
   every module those maps name, and every one the card's inline `<script
   type="module">` imports, is fetched too, a name the inline module used getting

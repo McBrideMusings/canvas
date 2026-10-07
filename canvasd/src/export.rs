@@ -11,7 +11,7 @@
 //! the injected file reader and downloader, which are the test seams.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
 use std::ops::Range;
 use std::path::Path;
@@ -52,10 +52,18 @@ pub fn export_card(
     let mut warnings = Vec::new();
     let mut cdn = Cdn::new(fetch, Duration::from_secs(EXPORT_DOWNLOAD_SECS));
     let Rewritten {
-        body,
+        mut body,
         card_maps,
         aliases,
+        roots,
     } = rewrite(card, &read, &mut cdn, &mut warnings);
+    let page_map = PageMap::new(&card_maps, &cdn.modules, &aliases);
+    let mut names = std::mem::take(&mut cdn.module_names);
+    // Last first, so each offset still holds when its import goes in.
+    for (at, key) in roots.iter().rev() {
+        let import = module_import(&page_map.specifier(Some(key), &mut names));
+        body.insert_str(*at, &escape_raw(&import, "script"));
+    }
     // A file one reference left as a link while another put it in the page
     // isn't missing from the page.
     warnings
@@ -65,7 +73,7 @@ pub fn export_card(
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     html.push_str(&format!("<title>{title}</title>"));
-    if let Some(map) = page_import_map(&card_maps, &cdn.modules, &aliases) {
+    if let Some(map) = page_map.finish(&cdn.modules, names) {
         html.push_str(&format!("<script type=\"importmap\">{map}</script>"));
     }
     // A post replies to the viewer with parent.postMessage; at the top level
@@ -130,6 +138,7 @@ fn rewrite<F: cdn::Fetch>(
     let mut drop_end_tag = false;
     // Each name a card module imports a fetched module by, with its URL.
     let mut aliases = Vec::new();
+    let mut roots = Vec::new();
 
     let mut scan = tags(html);
     while let Some(Tag {
@@ -251,12 +260,13 @@ fn rewrite<F: cdn::Fetch>(
                 };
                 // A module's own imports resolve against its URL, which an
                 // inlined body would lose: the import map serves it and
-                // the modules it reaches, and the element imports it.
+                // the modules it reaches, and the element imports it, once
+                // the page's map is known.
                 if kind == "module" {
                     match cdn.module_graph(&url, warnings) {
                         Some(key) => {
                             out.push_str(&without_attr(tag, "src", src));
-                            out.push_str(&escape_raw(&module_import(&key), "script"));
+                            roots.push((out.len(), key));
                             pos = text_end.unwrap_or(end);
                         }
                         None => out.push_str(tag),
@@ -339,6 +349,7 @@ fn rewrite<F: cdn::Fetch>(
         body: out,
         card_maps,
         aliases,
+        roots,
     }
 }
 
@@ -351,6 +362,9 @@ struct Rewritten {
     /// Each name the card's inline modules import a fetched module by, with
     /// the module's URL.
     aliases: Vec<(String, String)>,
+    /// Each module script whose src the import map serves: where in the body
+    /// its import goes, and the key of the module it imports.
+    roots: Vec<(usize, String)>,
 }
 
 /// Fetches each module on the CDN hosts the card's inline module `source`
@@ -530,7 +544,11 @@ fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Media>>(
                     // The page's import map serves the module and what it
                     // reaches; a `data:` src can't resolve them itself.
                     "module" => {
-                        let import = module_import(&cdn.module_graph(&url, warnings)?);
+                        // Inside a `data:` URI it can't wait for the
+                        // page's map, so it imports by name.
+                        let key = cdn.module_graph(&url, warnings)?;
+                        let import = module_import(&module_name(Some(&key)));
+                        cdn.module_names.insert(Some(key));
                         data_uri("text/javascript", import.as_bytes())
                     }
                     _ => cdn.inline(&url, warnings, |cdn, bytes, warnings| {
@@ -571,10 +589,39 @@ fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Media>>(
     })
 }
 
-/// The body of a module script that imports the module the page's import
-/// map keeps under `key`.
-fn module_import(key: &str) -> String {
-    format!("import {};", serde_json::to_string(key).unwrap_or_default())
+/// The body of a module script that imports `specifier`.
+fn module_import(specifier: &str) -> String {
+    format!(
+        "import {};",
+        serde_json::to_string(specifier).unwrap_or_default()
+    )
+}
+
+/// A module the page's import map serves, fetched from `url`: its `source`,
+/// and for each of its specifiers, where it sits in the source and the URL
+/// the card's maps resolve it to from `url` (None when they resolve it to
+/// nothing the card could load: an address relative to the page, which its
+/// CSP refuses, a blocked entry, a bare name with no entry, or a URL that
+/// isn't http(s)).
+struct Module {
+    url: String,
+    source: String,
+    imports: Vec<(Range<usize>, Option<String>)>,
+}
+
+/// The name the page's import map keeps what an import of `target` loads
+/// under, where the page's map would send `target` itself elsewhere:
+/// `target` after a reserved scheme; `canvas-export:blocked` for None. Only
+/// an entry named exactly matches a URL of a scheme that isn't special, so
+/// no key of the card's maps, prefix keys included, reaches one.
+fn module_name(target: Option<&str>) -> String {
+    match target {
+        // A key ending in `/` is a prefix, which a `data:` URI can't be the
+        // address of; an empty fragment ends it instead.
+        Some(url) if url.ends_with('/') => format!("canvas-export:{url}#"),
+        Some(url) => format!("canvas-export:{url}"),
+        None => "canvas-export:blocked".to_string(),
+    }
 }
 
 /// `bytes` as a UTF-8 `data:` URI of type `mime`.
@@ -712,11 +759,13 @@ mod record {
         /// an import that wrote links can tell whether room would fix them.
         linked: Vec<Link>,
         /// Every module a module script reaches on the CDN hosts, in the order
-        /// fetched, as its URL and its source with each URL-like specifier
-        /// written absolute, for the page's import map.
-        pub(super) modules: Vec<(String, String)>,
+        /// fetched, for the page's import map.
+        pub(super) modules: Vec<Module>,
         /// Every module URL `module_graph` has taken up, so each is read once.
         pub(super) module_seen: HashSet<String>,
+        /// What each [`module_name`] written into the body so far loads,
+        /// None for one that loads nothing.
+        pub(super) module_names: BTreeSet<Option<String>>,
         /// The card's import maps read so far, merged, which a module's
         /// specifiers resolve through.
         pub(super) import_map: ImportMap,
@@ -737,6 +786,7 @@ mod record {
                 linked: Vec::new(),
                 modules: Vec::new(),
                 module_seen: HashSet::new(),
+                module_names: BTreeSet::new(),
                 import_map: ImportMap::default(),
             }
         }
@@ -1061,14 +1111,14 @@ impl<F: cdn::Fetch> Cdn<F> {
     }
 
     /// Fetches the module at `url` and every module on the CDN hosts it
-    /// reaches, each kept in `modules` with every specifier that leads to an
-    /// http(s) URL written as that absolute URL, resolved from its own URL
-    /// through the card's import maps, since the import map serves it from a
-    /// `data:` URI, with no path to resolve a relative one against and no URL
-    /// a scope would match. Answers the key `url` is kept under, or None
-    /// when it can't be fetched or read (after a `fetch-failed` warning
-    /// naming it). A module it reaches that can't stays out of the map, so
-    /// its absolute URL loads from the network.
+    /// reaches, each kept in `modules` with what each of its specifiers
+    /// resolves to from its own URL through the card's import maps, since
+    /// the import map serves it from a `data:` URI, with no path to resolve
+    /// a relative one against and no URL a scope would match. Answers the key
+    /// `url` is kept under, or None when it can't be fetched or read (after a
+    /// `fetch-failed` warning naming it). A module it reaches that can't
+    /// stays out of the map, so an import of it loads its URL from the
+    /// network.
     fn module_graph(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<String> {
         let key = module_url(url::Url::parse(url).ok()?)?;
         let mut queue = VecDeque::new();
@@ -1088,8 +1138,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                             });
                         }
                         let base = url::Url::parse(&cdn.source_url(&next)).ok();
-                        let mut text = String::with_capacity(source.len());
-                        let mut copied = 0;
+                        let mut imports = Vec::with_capacity(module.specifiers.len());
                         for s in module.specifiers {
                             // Resolved here, scopes and all: from a `data:`
                             // URI no scope would match.
@@ -1102,20 +1151,13 @@ impl<F: cdn::Fetch> Cdn<F> {
                                     queue.push_back(target.clone());
                                 }
                             }
-                            // Where the page decides, the specifier is still
-                            // written absolute when it is a URL.
-                            let written = target.or_else(|| {
-                                import_map::url_like(&s.value, base.as_ref()).and_then(module_url)
-                            });
-                            let Some(written) = written else {
-                                continue;
-                            };
-                            text.push_str(&source[copied..s.range.start]);
-                            text.push_str(&serde_json::to_string(&written).unwrap_or_default());
-                            copied = s.range.end;
+                            imports.push((s.range, target));
                         }
-                        text.push_str(&source[copied..]);
-                        cdn.modules.push((next.clone(), text));
+                        cdn.modules.push(Module {
+                            url: next.clone(),
+                            source,
+                            imports,
+                        });
                         Some(())
                     }
                     Err(e) => {
@@ -1129,7 +1171,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                 }
             });
         }
-        self.modules.iter().any(|(k, _)| *k == key).then_some(key)
+        self.modules.iter().any(|m| m.url == key).then_some(key)
     }
 
     /// The stylesheet `url` linked with body `bytes`, its references
@@ -2038,72 +2080,133 @@ fn computed_reason(source: &str, computed: &[Range<usize>]) -> Option<String> {
     ))
 }
 
-/// The page's one import map: the card's own maps merged
-/// ([`import_map::merge`]), each of their addresses that names a fetched
-/// module rewritten to its `data:` URI (an import map maps a name once, so
-/// one leading to the module's URL would load it from the network); then
-/// each name the card's inline modules reached a fetched module by, and each
-/// fetched module under its URL, as its `data:` URI wherever the card's maps
-/// don't already name it. None when there is nothing to map.
-fn page_import_map(
-    card_maps: &[Map<String, Value>],
-    modules: &[(String, String)],
-    aliases: &[(String, String)],
-) -> Option<String> {
-    if card_maps.is_empty() && modules.is_empty() {
-        return None;
-    }
-    let data: HashMap<&str, String> = modules
-        .iter()
-        .map(|(url, source)| {
-            let uri = format!("data:text/javascript;base64,{}", base64(source.as_bytes()));
-            (url.as_str(), uri)
-        })
-        .collect();
-    let to_data = |map: &mut Map<String, Value>| {
-        for (key, value) in map.iter_mut() {
-            let uri = match value {
-                Value::String(address) if !key.ends_with('/') => url::Url::parse(address)
-                    .ok()
-                    .and_then(|url| data.get(url.as_str())),
-                _ => None,
-            };
-            if let Some(uri) = uri {
-                *value = Value::String(uri.clone());
-            }
-        }
-    };
-    let mut merged = import_map::merge(card_maps);
-    if let Some(Value::Object(imports)) = merged.get_mut("imports") {
-        to_data(imports);
-    }
-    if let Some(Value::Object(scopes)) = merged.get_mut("scopes") {
-        for scope in scopes.values_mut() {
-            if let Value::Object(scope) = scope {
-                to_data(scope);
-            }
-        }
-    }
-    if !modules.is_empty() {
-        let imports = merged
-            .entry("imports")
-            .or_insert_with(|| Value::Object(Map::new()));
-        if let Value::Object(imports) = imports {
-            let named = aliases.iter().map(|(name, url)| (name, url));
-            let urls = modules.iter().map(|(url, _)| (url, url));
-            for (name, url) in named.chain(urls) {
-                if let Some(uri) = data.get(url.as_str()) {
+/// The page's one import map. [`PageMap::new`] merges the card's own maps
+/// ([`import_map::merge`]) and adds each name the card's inline modules
+/// reached a fetched module by, and each fetched module under its URL,
+/// wherever the card's maps don't already name it, every address still a
+/// URL, so it tells where the page sends a URL ([`PageMap::specifier`]).
+/// [`PageMap::finish`] writes the fetched modules out and makes each address
+/// naming one its `data:` URI (an import map maps a name once, so one
+/// leading to the module's URL would load it from the network).
+struct PageMap {
+    map: Map<String, Value>,
+    resolved: ImportMap,
+    /// Nothing to map: no card map and no fetched module.
+    empty: bool,
+}
+
+impl PageMap {
+    fn new(
+        card_maps: &[Map<String, Value>],
+        modules: &[Module],
+        aliases: &[(String, String)],
+    ) -> Self {
+        let mut map = import_map::merge(card_maps);
+        if !modules.is_empty() {
+            let imports = map
+                .entry("imports")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Value::Object(imports) = imports {
+                let named = aliases.iter().map(|(name, url)| (name, url));
+                let urls = modules.iter().map(|m| (&m.url, &m.url));
+                for (name, url) in named.chain(urls) {
                     imports
                         .entry(name.clone())
-                        .or_insert_with(|| Value::String(uri.clone()));
+                        .or_insert_with(|| Value::String(url.clone()));
                 }
             }
         }
+        PageMap {
+            resolved: ImportMap::parse(&map),
+            map,
+            empty: card_maps.is_empty() && modules.is_empty(),
+        }
     }
-    // `<` escaped so the map can't close its script element.
-    serde_json::to_string(&Value::Object(merged))
-        .ok()
-        .map(|json| json.replace('<', "\\u003c"))
+
+    /// What an import of `target` (see [`Module`]) is written as: the URL
+    /// itself where the page's map leaves it alone, so it loads the module
+    /// the card's did; else its [`module_name`], added to `names`. The page's
+    /// map resolves it from a `data:` URI, which no scope matches.
+    fn specifier(&self, target: Option<&str>, names: &mut BTreeSet<Option<String>>) -> String {
+        if let Some(url) = target {
+            if self
+                .resolved
+                .resolve(url, None)
+                .is_some_and(|u| u.as_str() == url)
+            {
+                return url.to_string();
+            }
+        }
+        names.insert(target.map(str::to_string));
+        module_name(target)
+    }
+
+    /// The map as the page writes it, each of `modules` written with its
+    /// specifiers ([`PageMap::specifier`]) as a `data:` URI, and each of
+    /// `names` mapped to its module's `data:` URI, its URL when the module
+    /// wasn't fetched, or null when it loads nothing. None when there is
+    /// nothing to map.
+    fn finish(mut self, modules: &[Module], mut names: BTreeSet<Option<String>>) -> Option<String> {
+        if self.empty {
+            return None;
+        }
+        let mut data: HashMap<&str, String> = HashMap::with_capacity(modules.len());
+        for m in modules {
+            let mut text = String::with_capacity(m.source.len());
+            let mut copied = 0;
+            for (range, target) in &m.imports {
+                let specifier = self.specifier(target.as_deref(), &mut names);
+                text.push_str(&m.source[copied..range.start]);
+                text.push_str(&serde_json::to_string(&specifier).unwrap_or_default());
+                copied = range.end;
+            }
+            text.push_str(&m.source[copied..]);
+            let uri = format!("data:text/javascript;base64,{}", base64(text.as_bytes()));
+            data.insert(&m.url, uri);
+        }
+        let to_data = |map: &mut Map<String, Value>| {
+            for (key, value) in map.iter_mut() {
+                let uri = match value {
+                    Value::String(address) if !key.ends_with('/') => url::Url::parse(address)
+                        .ok()
+                        .and_then(|url| data.get(url.as_str())),
+                    _ => None,
+                };
+                if let Some(uri) = uri {
+                    *value = Value::String(uri.clone());
+                }
+            }
+        };
+        if let Some(Value::Object(imports)) = self.map.get_mut("imports") {
+            to_data(imports);
+        }
+        if let Some(Value::Object(scopes)) = self.map.get_mut("scopes") {
+            for scope in scopes.values_mut() {
+                if let Value::Object(scope) = scope {
+                    to_data(scope);
+                }
+            }
+        }
+        if !names.is_empty() {
+            let imports = self
+                .map
+                .entry("imports")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Value::Object(imports) = imports {
+                for target in &names {
+                    let address = match target {
+                        Some(url) => Value::String(data.get(url.as_str()).unwrap_or(url).clone()),
+                        None => Value::Null,
+                    };
+                    imports.insert(module_name(target.as_deref()), address);
+                }
+            }
+        }
+        // `<` escaped so the map can't close its script element.
+        serde_json::to_string(&Value::Object(self.map))
+            .ok()
+            .map(|json| json.replace('<', "\\u003c"))
+    }
 }
 
 /// A `<script>`'s `type`, trimmed and lowercased; empty when it has none.
@@ -2872,13 +2975,15 @@ mod tests {
         let want = format!(
             r#"<svg><style><foreignObject><script src="{}">.c{{}}</script><script type="module" src="{}"></script><link rel="stylesheet" href="data:text/css;charset=utf-8;base64,{}" media="print"><img src="data:image/png;base64,{}"><img><a href="https://e.com/" target="_blank" rel="noopener">w</a>l</foreignObject>.d{{}}</style></svg>"#,
             js(b"var s='</script>',t='<!--<SCRIPT>';"),
-            js(format!("import \"{LIT}\";").as_bytes()),
+            js(format!("import \"canvas-export:{LIT}\";").as_bytes()),
             base64(b".b{}"),
             base64(b"abc"),
         );
         assert!(r.html.contains(&want), "{}", r.html);
+        let map = page_map(&r.html);
+        assert_eq!(map["imports"][LIT], js_data("export const a=1;"));
         assert_eq!(
-            page_map(&r.html)["imports"][LIT],
+            map["imports"][format!("canvas-export:{LIT}")],
             js_data("export const a=1;")
         );
         assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
@@ -3068,7 +3173,8 @@ mod tests {
         assert_eq!(
             page_map(&r.html),
             serde_json::json!({"imports": {
-                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/a@1/+esm";export*from"https://cdn.jsdelivr.net/npm/lit@3/b.js";import{c}from"lit";import"https://example.com/x.js";const r=/import"\/npm\/x"/;"#),
+                LIT: js_data(r#"import"https://cdn.jsdelivr.net/npm/a@1/+esm";export*from"https://cdn.jsdelivr.net/npm/lit@3/b.js";import{c}from"canvas-export:blocked";import"https://example.com/x.js";const r=/import"\/npm\/x"/;"#),
+                "canvas-export:blocked": null,
                 "https://cdn.jsdelivr.net/npm/a@1/+esm": js_data(r#"export default 1;import("https://cdn.jsdelivr.net/npm/lazy/+esm");import"https://cdn.jsdelivr.net/npm/lit@3/+esm";"#),
                 "https://cdn.jsdelivr.net/npm/lit@3/b.js": js_data("export const b=2;"),
                 "https://cdn.jsdelivr.net/npm/lazy/+esm": js_data("export const z=3;"),
@@ -3177,9 +3283,10 @@ mod tests {
             _ => Err("HTTP 404".to_string()),
         };
         let r = export_card(&c, None, files, fetch);
-        let lit = js_data(r#"import"https://cdn.jsdelivr.net/npm/b/+esm";"#);
-        // The card sends b to its own file, so b isn't fetched; its "lit"
-        // names the inlined module.
+        let lit = js_data(r#"import"canvas-export:blocked";"#);
+        // The card sends b to its own file, which its CSP refuses, so b isn't
+        // fetched and lit's import of it loads nothing; its "lit" names the
+        // inlined module.
         assert_eq!(
             page_map(&r.html),
             serde_json::json!({
@@ -3188,6 +3295,7 @@ mod tests {
                     "https://cdn.jsdelivr.net/npm/b/+esm": "./mine.js",
                     "y": "./y.js",
                     LIT: lit,
+                    "canvas-export:blocked": null,
                 },
                 "scopes": {"/s/": {"x": "./x.js"}},
             })
@@ -3254,6 +3362,81 @@ mod tests {
                 },
                 "scopes": {PREFIX: {"dep": two}},
             })
+        );
+    }
+
+    #[test]
+    fn an_import_the_page_map_would_send_elsewhere_is_written_as_a_name() {
+        // From m.js the card sends "a" to x.js in one step, though x.js is
+        // itself a key; "dep" is blocked in m.js's scope though the imports
+        // map it; "g" reaches gone.js, which the imports send elsewhere.
+        let c = card(
+            r#"<script type="importmap">{"imports":{"a":"https://unpkg.com/x.js","https://unpkg.com/x.js":"https://unpkg.com/y.js","dep":"https://unpkg.com/y.js","https://unpkg.com/gone.js":"https://unpkg.com/y.js"},"scopes":{"https://unpkg.com/m.js":{"dep":null,"g":"https://unpkg.com/gone.js"}}}</script><script type="module" src="https://unpkg.com/m.js"></script><script type="module" src="https://unpkg.com/x.js"></script>"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            "https://unpkg.com/m.js" => {
+                Ok(br#"import"a";import"dep";import"g";import"https://unpkg.com/y.js";"#.to_vec())
+            }
+            "https://unpkg.com/x.js" => Ok(b"export const x=1;".to_vec()),
+            "https://unpkg.com/y.js" => Ok(b"export const y=1;".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let targets: Vec<_> = r.warnings.iter().map(|w| w.target.as_str()).collect();
+        assert_eq!(targets, ["https://unpkg.com/gone.js"]);
+        // The element sends x.js to the network, not through the map.
+        assert!(
+            r.html.contains(
+                r#"<script type="module">import "https://unpkg.com/m.js";</script><script type="module">import "canvas-export:https://unpkg.com/x.js";</script>"#
+            ),
+            "{}",
+            r.html
+        );
+        let x = js_data("export const x=1;");
+        let y = js_data("export const y=1;");
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({
+                "imports": {
+                    "a": x,
+                    "https://unpkg.com/x.js": y,
+                    "dep": y,
+                    "https://unpkg.com/gone.js": y,
+                    "https://unpkg.com/m.js": js_data(r#"import"canvas-export:https://unpkg.com/x.js";import"canvas-export:blocked";import"canvas-export:https://unpkg.com/gone.js";import"https://unpkg.com/y.js";"#),
+                    "https://unpkg.com/y.js": y,
+                    "canvas-export:https://unpkg.com/x.js": x,
+                    "canvas-export:https://unpkg.com/gone.js": "https://unpkg.com/gone.js",
+                    "canvas-export:blocked": null,
+                },
+                "scopes": {"https://unpkg.com/m.js": {"dep": null, "g": "https://unpkg.com/gone.js"}},
+            })
+        );
+    }
+
+    #[test]
+    fn a_name_for_a_url_ending_in_a_slash_is_no_prefix() {
+        // The card's prefix key blocks p/ from the page; m.js reaches it by "a".
+        let c = card(
+            r#"<script type="importmap">{"imports":{"a":"https://unpkg.com/p/","https://unpkg.com/p/":"https://unpkg.com/y.js"}}</script><script type="module" src="https://unpkg.com/m.js"></script>"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| match url {
+            "https://unpkg.com/m.js" => Ok(br#"import"a";"#.to_vec()),
+            "https://unpkg.com/p/" => Ok(b"export const p=1;".to_vec()),
+            _ => Err("HTTP 404".to_string()),
+        };
+        let r = export_card(&c, None, files, fetch);
+        let map = page_map(&r.html);
+        assert_eq!(
+            map["imports"]["https://unpkg.com/m.js"],
+            js_data(r#"import"canvas-export:https://unpkg.com/p/#";"#)
+        );
+        assert_eq!(
+            map["imports"]["canvas-export:https://unpkg.com/p/#"],
+            js_data("export const p=1;")
         );
     }
 
