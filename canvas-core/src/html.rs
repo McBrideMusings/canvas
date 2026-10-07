@@ -107,6 +107,7 @@ fn scan(html: &str, max_open: usize) -> Tags<'_> {
         form: None,
         mode: Mode::Body,
         templates: Vec::new(),
+        shadow_hosts: HashSet::new(),
         raw_close: None,
         freeze: None,
         reopened: 0,
@@ -182,6 +183,10 @@ pub struct Tags<'a> {
     /// Only `</template>` pops it, so like WebKit's it outlives a template
     /// the depth cap closed.
     templates: Vec<Mode>,
+    /// The ids of the elements a declarative shadow root is attached to,
+    /// `None` for the element the frame writes the card into (a page's
+    /// `<body>`). An element holds one root at most.
+    shadow_hosts: HashSet<Option<usize>>,
     /// Where the closing tag of the raw-text element just opened starts. The
     /// tree builder reads that tag in its "text" mode, which closes the
     /// element whatever the insertion mode would do with the tag.
@@ -512,6 +517,10 @@ struct Element {
     ns: Ns,
     point: Point,
     groups: u16,
+    /// A `<template>` that attached a declarative shadow root. WebKit pushes
+    /// it without ever attaching it, so it never gets a parent and the depth
+    /// cap never closes it: see [`Tags::insert`].
+    detached: bool,
 }
 
 /// An entry in the list of active formatting elements: the open or closed
@@ -540,6 +549,7 @@ impl Element {
             ns,
             point,
             groups: 0,
+            detached: false,
         };
         let html = ns == Ns::Html;
         let special = match ns {
@@ -781,12 +791,17 @@ impl Tags<'_> {
         if self.reconstructs(tag, name) {
             self.reconstruct();
         }
-        // A `<frame>` in a body is dropped, so nothing is inserted.
-        if name != "frame" {
+        // A `<frame>` in a body is dropped, so nothing is inserted, and a
+        // declarative shadow root's template is pushed without being attached.
+        let shadow_root = name == "template" && self.attach_shadow_root(tag);
+        if name != "frame" && !shadow_root {
             self.insert(tag, name);
         }
         if !VOID_TAGS.contains(&name) {
             let id = self.push_html(name);
+            if let Some(template) = self.open.elements.last_mut().filter(|_| shadow_root) {
+                template.detached = true;
+            }
             if FORMATTING_TAGS.contains(&name) {
                 self.push_formatting(id, name, tag);
             }
@@ -1010,14 +1025,40 @@ impl Tags<'_> {
     /// and it attaches a token's nodes when the token ends, so an element the
     /// same token opened stays open and the stack grows past the cap: the
     /// `<tbody>` a `<tr>` implies holds the row, and each formatting element
-    /// reopened before text holds the next.
+    /// reopened before text holds the next. A declarative shadow root's
+    /// template never gets a parent, so what goes inside it stays open too.
     fn insert(&mut self, tag: &str, name: &str) {
         if self.open.len() >= self.max_open
-            && self.open.last().is_some_and(|e| e.id < self.token_ids)
+            && self
+                .open
+                .last()
+                .is_some_and(|e| e.id < self.token_ids && !e.detached)
             && !self.fostered(tag, name)
         {
             self.open.pop();
         }
+    }
+
+    /// Attaches a declarative shadow root to the current node for the
+    /// `<template>` start tag `tag` when its `shadowrootmode` is `open` or
+    /// `closed` and the current node can host one and holds none yet, and
+    /// returns whether it did; otherwise the template is an ordinary one.
+    /// With nothing open the host is the frame's element around the card (a
+    /// page's `<body>`), which can.
+    fn attach_shadow_root(&mut self, tag: &str) -> bool {
+        let mode = find_attr_value(tag, "shadowrootmode")
+            .map(|v| decode_entities(&tag[v.range()]).to_ascii_lowercase());
+        if !matches!(mode.as_deref(), Some("open" | "closed")) {
+            return false;
+        }
+        let host = match self.open.last() {
+            None => None,
+            // An SVG or MathML current node here is an integration point,
+            // and none has a host's name.
+            Some(e) if is_shadow_host(&e.name) => Some(e.id),
+            Some(_) => return false,
+        };
+        self.shadow_hosts.insert(host)
     }
 
     /// Whether the start tag `tag` named `name` is foster-parented: in a
@@ -2047,6 +2088,56 @@ fn hidden_input(tag: &str, name: &str) -> bool {
             .is_some_and(|v| tag[v.range()].eq_ignore_ascii_case("hidden"))
 }
 
+/// Whether an HTML element named `name` can host a shadow root: one of the
+/// DOM's listed names, or a valid custom element name (a lowercase ASCII
+/// letter, then name characters including a `-`, and not one of the names
+/// SVG and MathML already use).
+fn is_shadow_host(name: &str) -> bool {
+    const HOSTS: &[&str] = &[
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "div",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "main",
+        "nav",
+        "p",
+        "section",
+        "span",
+    ];
+    const RESERVED: &[&str] = &[
+        "annotation-xml",
+        "color-profile",
+        "font-face",
+        "font-face-src",
+        "font-face-uri",
+        "font-face-format",
+        "font-face-name",
+        "missing-glyph",
+    ];
+    let name_char = |c: char| {
+        matches!(c,
+            '-' | '.' | '0'..='9' | '_' | 'a'..='z' | '\u{B7}'
+            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{37D}'
+            | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{203F}'..='\u{2040}'
+            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+    };
+    HOSTS.contains(&name)
+        || (name.starts_with(|c: char| c.is_ascii_lowercase())
+            && name.contains('-')
+            && name.chars().all(name_char)
+            && !RESERVED.contains(&name))
+}
+
 /// Whether the start tag `tag` named `name` ends foreign content: the HTML
 /// tags the tree builder never nests inside SVG or MathML.
 fn breaks_out(tag: &str, name: &str) -> bool {
@@ -2744,6 +2835,82 @@ mod tests {
             let mut scan = tags(&html);
             while scan.next().is_some() {}
             assert_eq!(scan.open.len(), open, "{unit}");
+        }
+    }
+
+    #[test]
+    fn depth_cap_never_closes_a_declarative_shadow_root() {
+        // Canvas.app's counts of the elements around the `<p>` in a card
+        // frame, its `<html>`, `<body>` and wrapper included, walking from a
+        // shadow root to its host. A template that attaches one is pushed
+        // past the cap and never closed, so each nested root goes deeper;
+        // an ordinary one is closed like any element.
+        let div = |n| "<div>".repeat(n);
+        let root = r#"<template shadowrootmode="open">"#;
+        for (html, ancestors) in [
+            (format!("{}{root}<p>x", div(600)), 512),
+            (format!("{}{root}{}<p>x", div(600), div(20)), 512),
+            (
+                format!("{}{}<p>x", div(600), format!("<div>{root}").repeat(20)),
+                531,
+            ),
+            (format!("{}{root}{}</template><p>x", div(600), div(20)), 511),
+            (format!("{}<template>{}<p>x", div(600), div(20)), 511),
+            (format!("{}<a>{root}{}<p>x", div(600), div(20)), 511),
+        ] {
+            let mut scan = tags(&html);
+            while scan.next().is_some() {}
+            assert_eq!(scan.open.last().map(|e| e.name.as_str()), Some("p"));
+            let inside = scan.open.iter().filter(|e| !e.detached).count();
+            assert_eq!(3 + inside - 1, ancestors, "{html}");
+        }
+    }
+
+    #[test]
+    fn shadow_root_needs_a_mode_and_a_host() {
+        // Which templates Canvas.app attached a shadow root for.
+        let attaches = |html: &str| {
+            let mut scan = tags(html);
+            while scan.next().is_some() {}
+            scan.open
+                .last()
+                .is_some_and(|e| e.is_template() && e.detached)
+        };
+        let root = |mode: &str| format!(r#"<template shadowrootmode="{mode}">"#);
+        for prefix in [
+            "",
+            "<div>",
+            "<p>",
+            "<h1>",
+            "<x-y>",
+            "<x-y.z_1>",
+            "<x-yé>",
+            "<svg><foreignObject><div>",
+            "<template><div>",
+        ] {
+            assert!(attaches(&format!("{prefix}{}", root("open"))), "{prefix}");
+        }
+        for mode in ["OPEN", "&#111;pen", "closed"] {
+            assert!(attaches(&format!("<div>{}", root(mode))), "{mode}");
+        }
+        for html in [
+            "<div><template shadowrootmode>".to_string(),
+            format!("<div>{}", root("bogus")),
+            format!("<li>{}", root("open")),
+            format!("<xy>{}", root("open")),
+            format!("<x-y$>{}", root("open")),
+            format!("<font-face>{}", root("open")),
+            format!("<table>{}", root("open")),
+            format!("<table><tr><td>{}", root("open")),
+            format!("<svg><foreignObject>{}", root("open")),
+            format!(
+                r#"<math><annotation-xml encoding="text/html">{}"#,
+                root("open")
+            ),
+            format!("{}</template>{}", root("open"), root("open")),
+            format!("<div>{}</template>{}", root("closed"), root("open")),
+        ] {
+            assert!(!attaches(&html), "{html}");
         }
     }
 
