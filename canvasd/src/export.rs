@@ -263,11 +263,13 @@ fn rewrite<F: cdn::Fetch>(
                     }
                     continue;
                 }
-                let body = cdn.inline(&url, warnings, |_, bytes, _| Some(bytes));
+                let body = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
+                    cdn.text(&url, &bytes, warnings)
+                });
                 match body {
                     Some(body) => {
                         out.push_str(&without_attr(tag, "src", src));
-                        out.push_str(&escape_raw(&String::from_utf8_lossy(&body), "script"));
+                        out.push_str(&escape_raw(&body, "script"));
                         // Whatever the element held is dropped with its src.
                         pos = text_end.unwrap_or(end);
                     }
@@ -280,7 +282,7 @@ fn rewrite<F: cdn::Fetch>(
                     continue;
                 };
                 let css = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
-                    Some(cdn.stylesheet(&url, &bytes, warnings))
+                    cdn.stylesheet(&url, &bytes, warnings)
                 });
                 match css {
                     Some(css) => {
@@ -551,7 +553,7 @@ fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Media>>(
                 .zip(find_attr_value(tag, "href"));
             href.and_then(|(url, href)| {
                 let uri = cdn.inline(&url, warnings, |cdn, bytes, warnings| {
-                    let css = cdn.stylesheet(&url, &bytes, warnings);
+                    let css = cdn.stylesheet(&url, &bytes, warnings)?;
                     charged_data_uri(cdn, &url, "text/css", css.as_bytes(), css.len(), warnings)
                 })?;
                 Some(replace_attr_value(tag, href, &uri))
@@ -1026,6 +1028,38 @@ impl<F: cdn::Fetch> Cdn<F> {
         }
     }
 
+    /// `url`'s body `bytes` as text, each run of bytes that isn't UTF-8 read
+    /// as one U+FFFD, through [`Cdn::charged`]. None when it would pass the
+    /// inlining total.
+    fn text(
+        &mut self,
+        url: &str,
+        bytes: &[u8],
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<String> {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        self.charged(url, text, bytes.len(), warnings).ok()
+    }
+
+    /// `text`, made from `url`'s body of `read` bytes, once the bytes it
+    /// grew by on its way into the page count toward the inlining total like
+    /// the body's own. Err with the bytes it needs in all, after a warning
+    /// naming `url`, when they would pass the total.
+    fn charged(
+        &mut self,
+        url: &str,
+        text: String,
+        read: usize,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Result<String, usize> {
+        let extra = text.len().saturating_sub(read);
+        if !self.charge(extra) {
+            self.warn(url, over_total_reason(), warnings);
+            return Err(read + extra);
+        }
+        Ok(text)
+    }
+
     /// Fetches the module at `url` and every module on the CDN hosts it
     /// reaches, each kept in `modules` with every specifier that leads to an
     /// http(s) URL written as that absolute URL, resolved from its own URL
@@ -1043,7 +1077,7 @@ impl<F: cdn::Fetch> Cdn<F> {
         }
         while let Some(next) = queue.pop_front() {
             self.inline(&next, warnings, |cdn, bytes, warnings| {
-                let source = String::from_utf8_lossy(&bytes);
+                let source = cdn.text(&next, &bytes, warnings)?;
                 match esm::module(&source) {
                     Ok(module) => {
                         if let Some(reason) = computed_reason(&source, &module.computed) {
@@ -1099,13 +1133,20 @@ impl<F: cdn::Fetch> Cdn<F> {
     }
 
     /// The stylesheet `url` linked with body `bytes`, its references
-    /// inlined by [`Cdn::css`] against the URL the body came from.
-    fn stylesheet(&mut self, url: &str, bytes: &[u8], warnings: &mut Vec<ExportWarning>) -> String {
+    /// inlined by [`Cdn::css`] against the URL the body came from. None when
+    /// its [`Cdn::text`] would pass the inlining total.
+    fn stylesheet(
+        &mut self,
+        url: &str,
+        bytes: &[u8],
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<String> {
+        let text = self.text(url, bytes, warnings)?;
         self.importing.push(url.to_string());
         let from = self.source_url(url);
-        let css = self.css(&String::from_utf8_lossy(bytes), Some(&from), 0, warnings);
+        let css = self.css(&text, Some(&from), 0, warnings);
         self.importing.pop();
-        css
+        Some(css)
     }
 
     /// [`Cdn::css`] of an SVG or MathML `<style>` written as `pieces`. The
@@ -1316,15 +1357,16 @@ impl<F: cdn::Fetch> Cdn<F> {
                 } else {
                     let (mut blocked, before) = (None, self.inlined());
                     let text = self.inline(u, warnings, |cdn, bytes, warnings| {
+                        // The closers, and any U+FFFD read for bytes that
+                        // aren't UTF-8, count toward the total like its bytes.
                         let closed = closed_at_end(&String::from_utf8_lossy(&bytes));
-                        // The closers, and any U+FFFD read for a byte that
-                        // isn't UTF-8, count toward the total like its bytes.
-                        let extra = closed.len().saturating_sub(bytes.len());
-                        if !cdn.charge(extra) {
-                            blocked = Some(Some(bytes.len() + extra));
-                            cdn.warn(u, over_total_reason(), warnings);
-                            return None;
-                        }
+                        let closed = match cdn.charged(u, closed, bytes.len(), warnings) {
+                            Ok(closed) => closed,
+                            Err(needed) => {
+                                blocked = Some(Some(needed));
+                                return None;
+                            }
+                        };
                         let linked = cdn.links().len();
                         cdn.importing.push(u.clone());
                         let from = cdn.source_url(u);
@@ -3765,6 +3807,57 @@ mod tests {
             .html
             .contains(r#"@import url("https://unpkg.com/b.css");"#));
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    #[test]
+    fn u_fffd_growth_counts_toward_the_inlining_total() {
+        // Half an asset of bytes that aren't UTF-8 reads as three halves of
+        // one: past the one asset of the total fifteen sheets leave, inside
+        // the two fourteen leave, where counting the decoded text on top of
+        // the body would pass it.
+        let mut bad = b"/*".to_vec();
+        bad.extend(vec![0xFF; MAX_ASSET_BYTES / 2]);
+        bad.extend(b"*/");
+        let rows = [
+            r#"<script src="https://unpkg.com/x"></script>"#,
+            r#"<link rel="stylesheet" href="https://unpkg.com/x">"#,
+            r#"<script type="module" src="https://unpkg.com/x"></script>"#,
+            r#"<style>@import "https://unpkg.com/x";</style>"#,
+        ];
+        for (sheets, fits) in [(15, false), (14, true)] {
+            let fill: String = (0..sheets)
+                .map(|n| format!(r#"<link rel="stylesheet" href="https://unpkg.com/big{n}.css">"#))
+                .collect();
+            for row in rows {
+                let c = card(&format!("{fill}{row}"), &[], &[]);
+                let bad = bad.clone();
+                let fetch = move |url: &str, _: Duration| match url {
+                    "https://unpkg.com/x" => Ok(bad.clone()),
+                    _ => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+                };
+                let r = export_card(&c, None, files, fetch);
+                assert!(
+                    r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+                    "{sheets} {row}: {}",
+                    r.html.len()
+                );
+                assert_eq!(r.html.contains(row), !fits, "{sheets} {row}");
+                let got: Vec<_> = r
+                    .warnings
+                    .iter()
+                    .map(|w| (w.target.as_str(), w.reason.as_str()))
+                    .collect();
+                let want = [(
+                    "https://unpkg.com/x",
+                    "skipped: the export already inlined 8 MB",
+                )];
+                assert_eq!(
+                    got,
+                    if fits { &want[..0] } else { &want[..] },
+                    "{sheets} {row}"
+                );
+            }
+        }
     }
 
     #[test]
