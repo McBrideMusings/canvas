@@ -456,11 +456,12 @@ mod tests {
     }
 
     /// A local HTTPS server for `localhost` under a test CA; `answer(n)`
-    /// says whether its `n`th connection (from 1) finishes the handshake and
-    /// answers `ok`, or is held open without a byte. Returns the URL, the
-    /// client settings that trust the CA, and the count of connections.
+    /// says whether its `n`th connection from the client (from 1) finishes
+    /// the handshake and answers `ok`, or is held open unanswered. Returns the
+    /// URL, the client settings that trust the CA and mark its connections,
+    /// and the count of those connections.
     fn tls_server(
-        answer: impl Fn(usize) -> bool + Send + 'static,
+        answer: impl Fn(usize) -> bool + Send + Sync + 'static,
     ) -> (String, Arc<rustls::ClientConfig>, Arc<AtomicUsize>) {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         let provider = || Arc::new(rustls::crypto::ring::default_provider());
@@ -485,40 +486,102 @@ mod tests {
                 include_bytes!("../tests/fixtures/tls/ca.der").to_vec(),
             ))
             .unwrap();
-        let client = Arc::new(
-            rustls::ClientConfig::builder_with_provider(provider())
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
-        );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!(
-            "https://localhost:{}/",
-            listener.local_addr().unwrap().port()
-        );
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("https://localhost:{port}/");
+        // Any local process may connect to the port, and a port watcher such
+        // as Portman.app does, a TLS probe included: only a ClientHello that
+        // offers this ALPN name is the client's.
+        let mark = format!("canvas-test-{port}").into_bytes();
+        let mut client = rustls::ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client.alpn_protocols = vec![mark.clone()];
         let seen = Arc::new(AtomicUsize::new(0));
         let counter = seen.clone();
+        let answer = Arc::new(answer);
+        let mark = Arc::new(mark);
         std::thread::spawn(move || {
-            let mut held = Vec::new();
-            for tcp in listener.incoming().flatten() {
-                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                if !answer(n) {
-                    held.push(tcp);
-                    continue;
-                }
-                let conn = rustls::ServerConnection::new(server.clone()).unwrap();
-                let mut tls = rustls::StreamOwned::new(conn, tcp);
-                let mut request = Vec::new();
-                let mut byte = [0u8; 1];
-                while !request.ends_with(b"\r\n\r\n") && tls.read(&mut byte).unwrap_or(0) == 1 {
-                    request.push(byte[0]);
-                }
-                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-                let _ = tls.flush();
+            for mut tcp in listener.incoming().flatten() {
+                let (server, counter, answer, mark) = (
+                    server.clone(),
+                    counter.clone(),
+                    answer.clone(),
+                    mark.clone(),
+                );
+                // A thread per connection, so another process's never stalls
+                // the client's.
+                std::thread::spawn(move || {
+                    let mut acceptor = rustls::server::Acceptor::default();
+                    let accepted = loop {
+                        if acceptor.read_tls(&mut tcp).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        match acceptor.accept() {
+                            Ok(Some(accepted)) => break accepted,
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
+                    };
+                    let ours = accepted
+                        .client_hello()
+                        .alpn()
+                        .is_some_and(|mut names| names.any(|name| name == mark.as_slice()));
+                    if !ours {
+                        return;
+                    }
+                    let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    if !answer(n) {
+                        // Held with no answer until the client drops it.
+                        let _ = std::io::copy(&mut tcp, &mut std::io::sink());
+                        return;
+                    }
+                    let Ok(conn) = accepted.into_connection(server) else {
+                        return;
+                    };
+                    let mut tls = rustls::StreamOwned::new(conn, tcp);
+                    let mut request = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !request.ends_with(b"\r\n\r\n") && tls.read(&mut byte).unwrap_or(0) == 1 {
+                        request.push(byte[0]);
+                    }
+                    let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                    let _ = tls.flush();
+                });
             }
         });
-        (url, client, seen)
+        (url, Arc::new(client), seen)
+    }
+
+    #[test]
+    fn the_test_server_counts_and_waits_on_only_the_clients_connections() {
+        // What a port watcher does: shake hands without the client's mark,
+        // and connect without sending a byte.
+        let (url, tls, seen) = tls_server(|_| true);
+        let port: u16 = url
+            .trim_start_matches("https://localhost:")
+            .trim_end_matches('/')
+            .parse()
+            .unwrap();
+        let mut unmarked = (*tls).clone();
+        unmarked.alpn_protocols.clear();
+        let mut probe =
+            rustls::ClientConnection::new(Arc::new(unmarked), "localhost".try_into().unwrap())
+                .unwrap();
+        let mut tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = probe.complete_io(&mut tcp);
+        let _silent = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        );
+        assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
     #[test]
