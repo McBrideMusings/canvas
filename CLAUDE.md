@@ -69,6 +69,10 @@ beside the terminal all day.
   it) runs each `eval/*.js` in that folder in the main window, so a script can
   drive the viewer without taking focus (`admin verify-app eval <js|->`), and a
   `save-path` file there answers the save dialog (empty for cancelled).
+  `verify-app.sh` runs each checkout's throwaway daemon and dev app in its own
+  `/tmp/cv-<8 hex hashed from the checkout's path>` (`CANVAS_VERIFY_DIR`
+  overrides it), so two checkouts verify at once; `eval "$(admin verify-app
+  env)"` exports that folder's `CANVAS_DATA_DIR` and `CANVAS_SOCKET`.
   `CANVAS_DEBUG_WINDOW=x,y` moves the main window there at start (onto a Retina
   screen). `scripts/clip-demo.sh` is the looping demo for a recorded clip: a
   throwaway daemon and app, four made-up cards, period 5.6s, starting at t0 once

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bash scripts/clip-demo.sh — the demo Canvas plays for a recorded clip (admin's
 # `kind = "clip"`). It is the launch command: it starts a throwaway daemon and dev
-# app through scripts/verify-app.sh (own socket under /tmp/canvas-verify, empty data
+# app through scripts/verify-app.sh (own socket under /tmp/canvas-clip, empty data
 # dir, so no real post can appear), puts the window on a Retina screen, hides the
 # update banner, then plays a fixed choreography with `canvas post` and repeats it
 # forever. It never takes the mouse, keyboard or focus.
@@ -35,7 +35,8 @@ mkdir -p "${work}"
 export CANVAS_DEBUG_WINDOW="${CLIP_DEMO_WINDOW:-300,200}"
 bash "${verify}" start
 trap 'bash "${verify}" stop >/dev/null' EXIT
-socket="$(bash "${verify}" env | sed 's/^export CANVAS_SOCKET=//')"
+eval "$(bash "${verify}" env)"
+socket="${CANVAS_SOCKET}"
 
 # --- demo content ---------------------------------------------------------
 

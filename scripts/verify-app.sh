@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# bash scripts/verify-app.sh <start|shot <png>|eval <js|->|stop|env> — run a throwaway canvas daemon
+# bash scripts/verify-app.sh <start|shot <png>|eval <js|->|env|dir|stop> — run a throwaway canvas daemon
 # and a dev Canvas.app on their own Unix socket, and capture the app window.
 #
 # Canvas has no browser-reachable port, so the app window is the only viewer;
 # this is how a change to the viewer, the daemon's API or the app shell is
-# looked at. Everything lives under /tmp/canvas-verify (short on purpose: a
-# Unix socket path is limited to about 100 characters) and never touches the
-# live daemon's socket.
+# looked at. Everything lives under /tmp/cv-<8 hex digits hashed from this
+# checkout's path>, or CANVAS_VERIFY_DIR when set, so each checkout runs its own
+# daemon and app and two checkouts can verify at once. The path stays short on
+# purpose (a Unix socket path is limited to about 100 characters) and never
+# touches the live daemon's socket. The dev app's localStorage (the theme, the
+# page choice) lives under ~/Library/WebKit/app and is shared by every checkout.
 #
-#   start       build both, start daemon and app, print the socket path
+#   start       build both, start daemon and app, print the folder and socket
 #   shot <png>  capture the app's "Canvas" window to <png> (no focus taken)
 #   eval <js|-> run a script in the app's main window (no focus taken); the
 #               debug app reads it from ${dir}/debug/eval within 200ms. A
 #               ${dir}/debug/save-path file answers an export's save dialog
 #               (its path; empty for cancelled) — see app/src-tauri/src/debug.rs
-#   env         print `export CANVAS_SOCKET=...` for driving it with `canvas post`
+#   env         print `export CANVAS_DATA_DIR=... CANVAS_SOCKET=...` and nothing
+#               else, for `eval "$(admin verify-app env)"` before `canvas post`
+#   dir         print the folder
 #   stop        kill exactly the two processes `start` recorded
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-dir="${CANVAS_VERIFY_DIR:-/tmp/canvas-verify}"
+dir="${CANVAS_VERIFY_DIR:-/tmp/cv-$(printf %s "${repo_root}" | shasum | cut -c1-8)}"
 socket="${dir}/canvasd.sock"
 
 case "${1:-}" in
@@ -31,6 +36,12 @@ case "${1:-}" in
     rm -rf "${dir}"
     mkdir -p "${dir}"
     cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
+    # The app's build script needs the release binary it bundles as a resource
+    # (tauri.conf.json) to exist, even though a debug app never installs it.
+    if [ ! -f "${repo_root}/target/release/canvas" ]; then
+      echo "verify-app: building target/release/canvas for the app's build (first start in this checkout)" >&2
+      cargo build -q --release --manifest-path "${repo_root}/Cargo.toml" -p canvas
+    fi
     cargo build -q --manifest-path "${repo_root}/app/src-tauri/Cargo.toml"
     export CANVAS_DATA_DIR="${dir}" CANVAS_SOCKET="${socket}"
     "${repo_root}/target/debug/canvas" daemon > "${dir}/daemon.log" 2>&1 &
@@ -41,7 +52,7 @@ case "${1:-}" in
     CANVAS_DEBUG_DIR="${dir}/debug" "${repo_root}/app/src-tauri/target/debug/app" > "${dir}/app.log" 2>&1 &
     echo $! > "${dir}/app.pid"
     sleep 3
-    echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), socket ${socket}"
+    echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), dir ${dir}, socket ${socket}"
     ;;
   shot)
     out="${2:?usage: bash scripts/verify-app.sh shot <png>}"
@@ -66,7 +77,10 @@ EOF
     mv "${tmp}" "${dir}/debug/eval/$(date +%s%N)-$$.js"
     ;;
   env)
-    echo "export CANVAS_SOCKET=${socket}"
+    printf 'export CANVAS_DATA_DIR=%q CANVAS_SOCKET=%q\n' "${dir}" "${socket}"
+    ;;
+  dir)
+    echo "${dir}"
     ;;
   stop)
     for name in app daemon; do
@@ -78,7 +92,7 @@ EOF
     echo "verify-app: stopped"
     ;;
   *)
-    echo "usage: bash scripts/verify-app.sh <start|shot <png>|eval <js|->|stop|env>" >&2
+    echo "usage: bash scripts/verify-app.sh <start|shot <png>|eval <js|->|env|dir|stop>" >&2
     exit 2
     ;;
 esac
