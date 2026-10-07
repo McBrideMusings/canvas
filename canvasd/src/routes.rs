@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::io::Read;
 use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
@@ -219,7 +220,13 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
         crate::export::export_card(
             &card,
             data.as_ref(),
-            |p| std::fs::read(p),
+            |p, limit| {
+                let mut bytes = Vec::new();
+                std::fs::File::open(p)?
+                    .take(limit + 1)
+                    .read_to_end(&mut bytes)?;
+                Ok(bytes)
+            },
             crate::cdn::fetch,
         )
     })

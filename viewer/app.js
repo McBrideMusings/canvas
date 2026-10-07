@@ -1181,12 +1181,13 @@
   }
 
   // What an export's warnings left out of the page, as "1 image and 2 CDN
-  // files", or "" when it left nothing out. A missing-image warning is an
-  // image or video the card names; a fetch-failed one a CDN script, stylesheet
-  // or font that stays a network link.
+  // files", or "" when it left nothing out. A missing-image or
+  // media-too-large warning is an image or video the card names; a
+  // fetch-failed one a CDN script, stylesheet or font that stays a network
+  // link.
   function exportGaps(warnings) {
     const count = (kind) => warnings.filter((w) => w.kind === kind).length;
-    const images = count("missing-image");
+    const images = count("missing-image") + count("media-too-large");
     const cdn = count("fetch-failed");
     const other = warnings.length - images - cdn;
     const parts = [];

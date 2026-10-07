@@ -180,7 +180,11 @@ beside the terminal all day.
   `<card_id>.html` by default, and prints `{"path", "cards": 1, "warnings"}`.
   Each `/api/cards/:id/images/:n` src becomes a base64 `data:` URI read from
   the card's stored path (a missing file is a `missing-image` warning and an
-  "image missing" placeholder), each `#canvas-open-<n>` anchor becomes a real
+  "image missing" placeholder; a file that would take the page's media past
+  `MAX_MEDIA_BYTES`, 32 MB in all, is never read whole and is a
+  `media-too-large` warning naming the cap with an "image left out"
+  placeholder, while later files that fit still go in; a video or source
+  left out either way loses its src), each `#canvas-open-<n>` anchor becomes a real
   `target="_blank"` link (http/https) or plain text (a local path), and a shim
   delivers the card's latest `canvas data` value as `canvas-data` and swallows
   `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`

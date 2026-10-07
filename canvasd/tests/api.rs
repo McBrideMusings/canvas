@@ -615,6 +615,50 @@ async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
 }
 
 #[tokio::test]
+async fn export_leaves_out_a_file_over_the_media_cap() {
+    let app = app();
+    let dir = std::env::temp_dir().join(format!("canvasd-media-cap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("clip.mov");
+    // Sparse, so the test writes nothing to disk.
+    std::fs::File::create(&clip)
+        .unwrap()
+        .set_len(canvas_core::MAX_MEDIA_BYTES as u64 + 1)
+        .unwrap();
+    let clip = clip.to_string_lossy().into_owned();
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/api/posts",
+            json!({
+                "session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code",
+                "html": "<video src=\"canvas-image:0\" controls></video>",
+                "images": [clip],
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Card = json_body(response).await;
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{}/export", card.id)))
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let export: canvas_core::ExportResult = json_body(response).await;
+    assert!(export.html.contains("<video controls></video>"));
+    assert_eq!(
+        export.warnings,
+        vec![canvas_core::ExportWarning {
+            kind: canvas_core::ExportWarningKind::MediaTooLarge,
+            target: clip,
+            reason: "over the 32 MB of images and videos one export inlines".into(),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn export_unknown_card_is_404() {
     let response = app().oneshot(get("/api/cards/nope/export")).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);

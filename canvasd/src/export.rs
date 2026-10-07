@@ -22,7 +22,7 @@ use canvas_core::html::{
 };
 use canvas_core::{
     base64, Card, ExportResult, ExportWarning, ExportWarningKind, EXPORT_DOWNLOAD_SECS,
-    MAX_ASSET_BYTES, MEDIA_EXTS,
+    MAX_ASSET_BYTES, MAX_MEDIA_BYTES, MEDIA_EXTS,
 };
 
 use crate::cdn;
@@ -35,11 +35,13 @@ const MAX_IMPORT_DEPTH: usize = 4;
 /// grow the page without bound.
 const MAX_INLINED_BYTES: usize = 16 * MAX_ASSET_BYTES;
 
-/// `fetch(url, timeout)` downloads one URL within `timeout`.
+/// `read(path, limit)` reads at most `limit + 1` bytes of one file, so an
+/// oversized file is never read whole; `fetch(url, timeout)` downloads one
+/// URL within `timeout`.
 pub fn export_card(
     card: &Card,
     data: Option<&serde_json::Value>,
-    read: impl Fn(&str) -> io::Result<Vec<u8>>,
+    read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
     fetch: impl Fn(&str, Duration) -> Result<Vec<u8>, String>,
 ) -> ExportResult {
     let mut warnings = Vec::new();
@@ -97,7 +99,7 @@ fn data_shim(value: &serde_json::Value) -> String {
 
 fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     card: &Card,
-    read: &impl Fn(&str) -> io::Result<Vec<u8>>,
+    read: &impl Fn(&str, u64) -> io::Result<Vec<u8>>,
     cdn: &mut Cdn<F>,
     warnings: &mut Vec<ExportWarning>,
 ) -> String {
@@ -106,6 +108,8 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
     let mut out = String::with_capacity(html.len());
     // One entry per open <a>: true when its tags are dropped (a local path).
     let mut anchors: Vec<bool> = Vec::new();
+    // Bytes of image and video files inlined so far.
+    let mut media_bytes = 0usize;
     let mut pos = 0usize;
     // Inside an SVG or MathML `<style>`, whose text holds markup: the
     // style's element id and everything written in it so far, kept until the
@@ -153,7 +157,7 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
         }
 
         match tag_name(tag).as_deref() {
-            Some(kind @ ("img" | "video" | "source")) => {
+            Some(element @ ("img" | "video" | "source")) => {
                 let Some(src) = find_attr_value(tag, "src") else {
                     out.push_str(tag);
                     continue;
@@ -166,11 +170,14 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                     continue;
                 };
                 let path = card.images.get(index).map(String::as_str).unwrap_or("");
-                match media_data_uri(path, read) {
-                    Ok(uri) => out.push_str(&replace_attr_value(tag, src, &uri)),
-                    Err(reason) => {
+                match media_data_uri(path, read, MAX_MEDIA_BYTES - media_bytes) {
+                    Ok((uri, len)) => {
+                        media_bytes += len;
+                        out.push_str(&replace_attr_value(tag, src, &uri))
+                    }
+                    Err((kind, reason)) => {
                         warnings.push(ExportWarning {
-                            kind: ExportWarningKind::MissingImage,
+                            kind,
                             target: path.to_string(),
                             reason,
                         });
@@ -178,9 +185,13 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        if kind == "img" {
+                        if element == "img" {
+                            let what = match kind {
+                                ExportWarningKind::MediaTooLarge => "image left out",
+                                _ => "image missing",
+                            };
                             out.push_str(&format!(
-                                "<span class=\"canvas-missing\" role=\"img\">image missing: {}</span>",
+                                "<span class=\"canvas-missing\" role=\"img\">{what}: {}</span>",
                                 escape_text(&name)
                             ));
                         } else {
@@ -1458,27 +1469,37 @@ fn escape_raw(text: &str, name: &str) -> String {
     out
 }
 
+/// The file at `path` as a `data:` URI and its size, when it fits in `room`
+/// bytes; otherwise the warning kind and reason.
 fn media_data_uri(
     path: &str,
-    read: &impl Fn(&str) -> io::Result<Vec<u8>>,
-) -> Result<String, String> {
+    read: &impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+    room: usize,
+) -> Result<(String, usize), (ExportWarningKind, String)> {
+    let missing = |reason: String| (ExportWarningKind::MissingImage, reason);
     if path.is_empty() {
-        return Err("the card has no file for this image".into());
+        return Err(missing("the card has no file for this image".into()));
     }
     let ext = Path::new(path)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if !MEDIA_EXTS.contains(&ext.as_str()) {
-        return Err(format!("not an image or video file: .{ext}"));
+        return Err(missing(format!("not an image or video file: .{ext}")));
     }
-    let bytes = read(path).map_err(|e| e.to_string())?;
+    let bytes = read(path, room as u64).map_err(|e| missing(e.to_string()))?;
+    if bytes.len() > room {
+        let cap = MAX_MEDIA_BYTES / (1024 * 1024);
+        let reason = if room == MAX_MEDIA_BYTES {
+            format!("over the {cap} MB of images and videos one export inlines")
+        } else {
+            format!("would take the page past the {cap} MB of images and videos one export inlines")
+        };
+        return Err((ExportWarningKind::MediaTooLarge, reason));
+    }
     let mime = mime_guess::from_path(path).first_or_octet_stream();
-    Ok(format!(
-        "data:{};base64,{}",
-        mime.essence_str(),
-        base64(&bytes)
-    ))
+    let uri = format!("data:{};base64,{}", mime.essence_str(), base64(&bytes));
+    Ok((uri, bytes.len()))
 }
 
 fn closing_name(tag: &str) -> String {
@@ -1504,7 +1525,7 @@ mod tests {
         }
     }
 
-    fn files(path: &str) -> io::Result<Vec<u8>> {
+    fn files(path: &str, _: u64) -> io::Result<Vec<u8>> {
         match path {
             "/x/a.png" => Ok(b"abc".to_vec()),
             _ => Err(io::Error::new(io::ErrorKind::NotFound, "No such file")),
@@ -1583,6 +1604,50 @@ mod tests {
         assert!(r.html.contains("image missing: gone.png"));
         assert!(!r.html.contains("<img"));
         assert!(r.html.contains("<title>Canvas post</title>"), "{}", r.html);
+    }
+
+    #[test]
+    fn media_past_the_page_cap_is_left_out_and_smaller_files_still_fit() {
+        // Each `/x/<n>.png` is `n` MB; the reader never hands back more than
+        // `limit + 1` bytes.
+        let read = |path: &str, limit: u64| {
+            let mb: usize = path[3..path.len() - 4].parse().unwrap_or(0);
+            let len = (mb * 1024 * 1024).min(limit as usize + 1);
+            Ok(vec![b'x'; len])
+        };
+        let c = card(
+            r#"<img src="/api/cards/c1/images/0"><img src="/api/cards/c1/images/1"><img src="/api/cards/c1/images/2"><img src="/api/cards/c1/images/3">"#,
+            &["/x/40.png", "/x/20.png", "/x/20.png", "/x/12.png"],
+            &[],
+        );
+        let r = export_card(&c, None, read, offline);
+        let reasons: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                (
+                    ExportWarningKind::MediaTooLarge,
+                    "/x/40.png",
+                    "over the 32 MB of images and videos one export inlines"
+                ),
+                (
+                    ExportWarningKind::MediaTooLarge,
+                    "/x/20.png",
+                    "would take the page past the 32 MB of images and videos one export inlines"
+                ),
+            ]
+        );
+        assert_eq!(r.html.matches("image left out: ").count(), 2);
+        assert!(r.html.contains("image left out: 40.png"));
+        // 20 MB then 12 MB: exactly the cap.
+        assert_eq!(
+            r.html.matches("<img src=\"data:image/png;base64,").count(),
+            2
+        );
     }
 
     #[test]
