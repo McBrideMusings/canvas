@@ -98,6 +98,7 @@ pub fn tags(html: &str) -> Tags<'_> {
         form: None,
         mode: Mode::Body,
         templates: Vec::new(),
+        raw_close: None,
         freeze: None,
     }
 }
@@ -157,6 +158,10 @@ pub struct Tags<'a> {
     /// Only `</template>` pops it, so like WebKit's it outlives a template
     /// the depth cap closed.
     templates: Vec<Mode>,
+    /// Where the closing tag of the raw-text element just opened starts. The
+    /// tree builder reads that tag in its "text" mode, which closes the
+    /// element whatever the insertion mode would do with the tag.
+    raw_close: Option<usize>,
     /// Set by the first tag the older WebKit Canvas.app runs reprocesses in
     /// the same mode forever: see [`Freeze`].
     freeze: Option<Freeze>,
@@ -718,15 +723,9 @@ impl Tags<'_> {
             Mode::Table | Mode::TableBody | Mode::Row if space && self.at_table() => return,
             Mode::ColumnGroup if space => return,
             Mode::ColumnGroup => {
-                if !self
-                    .open
-                    .last()
-                    .is_some_and(|e| !e.is_foreign() && e.name == "colgroup")
-                {
+                if !self.close_column_group() {
                     return;
                 }
-                self.open.pop();
-                self.mode = Mode::Table;
             }
             Mode::Select | Mode::SelectInTable => return,
             _ => {}
@@ -788,6 +787,23 @@ impl Tags<'_> {
             !e.is_foreign() && (names.contains(&e.name.as_str()) || e.name == "template")
         });
         self.open.truncate(keep.map_or(0, |i| i + 1));
+    }
+
+    /// Closes the column group for a tag or text the column group mode
+    /// doesn't take, as WebKit does: it closes the current element whatever
+    /// it is, not only a `<colgroup>`, so with the depth cap having closed
+    /// the column group it closes the element that held it. A `<template>`
+    /// current stays, and the tag or text is dropped; so does nothing open,
+    /// which the column group mode never meets, since the cap only closes
+    /// elements on a full stack. Returns whether it closed one; the mode is
+    /// then the table's.
+    fn close_column_group(&mut self) -> bool {
+        if self.open.last().is_none_or(Element::is_template) {
+            return false;
+        }
+        self.open.pop();
+        self.mode = Mode::Table;
+        true
     }
 
     /// Applies the table insertion modes' rules for the start tag `<name>`:
@@ -854,18 +870,10 @@ impl Tags<'_> {
                     self.open.truncate(i);
                     self.mode = Mode::Table;
                 }
-                Mode::ColumnGroup if !matches!(name, "col" | "template") => {
-                    // Only a `<colgroup>` still current is closed; under
-                    // anything else the tag is dropped.
-                    if !self
-                        .open
-                        .last()
-                        .is_some_and(|e| !e.is_foreign() && e.name == "colgroup")
-                    {
+                Mode::ColumnGroup if !matches!(name, "col" | "html" | "template") => {
+                    if !self.close_column_group() {
                         return false;
                     }
-                    self.open.pop();
-                    self.mode = Mode::Table;
                 }
                 Mode::Table | Mode::TableBody | Mode::Row => match name {
                     "caption" | "colgroup" | "tbody" | "tfoot" | "thead" => {
@@ -906,16 +914,7 @@ impl Tags<'_> {
                 (Mode::Template, _) => return true,
                 (Mode::ColumnGroup, "template") => return false,
                 (Mode::ColumnGroup, _) => {
-                    let current = self
-                        .open
-                        .last()
-                        .is_some_and(|e| !e.is_foreign() && e.name == "colgroup");
-                    if name == "col" || !current {
-                        return true;
-                    }
-                    self.open.pop();
-                    self.mode = Mode::Table;
-                    if name == "colgroup" {
+                    if name == "col" || !self.close_column_group() || name == "colgroup" {
                         return true;
                     }
                 }
@@ -1804,7 +1803,11 @@ impl Iterator for Tags<'_> {
             self.text(text_end);
         }
         let tag = &self.html[start..end];
-        let (text_end, foreign) = if tag.as_bytes()[1].is_ascii_alphabetic() {
+        let raw_close = self.raw_close.take() == Some(start);
+        let (text_end, foreign) = if raw_close {
+            self.open.pop();
+            (None, false)
+        } else if tag.as_bytes()[1].is_ascii_alphabetic() {
             tag_name(tag).map_or((None, false), |name| self.start_tag(tag, &name, end))
         } else {
             match tag.strip_prefix("</") {
@@ -1830,6 +1833,7 @@ impl Iterator for Tags<'_> {
             }
             (None, false)
         };
+        self.raw_close = text_end;
         self.pos = text_end.unwrap_or(end);
         Some(Tag {
             start,
@@ -3305,6 +3309,95 @@ mod tests {
                 !tags(&html).any(|t| &html[t.start..t.end] == "<b>"),
                 "{end}"
             );
+        }
+    }
+
+    #[test]
+    fn a_column_group_closes_whatever_the_depth_cap_left_current() {
+        // After 507 `<div>`s the cap closes the colgroup when `<col>` goes
+        // in, leaving the table current in the column group mode. Anything
+        // that mode doesn't take closes the table, as it would the colgroup,
+        // and `<style/>` then opens raw text: Canvas.app builds no `<b>`.
+        let deep = format!("{}<table><colgroup><col>", "<div>".repeat(507));
+        for tail in ["", "x", " ", "</div>", "</colgroup>", "</col>", "<col>"] {
+            for (label, html) in [
+                ("deep", format!("{deep}{tail}<style/><b>x</b></style>")),
+                (
+                    "shallow",
+                    format!("<table><colgroup><col>{tail}<style/><b>x</b></style>"),
+                ),
+            ] {
+                assert!(
+                    !tags(&html).any(|t| &html[t.start..t.end] == "<b>"),
+                    "{label} {tail:?}"
+                );
+            }
+        }
+        // After 506 `<div>`s and an outer template, the cap closes an inner
+        // template when `<col>` goes in, leaving a `<div>` current in the
+        // column group mode the inner template picked. Text or an end tag
+        // closes that `<div>`, leaving the outer template current; closing a
+        // third template then goes back to the column group mode, where
+        // `<style/>` is dropped (1 `<b>`). `<html>`, whitespace and `</col>`
+        // close nothing, so `<style/>` closes the `<div>` and opens raw text
+        // (0), as Canvas.app builds them.
+        for (mid, bs) in [
+            ("x", 1),
+            ("</span>", 1),
+            ("<html>", 0),
+            (" ", 0),
+            ("", 0),
+            ("</col>", 0),
+        ] {
+            let html = format!(
+                "{}<template><div><template><col>{mid}<template></template><style/>\
+                 </template></template><b>x</b>",
+                "<div>".repeat(506)
+            );
+            let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+            assert_eq!(
+                names.iter().filter(|n| **n == "<b>").count(),
+                bs,
+                "{mid:?}: {:?}",
+                &names[506..]
+            );
+        }
+    }
+
+    #[test]
+    fn a_template_the_depth_cap_closed_keeps_its_mode() {
+        // The cap closes the inner template, and its entry in the stack of
+        // template modes stays until a `</template>`, so closing a third
+        // template inside the outer one goes back to the inner one's mode.
+        // `<style/>` shows it: dropped in a column group with a template
+        // current (1 `<b>`), raw text in a body (0), as Canvas.app builds
+        // them. With 506 `<div>`s the `<col>` leaves a `<div>` current,
+        // which `<style/>` closes before opening raw text; with 508 the cap
+        // closes the outer template too.
+        let shapes = [
+            "<template><div><template><col>",
+            "<template><col><template><div></div>",
+            "<template><div><template><!----><col>",
+        ];
+        for (depth, bs) in [
+            (505, [1, 0, 1]),
+            (506, [0, 0, 0]),
+            (507, [1, 0, 1]),
+            (508, [0, 0, 0]),
+        ] {
+            for (shape, bs) in shapes.iter().zip(bs) {
+                let html = format!(
+                    "{}{shape}<template></template><style/></template></template><b>x</b>",
+                    "<div>".repeat(depth)
+                );
+                let names: Vec<&str> = tags(&html).map(|t| &html[t.start..t.end]).collect();
+                assert_eq!(
+                    names.iter().filter(|n| **n == "<b>").count(),
+                    bs,
+                    "{depth} {shape}: {:?}",
+                    &names[depth..]
+                );
+            }
         }
     }
 
