@@ -664,7 +664,7 @@ impl<'a> StylePiece<'a> {
     }
 }
 
-use record::Cdn;
+use record::{Added, Cdn};
 
 /// The warning's reason for a URL refused for the inlining total.
 fn over_total_reason() -> String {
@@ -676,8 +676,11 @@ fn over_total_reason() -> String {
 
 /// The part of [`Cdn`] that keeps the record of the page. A body comes out
 /// of it only inside [`Cdn::inline`], which takes the body's record back
-/// out when the caller throws the body away, so outside this module nothing
-/// can drop a body and leave it recorded as in the page.
+/// out when the caller throws the body away, and an inlined `@import` turns
+/// back into a link only through [`Cdn::import_making_room`] and
+/// [`Cdn::unlink`], which take its record out with it. Outside this module
+/// nothing else takes entries out, so nothing can drop a body and leave it
+/// recorded as in the page, or take out a range the record didn't hand it.
 mod record {
     use super::*;
 
@@ -705,7 +708,7 @@ mod record {
         /// Every `@import` written out as a link, in order, so a stylesheet
         /// about to be wrapped in a block can tell whether it holds one, and
         /// an import that wrote links can tell whether room would fix them.
-        pub(super) linked: Vec<Link>,
+        linked: Vec<Link>,
         /// Every module a module script reaches on the CDN hosts, in the order
         /// fetched, as its URL and its source with each URL-like specifier
         /// written absolute, for the page's import map.
@@ -746,11 +749,6 @@ mod record {
             self.inlined
         }
 
-        /// The bytes refused for the inlining total so far.
-        pub(super) fn refused(&self) -> usize {
-            self.refused
-        }
-
         /// The size of `url`'s fetched body when inlining it now would pass
         /// `MAX_INLINED_BYTES`, which is when [`Cdn::inline`] refuses it.
         pub(super) fn over_total(&self, url: &str) -> Option<usize> {
@@ -775,8 +773,23 @@ mod record {
             true
         }
 
+        /// Every `@import` written out as a link so far, in order.
+        pub(super) fn links(&self) -> &[Link] {
+            &self.linked
+        }
+
+        /// The `@import`s written out as links among `added`.
+        pub(super) fn links_in(&self, added: &Added) -> &[Link] {
+            &self.linked[added.linked.clone()]
+        }
+
+        /// Records an `@import` written out as a link.
+        pub(super) fn link(&mut self, link: Link) {
+            self.linked.push(link);
+        }
+
         /// Where the record of the page stands now, for [`Cdn::since`].
-        pub(super) fn mark(&self) -> Mark {
+        fn mark(&self) -> Mark {
             Mark {
                 bytes: self.inlined,
                 present: self.present.len(),
@@ -785,7 +798,7 @@ mod record {
         }
 
         /// What went into the record of the page after `mark`.
-        pub(super) fn since(&self, mark: Mark) -> Added {
+        fn since(&self, mark: Mark) -> Added {
             Added {
                 bytes: self.inlined - mark.bytes,
                 present: mark.present..self.present.len(),
@@ -795,7 +808,7 @@ mod record {
 
         /// Takes `added` back out of the record of the page, for content that
         /// went in and was then thrown away. Later entries move down.
-        pub(super) fn undo(&mut self, added: &Added) {
+        fn undo(&mut self, added: &Added) {
             self.inlined -= added.bytes;
             self.present.drain(added.present.clone());
             self.linked.drain(added.linked.clone());
@@ -873,6 +886,129 @@ mod record {
                     None
                 }
             }
+        }
+
+        /// [`Cdn::import`] in a sheet where every import in `ruled`, already in
+        /// `edits`, turns back into a link if this one writes a link. When every
+        /// link it writes would inline given more room, just enough of the
+        /// earliest of `ruled` to give that room turn back into links first,
+        /// since they would anyway, and it tries again. When one of its links
+        /// stays a link whatever the room, all of `ruled` would turn back, so
+        /// they do before one more try, if anything in it missed the total.
+        /// Each try ends when the import writes no link or `ruled` is empty, or
+        /// when freeing room would change nothing.
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn import_making_room(
+            &mut self,
+            import: &Import,
+            base: Option<&str>,
+            depth: usize,
+            written: &str,
+            edits: &mut [Edit],
+            ruled: &mut Vec<Inlined>,
+            warnings: &mut Vec<ExportWarning>,
+        ) -> Tried {
+            let mut freed = Vec::new();
+            loop {
+                let start = self.mark();
+                let (warned, refused) = (warnings.len(), self.refused);
+                let (text, url) = self.import(import, base, depth, written, warnings);
+                let added = self.since(start);
+                // How many of `ruled` to free before the next try, if any.
+                let n = match room_for(self.links_in(&added)) {
+                    _ if !prelude(&text).0 || ruled.is_empty() => 0,
+                    Some(room) => {
+                        let short = (self.inlined + room).saturating_sub(MAX_INLINED_BYTES);
+                        let (mut n, mut bytes) = (0, 0);
+                        while n < ruled.len() && (n == 0 || bytes < short) {
+                            bytes += ruled[n].added.bytes;
+                            n += 1;
+                        }
+                        n
+                    }
+                    None if self.refused > refused => ruled.len(),
+                    None => 0,
+                };
+                if n == 0 {
+                    return Tried {
+                        text,
+                        url,
+                        added,
+                        freed,
+                    };
+                }
+                self.undo(&added);
+                for w in warnings.drain(warned..) {
+                    self.warned.remove(&w.target);
+                }
+                freed.extend(self.unlink(edits, ruled, n, None));
+            }
+        }
+
+        /// Turns the first `n` of `ruled` back into links in `edits`, moving
+        /// `later`, recorded after all of `ruled`, to where its entries sit
+        /// once theirs are out of the record of the page. Returns the URLs now
+        /// links, for the caller to warn.
+        pub(super) fn unlink(
+            &mut self,
+            edits: &mut [Edit],
+            ruled: &mut Vec<Inlined>,
+            n: usize,
+            later: Option<&mut Added>,
+        ) -> Vec<String> {
+            let taken: Vec<Inlined> = ruled.drain(..n).collect();
+            // Last first, so each one's entries are where it recorded them.
+            for r in taken.iter().rev() {
+                self.undo(&r.added);
+            }
+            let mut undone = Vec::with_capacity(taken.len());
+            let mut urls = Vec::with_capacity(taken.len());
+            for r in taken {
+                edits[r.edit].text = r.link;
+                self.linked.push(Link {
+                    url: r.url.clone(),
+                    room: Some(r.added.bytes),
+                });
+                urls.push(r.url);
+                undone.push(r.added);
+            }
+            for r in ruled.iter_mut() {
+                r.added.after_undoing(&undone);
+            }
+            if let Some(added) = later {
+                added.after_undoing(&undone);
+            }
+            urls
+        }
+    }
+
+    /// A point in a [`Cdn`]'s record of the page: the bytes inlined and the
+    /// lengths of `present` and `linked`.
+    #[derive(Clone, Copy)]
+    struct Mark {
+        bytes: usize,
+        present: usize,
+        linked: usize,
+    }
+
+    /// What went into a [`Cdn`]'s record of the page between two points.
+    /// Only the record makes one and it can't be cloned, so every range it
+    /// names is one the record handed out; which one goes back is still up
+    /// to the caller of [`Cdn::unlink`].
+    pub(super) struct Added {
+        bytes: usize,
+        present: Range<usize>,
+        linked: Range<usize>,
+    }
+
+    impl Added {
+        /// Where these entries sit once each of `undone`, all recorded before
+        /// them, has been taken out.
+        fn after_undoing(&mut self, undone: &[Added]) {
+            let present: usize = undone.iter().map(|a| a.present.len()).sum();
+            let linked: usize = undone.iter().map(|a| a.linked.len()).sum();
+            self.present = self.present.start - present..self.present.end - present;
+            self.linked = self.linked.start - linked..self.linked.end - linked;
         }
     }
 }
@@ -1098,8 +1234,8 @@ impl<F: cdn::Fetch> Cdn<F> {
                     // writes a link went back for the link, as the rest do.
                     let reason = if links {
                         let later = self
-                            .linked
-                            .get(tried.start.linked)
+                            .links_in(&tried.added)
+                            .first()
                             .map_or(&import.reference, |l| &l.url);
                         format!("kept as a link: the later @import of {later} would be ignored after its rules")
                     } else {
@@ -1114,11 +1250,10 @@ impl<F: cdn::Fetch> Cdn<F> {
                     }
                     if links && !ruled.is_empty() {
                         let n = ruled.len();
-                        let (undone, urls) = self.unlink(&mut edits, &mut ruled, n);
+                        let urls = self.unlink(&mut edits, &mut ruled, n, Some(&mut tried.added));
                         for url in urls {
                             self.warn(&url, reason.clone(), warnings);
                         }
-                        tried.added.after_undoing(&undone);
                     }
                     let edit = edits.len();
                     edits.push(Edit {
@@ -1190,7 +1325,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                             cdn.warn(u, over_total_reason(), warnings);
                             return None;
                         }
-                        let linked = cdn.linked.len();
+                        let linked = cdn.links().len();
                         cdn.importing.push(u.clone());
                         let from = cdn.source_url(u);
                         let text = cdn.css(
@@ -1200,7 +1335,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                             warnings,
                         );
                         cdn.importing.pop();
-                        match (import.block(), cdn.linked.get(linked)) {
+                        match (import.block(), cdn.links().get(linked)) {
                             (Some(block), Some(nested)) => {
                                 let reason = format!(
                                     "kept as a link: its @import of {} would be ignored inside {block}",
@@ -1209,7 +1344,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                                 // Its nested links' room, plus the bytes it
                                 // and its inlined imports hand back now.
                                 let own = cdn.inlined() - before;
-                                blocked = Some(room_for(&cdn.linked[linked..]).map(|r| r + own));
+                                blocked = Some(room_for(&cdn.links()[linked..]).map(|r| r + own));
                                 cdn.warn(u, reason, warnings);
                                 None
                             }
@@ -1227,99 +1362,11 @@ impl<F: cdn::Fetch> Cdn<F> {
         if let Some(text) = inlined {
             return (import.wrap(text), absolute);
         }
-        self.linked.push(Link {
+        self.link(Link {
             url: absolute.clone().unwrap_or_else(|| import.reference.clone()),
             room,
         });
         (link_text(import, absolute.as_deref(), written), None)
-    }
-
-    /// [`Cdn::import`] in a sheet where every import in `ruled`, already in
-    /// `edits`, turns back into a link if this one writes a link. When every
-    /// link it writes would inline given more room, just enough of the
-    /// earliest of `ruled` to give that room turn back into links first,
-    /// since they would anyway, and it tries again. When one of its links
-    /// stays a link whatever the room, all of `ruled` would turn back, so
-    /// they do before one more try, if anything in it missed the total.
-    /// Each try ends when the import writes no link or `ruled` is empty, or
-    /// when freeing room would change nothing.
-    #[allow(clippy::too_many_arguments)]
-    fn import_making_room(
-        &mut self,
-        import: &Import,
-        base: Option<&str>,
-        depth: usize,
-        written: &str,
-        edits: &mut [Edit],
-        ruled: &mut Vec<Inlined>,
-        warnings: &mut Vec<ExportWarning>,
-    ) -> Tried {
-        let mut freed = Vec::new();
-        loop {
-            let start = self.mark();
-            let (warned, refused) = (warnings.len(), self.refused());
-            let (text, url) = self.import(import, base, depth, written, warnings);
-            let added = self.since(start);
-            // How many of `ruled` to free before the next try, if any.
-            let n = match room_for(&self.linked[added.linked.clone()]) {
-                _ if !prelude(&text).0 || ruled.is_empty() => 0,
-                Some(room) => {
-                    let short = (self.inlined() + room).saturating_sub(MAX_INLINED_BYTES);
-                    let (mut n, mut bytes) = (0, 0);
-                    while n < ruled.len() && (n == 0 || bytes < short) {
-                        bytes += ruled[n].added.bytes;
-                        n += 1;
-                    }
-                    n
-                }
-                None if self.refused() > refused => ruled.len(),
-                None => 0,
-            };
-            if n == 0 {
-                return Tried {
-                    text,
-                    url,
-                    start,
-                    added,
-                    freed,
-                };
-            }
-            self.undo(&added);
-            for w in warnings.drain(warned..) {
-                self.warned.remove(&w.target);
-            }
-            freed.extend(self.unlink(edits, ruled, n).1);
-        }
-    }
-
-    /// Turns the first `n` of `ruled` back into links in `edits`. Returns
-    /// everything that came out of the record of the page and the URLs now
-    /// links, for the caller to warn.
-    fn unlink(
-        &mut self,
-        edits: &mut [Edit],
-        ruled: &mut Vec<Inlined>,
-        n: usize,
-    ) -> (Vec<Added>, Vec<String>) {
-        let taken: Vec<Inlined> = ruled.drain(..n).collect();
-        // Last first, so each one's entries are where it recorded them.
-        for r in taken.iter().rev() {
-            self.undo(&r.added);
-        }
-        let undone: Vec<Added> = taken.iter().map(|r| r.added.clone()).collect();
-        let mut urls = Vec::with_capacity(taken.len());
-        for r in taken {
-            edits[r.edit].text = r.link;
-            self.linked.push(Link {
-                url: r.url.clone(),
-                room: Some(r.added.bytes),
-            });
-            urls.push(r.url);
-        }
-        for r in ruled.iter_mut() {
-            r.added.after_undoing(&undone);
-        }
-        (undone, urls)
     }
 
     /// What replaces one `url()` naming `reference`: a CDN file as a `data:`
@@ -1453,42 +1500,13 @@ fn room_for(links: &[Link]) -> Option<usize> {
 }
 
 /// What [`Cdn::import_making_room`] wrote for one `@import`: its text, its
-/// URL when inlined, where its final try started and what that try added,
+/// URL when inlined, what its final try added to the record of the page,
 /// and the URLs of the earlier imports it turned back into links.
 struct Tried {
     text: String,
     url: Option<String>,
-    start: Mark,
     added: Added,
     freed: Vec<String>,
-}
-
-/// A point in a [`Cdn`]'s record of the page: the bytes inlined and the
-/// lengths of `present` and `linked`.
-#[derive(Clone, Copy)]
-struct Mark {
-    bytes: usize,
-    present: usize,
-    linked: usize,
-}
-
-/// What went into a [`Cdn`]'s record of the page between two points.
-#[derive(Clone)]
-struct Added {
-    bytes: usize,
-    present: Range<usize>,
-    linked: Range<usize>,
-}
-
-impl Added {
-    /// Where these entries sit once each of `undone`, all recorded before
-    /// them, has been taken out.
-    fn after_undoing(&mut self, undone: &[Added]) {
-        let present: usize = undone.iter().map(|a| a.present.len()).sum();
-        let linked: usize = undone.iter().map(|a| a.linked.len()).sum();
-        self.present = self.present.start - present..self.present.end - present;
-        self.linked = self.linked.start - linked..self.linked.end - linked;
-    }
 }
 
 /// `import`, written as `written`, as a link to `absolute`: made absolute
@@ -4099,7 +4117,7 @@ mod tests {
 
     /// The URL of every `@import` written out as a link, in order.
     fn linked<F: cdn::Fetch>(cdn: &Cdn<F>) -> Vec<&str> {
-        cdn.linked.iter().map(|l| l.url.as_str()).collect()
+        cdn.links().iter().map(|l| l.url.as_str()).collect()
     }
 
     #[test]
