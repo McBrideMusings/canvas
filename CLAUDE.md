@@ -504,9 +504,9 @@ beside the terminal all day.
   closing a table, section or row while the cell mode's cell is one the
   512-element depth cap already closed, or a table part's start tag, or its
   end tag in table scope, while "in select in table" holds a select the cap
-  already closed, or a page that makes WebKit reopen more than 1,000,000
-  closed formatting elements before text or a start tag, a tree that grows with the square
-  of the page's length), and drops such a card from
+  already closed, or a page that makes WebKit reopen more closed formatting
+  elements before text or a start tag than 100,000 plus one per 3 bytes read,
+  a tree larger than the page's own markup could build), and drops such a card from
   `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`). A
   widget is framed like a card, so `canvas artifact new|put --widget` refuses
   one the same way (`widget refused: …`) and `artifacts.json` loads it as no

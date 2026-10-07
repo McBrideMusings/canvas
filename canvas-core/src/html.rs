@@ -200,18 +200,33 @@ enum Freeze {
     /// scope. The scan drops the tag.
     Select,
     /// The text or tag before this tag took the elements WebKit has reopened
-    /// before text or a start tag past [`MAX_REOPENED`]. Each reopening of a run of closed
-    /// formatting elements builds a copy of each one, so a page that keeps
-    /// closing and reopening a long run builds a tree that grows with the
-    /// square of its length, which stalls Canvas.app. From here the scan
+    /// before text or a start tag past the budget it holds, [`reopen_budget`]
+    /// of the bytes read before that text or tag. Each reopening of a run of
+    /// closed formatting elements builds a copy of each one, so a page that
+    /// keeps closing and reopening a long run builds a tree that grows with
+    /// the square of its length, which stalls Canvas.app. From here the scan
     /// reopens only the newest element.
-    Reopen,
+    Reopen(usize),
 }
 
-/// How many formatting elements the scan lets WebKit reopen in one page
-/// before it counts the page as [`Freeze::Reopen`]: a page that misnests a
-/// few `<b>`s around each paragraph reopens a handful per paragraph.
-const MAX_REOPENED: usize = 1_000_000;
+/// How many formatting elements any page may have WebKit reopen. Canvas.app
+/// lays out 100,000 copies of a run of 400 `<b>`s in under a second.
+const REOPEN_FLOOR: usize = 100_000;
+
+/// The bytes of markup each reopened element past [`REOPEN_FLOOR`] needs
+/// before it: `<b>` is the shortest way to write an element out, so the
+/// copies never make a tree larger than the page's own length could.
+const BYTES_PER_REOPEN: usize = 3;
+
+/// How many formatting elements WebKit may reopen in the first `read` bytes
+/// of a page before it counts as [`Freeze::Reopen`]. Canvas.app's time grows
+/// with the size of the tree, written out or reopened: a page that misnests
+/// five `<b>`s around each of 200,000 paragraphs takes as long as the same
+/// tree written out, while 2,500 reopenings of 400 `<b>`s, 34 KB of markup,
+/// build that tree's size in 16 s.
+fn reopen_budget(read: usize) -> usize {
+    REOPEN_FLOOR + read / BYTES_PER_REOPEN
+}
 
 /// WebKit's cap on its stack of open elements
 /// (`defaultMaximumHTMLParserDOMTreeDepth`), less the `<html>`, `<body>` and
@@ -805,7 +820,8 @@ impl Tags<'_> {
         let mut first = last;
         // Past the budget, finding the first closed entry would cost as
         // much as reopening them all.
-        if self.reopened <= MAX_REOPENED {
+        let budget = reopen_budget(self.pos);
+        if self.reopened <= budget {
             while let Some(Some(entry)) = first.checked_sub(1).map(|i| &self.formatting[i]) {
                 if self.open.holds(entry.id) {
                     break;
@@ -814,8 +830,8 @@ impl Tags<'_> {
             }
             self.reopened += last + 1 - first;
         }
-        if self.reopened > MAX_REOPENED {
-            self.freeze_at(Freeze::Reopen);
+        if self.reopened > budget {
+            self.freeze_at(Freeze::Reopen(budget));
             first = last;
         }
         // With the stack full, the first copy closes the current element;
@@ -2161,11 +2177,12 @@ fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
     let (closes, nest) = match freeze {
         Freeze::Cell => ("closes a table cell", "the table"),
         Freeze::Select => ("closes a select in a table", "the select"),
-        Freeze::Reopen => {
+        Freeze::Reopen(budget) => {
             return Some(format!(
                 "by its <{slash}{name}> at byte {at}, WebKit has reopened more than \
-                 {MAX_REOPENED} closed formatting elements such as <b>, which stalls \
-                 Canvas.app; close each formatting element where it should end"
+                 {budget} closed formatting elements such as <b>, {REOPEN_FLOOR} plus \
+                 one per {BYTES_PER_REOPEN} bytes before them, which stalls Canvas.app; \
+                 close each formatting element where it should end"
             ))
         }
     };
@@ -3059,24 +3076,63 @@ mod tests {
     }
 
     #[test]
-    fn reopening_a_million_formatting_elements_freezes_webkit() {
+    fn reopening_more_elements_than_the_page_could_write_freezes_webkit() {
         // Each text run in a `<div>` reopens the 400 `<b>`s the `</p>`
         // closed, and the `</div>` closes them again: WebKit builds 400
-        // copies per run, and the 2,501st run takes it past 1,000,000.
+        // copies per 12 bytes, and the 256th run reopens the 102,400th, past
+        // 100,000 plus a third of the 6,962 bytes before its text.
         let bs: String = (0..400).map(|i| format!("<b id={i}>")).collect();
         let page = |runs: usize| format!("<p>{bs}</p>{}", "<div>x</div>".repeat(runs));
-        assert_eq!(webkit_freeze(&page(2_500)), None);
-        let html = page(2_600);
-        let at = html.len() - 99 * "<div>x</div>".len() - "</div>".len();
+        assert_eq!(webkit_freeze(&page(255)), None);
+        let html = page(300);
+        let at = html.len() - 44 * "<div>x</div>".len() - "</div>".len();
+        assert_eq!(at - "x".len(), 6_962);
         assert_eq!(webkit_freeze(&html), Some(at));
         assert_eq!(
             webkit_freeze_reason(&html),
             Some(format!(
-                "by its </div> at byte {at}, WebKit has reopened more than 1000000 \
-                 closed formatting elements such as <b>, which stalls Canvas.app; \
-                 close each formatting element where it should end"
+                "by its </div> at byte {at}, WebKit has reopened more than 102320 \
+                 closed formatting elements such as <b>, 100000 plus one per 3 bytes \
+                 before them, which stalls Canvas.app; close each formatting element \
+                 where it should end"
             ))
         );
+    }
+
+    #[test]
+    fn past_the_budget_the_scan_reopens_only_the_newest_element() {
+        // Each later run grows the budget by 5, so now and then the
+        // count falls back under it and the scan counts the 400 closed
+        // `<b>`s again, which takes it straight back over: it still reopens
+        // only the newest.
+        let bs: String = (0..400).map(|i| format!("<b id={i}>")).collect();
+        // A `<br>` after each run's text reads the stack with its copies open.
+        let html = format!("<p>{bs}</p>{}", "<div>x<br></div>".repeat(1_000));
+        let mut scan = tags(&html);
+        let mut deepest = 0;
+        while let Some(tag) = scan.next() {
+            if scan.freeze.is_some() && html[tag.start..].starts_with("<br>") {
+                deepest = deepest.max(scan.open.len());
+            }
+        }
+        // The `<div>` and one copy of the newest `<b>`; a `<br>` is void.
+        assert_eq!(deepest, 2);
+    }
+
+    #[test]
+    fn a_long_page_misnesting_a_few_elements_per_paragraph_does_not_freeze() {
+        // Each paragraph's text reopens the five elements the first `</p>`
+        // closed: 1,000,000 copies over 3.6 MB, fewer elements than the page
+        // could write out itself.
+        let html = format!(
+            "<p><b><i><u><s><em>x</p>{}",
+            "<p>a paragraph</p>".repeat(200_000)
+        );
+        assert_eq!(webkit_freeze(&html), None);
+        // The same five reopened every 8 bytes build more than the page's
+        // own length could.
+        let dense = format!("<p><b><i><u><s><em>x</p>{}", "<p>x</p>".repeat(200_000));
+        assert!(webkit_freeze(&dense).is_some());
     }
 
     #[test]
