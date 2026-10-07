@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::rc::Rc;
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
 /// `>` inside a quoted attribute value doesn't end the tag early. Tag
@@ -100,7 +101,6 @@ fn scan(html: &str, max_open: usize) -> Tags<'_> {
         pos: 0,
         open: OpenElements::default(),
         formatting: Vec::new(),
-        kinds: HashMap::new(),
         same_kind: vec![HashMap::new()],
         next_id: 0,
         token_ids: 0,
@@ -176,14 +176,13 @@ pub struct Tags<'a> {
     /// stack: text, and most start tags, first reopen every entry since the
     /// last marker whose element was closed, as the browser does.
     formatting: Vec<Option<Formatting>>,
-    /// The [`Formatting::kind`] of each name and attribute list the scan
-    /// has listed.
-    kinds: HashMap<(String, Vec<(String, String)>), usize>,
     /// For the list's entries before its first marker, then after each
     /// marker in turn, how many there are of each kind, so Noah's Ark
     /// knows whether a new entry has three alike since the last marker
-    /// without walking back to it.
-    same_kind: Vec<HashMap<usize, usize>>,
+    /// without walking back to it. A kind is a key only while an entry of
+    /// it is listed in that segment, so the scan holds no name or
+    /// attribute list the list no longer does.
+    same_kind: Vec<HashMap<Rc<Kind>, usize>>,
     /// The id the next opened element gets.
     next_id: usize,
     /// The first id opened by the token being read. The browser queues the
@@ -550,14 +549,21 @@ struct Element {
 }
 
 /// An entry in the list of active formatting elements: the open or closed
-/// element `id`; its `kind`, the same number for every entry with its name
-/// and attributes (lowercased names, decoded values, sorted), which Noah's
-/// Ark compares; and `depth`, how many markers came before it in the list.
+/// element `id`; its `kind`, which Noah's Ark compares; and `depth`, how
+/// many markers came before it in the list.
 struct Formatting {
     id: usize,
-    name: String,
-    kind: usize,
+    kind: Rc<Kind>,
     depth: usize,
+}
+
+/// A formatting element's name and attributes (lowercased names, decoded
+/// values, sorted): two entries are alike to Noah's Ark when these are
+/// equal.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct Kind {
+    name: String,
+    attrs: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -892,7 +898,7 @@ impl Tags<'_> {
             let Some(entry) = &self.formatting[i] else {
                 return;
             };
-            let name = entry.name.clone();
+            let name = entry.kind.name.clone();
             self.insert("", &name);
             let id = self.push_html(&name);
             if let Some(entry) = &mut self.formatting[i] {
@@ -905,13 +911,17 @@ impl Tags<'_> {
     /// in the browser, a fourth entry since the last marker with the same
     /// name and attributes removes the oldest of those.
     fn push_formatting(&mut self, id: usize, name: &str, tag: &str) {
-        let next = self.kinds.len();
-        let kind = *self
-            .kinds
-            .entry((name.to_string(), attr_key(tag)))
-            .or_insert(next);
+        let kind = Kind {
+            name: name.to_string(),
+            attrs: attr_key(tag),
+        };
         let depth = self.same_kind.len() - 1;
-        if self.same_kind[depth].get(&kind).is_some_and(|&n| n >= 3) {
+        // An entry alike already listed in the segment lends its kind.
+        let (kind, alike) = match self.same_kind[depth].get_key_value(&kind) {
+            Some((listed, &n)) => (Rc::clone(listed), n),
+            None => (Rc::new(kind), 0),
+        };
+        if alike >= 3 {
             // The oldest of the three is the third found walking back.
             let oldest = self
                 .formatting
@@ -925,20 +935,20 @@ impl Tags<'_> {
                 self.remove_formatting(i);
             }
         }
-        *self.same_kind[depth].entry(kind).or_insert(0) += 1;
-        self.formatting.push(Some(Formatting {
-            id,
-            name: name.to_string(),
-            kind,
-            depth,
-        }));
+        *self.same_kind[depth].entry(Rc::clone(&kind)).or_insert(0) += 1;
+        self.formatting.push(Some(Formatting { id, kind, depth }));
     }
 
-    /// Removes the list's entry at `i`, keeping [`Tags::same_kind`]'s count.
+    /// Removes the list's entry at `i`, keeping [`Tags::same_kind`]'s count
+    /// and dropping its kind there when it was the segment's last alike.
     fn remove_formatting(&mut self, i: usize) -> Option<Formatting> {
         let entry = self.formatting.remove(i)?;
-        if let Some(n) = self.same_kind[entry.depth].get_mut(&entry.kind) {
+        let counts = &mut self.same_kind[entry.depth];
+        if let Some(n) = counts.get_mut(&entry.kind) {
             *n -= 1;
+            if *n == 0 {
+                counts.remove(&entry.kind);
+            }
         }
         Some(entry)
     }
@@ -947,7 +957,9 @@ impl Tags<'_> {
     /// that position falls in.
     fn insert_formatting(&mut self, at: usize, mut entry: Formatting) {
         entry.depth = self.formatting[..at].iter().filter(|f| f.is_none()).count();
-        *self.same_kind[entry.depth].entry(entry.kind).or_insert(0) += 1;
+        *self.same_kind[entry.depth]
+            .entry(Rc::clone(&entry.kind))
+            .or_insert(0) += 1;
         self.formatting.insert(at, Some(entry));
     }
 
@@ -1640,7 +1652,7 @@ impl Tags<'_> {
         for (i, entry) in self.formatting.iter().enumerate().rev() {
             match entry {
                 None => return None,
-                Some(f) if f.name == name => return Some(i),
+                Some(f) if f.kind.name == name => return Some(i),
                 Some(_) => {}
             }
         }
@@ -3137,23 +3149,77 @@ mod tests {
     }
 
     /// Asserts that each entry's depth is the count of markers before it,
-    /// and that `same_kind` holds the count of each kind per segment.
+    /// and that `same_kind` holds the count of each kind per segment and no
+    /// kind the segment no longer lists.
     fn assert_counted(scan: &Tags, context: &str) {
-        let mut counted: Vec<HashMap<usize, usize>> = vec![HashMap::new()];
+        let mut counted: Vec<HashMap<Rc<Kind>, usize>> = vec![HashMap::new()];
         for entry in &scan.formatting {
             match entry {
                 None => counted.push(HashMap::new()),
                 Some(f) => {
                     assert_eq!(f.depth, counted.len() - 1, "depth: {context:.60}");
-                    *counted.last_mut().unwrap().entry(f.kind).or_insert(0) += 1;
+                    *counted
+                        .last_mut()
+                        .unwrap()
+                        .entry(Rc::clone(&f.kind))
+                        .or_insert(0) += 1;
                 }
             }
         }
-        let mut kept = scan.same_kind.clone();
-        for counts in &mut kept {
-            counts.retain(|_, n| *n > 0);
+        assert_eq!(scan.same_kind, counted, "counts: {context:.60}");
+    }
+
+    #[test]
+    fn the_counts_match_the_formatting_list_on_random_pages() {
+        // Tags that reach every change to the list: formatting elements
+        // alike and not, markers and what clears them, the adoption
+        // agency's blocks (enough for all eight of its rounds, which leave
+        // the formatting element's copy listed), and text that reopens.
+        const TOKENS: [&str; 25] = [
+            "<b>",
+            "<b id=1>",
+            "<b ID='1'>",
+            "<i>",
+            "<a>",
+            "<nobr>",
+            "</b>",
+            "</i>",
+            "</a>",
+            "</nobr>",
+            "<p>",
+            "</p>",
+            "<div>",
+            "</div>",
+            "<td>",
+            "</td>",
+            "<table><tr>",
+            "</table>",
+            "<object>",
+            "</object>",
+            "<template>",
+            "</template>",
+            "x",
+            "<br>",
+            "<div><div><div><div><div><div><div><div>",
+        ];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..3000 {
+            let len = 1 + next() % 40;
+            let html: String = (0..len)
+                .map(|_| TOKENS[(next() % TOKENS.len() as u64) as usize])
+                .collect();
+            let mut scan = tags(&html);
+            while scan.next().is_some() {
+                assert_counted(&scan, &html);
+            }
+            assert_counted(&scan, &html);
         }
-        assert_eq!(kept, counted, "counts: {context:.60}");
     }
 
     #[test]
@@ -3168,6 +3234,7 @@ mod tests {
             "<strong><i><s><u><code><p></strong></p>t</code></u></s></i></strong>",
             "<b><i><u><s><div>x</b>y</div><b><b><b>z",
             "<b><div><div><div><div><div><div><div><div><div><div>x</b>y<b><b><b>",
+            "<object><b><div><div><div><div><div><div><div><div><div><div>x</b>y<b>",
             "<nobr><nobr><nobr><nobr>x<p><nobr>y</p>",
             &format!("{}x{}", "<b><i>".repeat(400), "<b>".repeat(5)),
             &format!("{}<b><b><b><b>t", "<applet><b>".repeat(300)),
