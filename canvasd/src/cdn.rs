@@ -4,9 +4,11 @@
 //! read, so the export can tell an oversize body from one that fits. This is
 //! outbound only; canvasd still listens on nothing but its Unix socket.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{mpsc, Arc, OnceLock};
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use canvas_core::MAX_ASSET_BYTES;
@@ -273,25 +275,109 @@ fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
     })
 }
 
+/// A lookup's addresses, or its error's kind and text (an `io::Error` can't
+/// be shared between the requests waiting on one lookup).
+type Found = Result<Vec<SocketAddr>, (std::io::ErrorKind, String)>;
+
+/// One lookup still running, and its result once it returns.
+#[derive(Default)]
+struct Pending {
+    found: Mutex<Option<Found>>,
+    done: Condvar,
+}
+
 /// Looks up a `host:port`'s addresses: the system resolver, or a test's
 /// stand-in.
-type Lookup = Arc<dyn Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
+type Lookup = Box<dyn Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
 
-fn system_lookup() -> Lookup {
-    Arc::new(|netloc| netloc.to_socket_addrs().map(Iterator::collect))
+/// Runs `Lookup`s, one per `host:port` at a time. A lookup can't be
+/// cancelled, so one that outlasts a request's deadline keeps its thread;
+/// every request for that `host:port` while it runs waits on it rather than
+/// starting another, so a hung resolver holds one thread per host, never one
+/// per download. Nothing is kept once a lookup returns; until it does, every
+/// request for its host waits on it and times out, however long it hangs.
+struct Resolver {
+    lookup: Lookup,
+    running: Mutex<HashMap<String, Arc<Pending>>>,
+}
+
+impl Resolver {
+    fn new(
+        lookup: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            lookup: Box::new(lookup),
+            running: Mutex::default(),
+        })
+    }
+
+    /// `netloc`'s addresses, or None when its lookup hasn't returned by
+    /// `deadline`.
+    fn find(self: &Arc<Self>, netloc: &str, deadline: Instant) -> Option<Found> {
+        let pending = {
+            let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+            match running.get(netloc) {
+                Some(pending) => pending.clone(),
+                None => {
+                    let pending = Arc::new(Pending::default());
+                    let (resolver, name, shared) =
+                        (self.clone(), netloc.to_string(), pending.clone());
+                    if let Err(e) =
+                        std::thread::Builder::new().spawn(move || resolver.run(&name, &shared))
+                    {
+                        return Some(Err((e.kind(), format!("couldn't start the lookup: {e}"))));
+                    }
+                    // The thread waits on this lock to forget the entry, so
+                    // it can't remove it before it's here.
+                    running.insert(netloc.to_string(), pending.clone());
+                    pending
+                }
+            }
+        };
+        let found = pending.found.lock().unwrap_or_else(PoisonError::into_inner);
+        let (found, _) = pending
+            .done
+            .wait_timeout_while(
+                found,
+                deadline.saturating_duration_since(Instant::now()),
+                |found| found.is_none(),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+        found.clone()
+    }
+
+    /// Runs one lookup, hands its result to every request waiting on it and
+    /// forgets it, so the next request for `netloc` looks it up afresh.
+    fn run(&self, netloc: &str, pending: &Pending) {
+        let found = std::panic::catch_unwind(AssertUnwindSafe(|| (self.lookup)(netloc)))
+            .unwrap_or_else(|_| Err(std::io::Error::other("the lookup panicked")))
+            .map_err(|e| (e.kind(), e.to_string()));
+        *pending.found.lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
+        pending.done.notify_all();
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(netloc);
+    }
+}
+
+fn system_lookup() -> Arc<Resolver> {
+    static SYSTEM: OnceLock<Arc<Resolver>> = OnceLock::new();
+    SYSTEM
+        .get_or_init(|| Resolver::new(|netloc| netloc.to_socket_addrs().map(Iterator::collect)))
+        .clone()
 }
 
 /// Looks up `url`'s host by `deadline`. ureq's own lookup has no deadline and
 /// runs after its connect timeout has started, so a slow resolver would spend
-/// both the request's time and an attempt's setup window. The lookup runs on
-/// a thread of its own, left to finish there when it outlasts the deadline.
-/// Only a timeout or a URL with no host is an `Err`; the lookup's own result,
-/// failure included, is handed to ureq to report as it would its own.
+/// both the request's time and an attempt's setup window. Only a timeout or a
+/// URL with no host is an `Err`; the lookup's own result, failure included, is
+/// handed to ureq to report as it would its own.
 fn resolve(
     url: &str,
     deadline: Instant,
-    lookup: &Lookup,
-) -> Result<std::io::Result<Vec<SocketAddr>>, Box<ureq::Error>> {
+    lookup: &Arc<Resolver>,
+) -> Result<Found, Box<ureq::Error>> {
     let fail = |kind, message: String| Box::new(std::io::Error::new(kind, message).into());
     let parsed = url::Url::parse(url)
         .map_err(|e| fail(std::io::ErrorKind::InvalidInput, format!("{url}: {e}")))?;
@@ -301,23 +387,13 @@ fn resolve(
             format!("{url}: no host"),
         ));
     };
-    let netloc = format!("{host}:{port}");
-    let (send, receive) = mpsc::channel();
-    let lookup = lookup.clone();
-    std::thread::spawn(move || {
-        let _ = send.send(lookup(&netloc));
-    });
-    receive
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => fail(
+    lookup
+        .find(&format!("{host}:{port}"), deadline)
+        .ok_or_else(|| {
+            fail(
                 std::io::ErrorKind::TimedOut,
                 format!("looking up {host} timed out"),
-            ),
-            mpsc::RecvTimeoutError::Disconnected => fail(
-                std::io::ErrorKind::Other,
-                format!("looking up {host} failed"),
-            ),
+            )
         })
 }
 
@@ -332,7 +408,7 @@ fn get(
     url: &str,
     deadline: Instant,
     tls: &Arc<rustls::ClientConfig>,
-    lookup: &Lookup,
+    lookup: &Arc<Resolver>,
 ) -> Result<ureq::Response, Box<ureq::Error>> {
     let found = Arc::new(resolve(url, deadline, lookup)?);
     let mut attempt = 1;
@@ -355,7 +431,7 @@ fn get(
             // With no redirects and no proxy, ureq asks only for `url`'s host.
             .resolver(move |_: &str| match &*found {
                 Ok(addrs) => Ok(addrs.clone()),
-                Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
+                Err((kind, message)) => Err(std::io::Error::new(*kind, message.clone())),
             })
             .timeout_connect(setup)
             .tls_connector(Arc::new(SetupLimit {
@@ -394,7 +470,7 @@ fn download(
     timeout: Duration,
     route: impl Fn(&str) -> String,
     tls: &Arc<rustls::ClientConfig>,
-    lookup: &Lookup,
+    lookup: &Arc<Resolver>,
 ) -> Result<Fetched, String> {
     let deadline = Instant::now() + timeout;
     let timed_out = || format!("timed out after {}s", timeout.as_secs_f32().ceil());
@@ -664,15 +740,65 @@ mod tests {
     }
 
     /// The system lookup after `delay`, counting its calls.
-    fn slow_lookup(delay: Duration) -> (Lookup, Arc<AtomicUsize>) {
+    fn slow_lookup(delay: Duration) -> (Arc<Resolver>, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
-        let lookup: Lookup = Arc::new(move |netloc| {
+        let lookup = Resolver::new(move |netloc| {
             counter.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(delay);
-            system_lookup()(netloc)
+            netloc.to_socket_addrs().map(Iterator::collect)
         });
         (lookup, calls)
+    }
+
+    #[test]
+    fn requests_for_a_host_share_its_running_lookup() {
+        let (lookup, calls) = slow_lookup(Duration::from_millis(600));
+        // Three requests give up on the hung lookup; none starts another.
+        for _ in 0..3 {
+            let found = lookup.find("localhost:80", Instant::now() + Duration::from_millis(50));
+            assert_eq!(found, None);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // One that waits long enough gets that same lookup's addresses.
+        let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+        assert!(found.is_some_and(|f| f.is_ok_and(|addrs| !addrs.is_empty())));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Another host gets its own lookup.
+        assert_eq!(
+            lookup.find("127.0.0.1:80", Instant::now() + Duration::from_millis(50)),
+            None
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_returned_lookup_is_not_remembered() {
+        let (lookup, calls) = slow_lookup(Duration::ZERO);
+        for _ in 0..2 {
+            let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+            assert!(found.is_some());
+            // The lookup's thread forgets it just after handing it over.
+            let forgotten = Instant::now() + Duration::from_secs(2);
+            while lookup.running.lock().unwrap().contains_key("localhost:80") {
+                assert!(Instant::now() < forgotten, "the lookup was never forgotten");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_panicked_lookup_is_a_failure() {
+        let lookup = Resolver::new(|_| panic!("resolver bug"));
+        let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+        assert_eq!(
+            found,
+            Some(Err((
+                std::io::ErrorKind::Other,
+                "the lookup panicked".to_string()
+            )))
+        );
     }
 
     #[test]
@@ -715,7 +841,7 @@ mod tests {
     #[test]
     fn a_failed_lookup_reads_as_ureqs_own() {
         let (url, tls, seen) = tls_server(|_| true);
-        let lookup: Lookup = Arc::new(|_| Err(std::io::Error::other("no such host")));
+        let lookup = Resolver::new(|_| Err(std::io::Error::other("no such host")));
         let body = download(
             &url,
             Duration::from_secs(2),

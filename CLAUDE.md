@@ -191,7 +191,8 @@ beside the terminal all day.
   and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
   unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
   cap; each request looks its host up once within that limit, before any connection's
-  setup time starts; a connection whose TCP connect or TLS handshake outlasts half the time
+  setup time starts, waiting on that host's lookup when one is already running, so a
+  hung resolver holds one thread per host; a connection whose TCP connect or TLS handshake outlasts half the time
   left is dropped for a fresh one, at most three, logging `export fetch setup
   stalled`; a module's specifiers and a stylesheet's `@import`s and `url()`s resolve
   from the URL its download landed on after redirects, `cdn::Fetched`) and inlined —
