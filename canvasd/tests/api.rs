@@ -653,7 +653,8 @@ async fn export_leaves_out_a_file_over_the_media_cap() {
         vec![canvas_core::ExportWarning {
             kind: canvas_core::ExportWarningKind::MediaTooLarge,
             target: clip,
-            reason: "over the 32 MB of images and videos one export inlines".into(),
+            reason: "a 32.1 MB file is over the 32 MB of images and videos one export inlines"
+                .into(),
         }]
     );
 }

@@ -39,13 +39,13 @@ const MAX_IMPORT_DEPTH: usize = 4;
 /// grow the page without bound.
 const MAX_INLINED_BYTES: usize = 16 * MAX_ASSET_BYTES;
 
-/// `read(path, limit)` reads at most `limit + 1` bytes of one file, so an
-/// oversized file is never read whole; `fetch(url, timeout)` downloads one
+/// `read(path, limit)` reads one file of at most `limit` bytes (`read_media`),
+/// refusing a larger one unread; `fetch(url, timeout)` downloads one
 /// URL within `timeout`.
 pub fn export_card(
     card: &Card,
     data: Option<&serde_json::Value>,
-    read: impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+    read: impl Fn(&str, u64) -> io::Result<Media>,
     fetch: impl cdn::Fetch,
 ) -> ExportResult {
     let mut warnings = Vec::new();
@@ -106,7 +106,7 @@ fn data_shim(value: &serde_json::Value) -> String {
 
 fn rewrite<F: cdn::Fetch>(
     card: &Card,
-    read: &impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+    read: &impl Fn(&str, u64) -> io::Result<Media>,
     cdn: &mut Cdn<F>,
     warnings: &mut Vec<ExportWarning>,
 ) -> (String, Vec<Map<String, Value>>) {
@@ -333,7 +333,7 @@ struct MissingMedia {
     without_src: String,
 }
 
-impl<'c, R: Fn(&str, u64) -> io::Result<Vec<u8>>> CardRefs<'c, R> {
+impl<'c, R: Fn(&str, u64) -> io::Result<Media>> CardRefs<'c, R> {
     fn new(card: &'c Card, read: &'c R) -> Self {
         CardRefs {
             card,
@@ -430,7 +430,7 @@ impl<'c, R: Fn(&str, u64) -> io::Result<Vec<u8>>> CardRefs<'c, R> {
 /// CDN script or stylesheet an HTML element there loads (inside a
 /// `<foreignObject>`, where it runs) becomes a `data:` URI, and anchors are
 /// rewritten as anywhere else. A card import map stays where it is.
-fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Vec<u8>>>(
+fn style_child<'t, F: cdn::Fetch, R: Fn(&str, u64) -> io::Result<Media>>(
     tag: &'t str,
     foreign: bool,
     refs: &mut CardRefs<R>,
@@ -1989,11 +1989,55 @@ fn escape_raw(text: &str, name: &str) -> String {
     out
 }
 
+/// One image or video file as `read_media` found it.
+pub enum Media {
+    Bytes(Vec<u8>),
+    /// Over the limit: `size` bytes as the file system reports it, the file
+    /// left unread; or, when `exact` is false, more than `size` bytes found
+    /// by reading (a file that grew after its size was read, or one with no
+    /// length of its own).
+    TooLarge {
+        size: u64,
+        exact: bool,
+    },
+}
+
+/// The file at `path` when it holds at most `limit` bytes. A larger file is
+/// refused from its metadata before any byte is read; the read itself still
+/// stops at `limit + 1`, for a file whose metadata understates it.
+pub fn read_media(path: &str, limit: u64) -> io::Result<Media> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    if size > limit {
+        return Ok(Media::TooLarge { size, exact: true });
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Ok(Media::TooLarge {
+            size: limit,
+            exact: false,
+        });
+    }
+    Ok(Media::Bytes(bytes))
+}
+
+/// `bytes` in MB to one decimal: rounded up for a file's size, so one just
+/// over a cap never reads as the cap itself, and down for a bound the file is
+/// only known to exceed.
+fn megabytes(bytes: u64, up: bool) -> String {
+    let tenths = u128::from(bytes) * 10;
+    let mb = 1024 * 1024;
+    let tenths = if up { tenths.div_ceil(mb) } else { tenths / mb };
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// The file at `path` as a `data:` URI and its size, when it fits in `room`
 /// bytes; otherwise the warning kind and reason.
 fn media_data_uri(
     path: &str,
-    read: &impl Fn(&str, u64) -> io::Result<Vec<u8>>,
+    read: &impl Fn(&str, u64) -> io::Result<Media>,
     room: usize,
 ) -> Result<(String, usize), (ExportWarningKind, String)> {
     let missing = |reason: String| (ExportWarningKind::MissingImage, reason);
@@ -2007,16 +2051,32 @@ fn media_data_uri(
     if !MEDIA_EXTS.contains(&ext.as_str()) {
         return Err(missing(format!("not an image or video file: .{ext}")));
     }
-    let bytes = read(path, room as u64).map_err(|e| missing(e.to_string()))?;
-    if bytes.len() > room {
-        let cap = MAX_MEDIA_BYTES / (1024 * 1024);
-        let reason = if room == MAX_MEDIA_BYTES {
-            format!("over the {cap} MB of images and videos one export inlines")
-        } else {
-            format!("would take the page past the {cap} MB of images and videos one export inlines")
-        };
-        return Err((ExportWarningKind::MediaTooLarge, reason));
-    }
+    let bytes = match read(path, room as u64).map_err(|e| missing(e.to_string()))? {
+        Media::Bytes(bytes) => bytes,
+        Media::TooLarge { size, exact } => {
+            let cap = MAX_MEDIA_BYTES / (1024 * 1024);
+            let size_mb = megabytes(size, exact);
+            let file = if exact {
+                format!("a {size_mb} MB file")
+            } else {
+                format!("a file of more than {size_mb} MB")
+            };
+            let cap_bytes = MAX_MEDIA_BYTES as u64;
+            let over_cap = if exact {
+                size > cap_bytes
+            } else {
+                size >= cap_bytes
+            };
+            let reason = if over_cap {
+                format!("{file} is over the {cap} MB of images and videos one export inlines")
+            } else {
+                format!(
+                    "{file} would take the page past the {cap} MB of images and videos one export inlines"
+                )
+            };
+            return Err((ExportWarningKind::MediaTooLarge, reason));
+        }
+    };
     let mime = mime_guess::from_path(path).first_or_octet_stream();
     let uri = format!("data:{};base64,{}", mime.essence_str(), base64(&bytes));
     Ok((uri, bytes.len()))
@@ -2045,9 +2105,9 @@ mod tests {
         }
     }
 
-    fn files(path: &str, _: u64) -> io::Result<Vec<u8>> {
+    fn files(path: &str, _: u64) -> io::Result<Media> {
         match path {
-            "/x/a.png" => Ok(b"abc".to_vec()),
+            "/x/a.png" => Ok(Media::Bytes(b"abc".to_vec())),
             _ => Err(io::Error::new(io::ErrorKind::NotFound, "No such file")),
         }
     }
@@ -2128,16 +2188,28 @@ mod tests {
 
     #[test]
     fn media_past_the_page_cap_is_left_out_and_smaller_files_still_fit() {
-        // Each `/x/<n>.png` is `n` MB; the reader never hands back more than
-        // `limit + 1` bytes.
+        // `/x/tiny.png` is one byte and each `/x/<n>.png` is `n` MB; like
+        // `read_media`, the reader refuses a file over `limit` unread.
         let read = |path: &str, limit: u64| {
-            let mb: usize = path[3..path.len() - 4].parse().unwrap_or(0);
-            let len = (mb * 1024 * 1024).min(limit as usize + 1);
-            Ok(vec![b'x'; len])
+            let size = match &path[3..path.len() - 4] {
+                "tiny" => 1,
+                mb => mb.parse::<u64>().unwrap_or(0) * 1024 * 1024,
+            };
+            Ok(if size > limit {
+                Media::TooLarge { size, exact: true }
+            } else {
+                Media::Bytes(vec![b'x'; size as usize])
+            })
         };
         let c = card(
-            r#"<img src="/api/cards/c1/images/0"><img src="/api/cards/c1/images/1"><img src="/api/cards/c1/images/2"><img src="/api/cards/c1/images/3">"#,
-            &["/x/40.png", "/x/20.png", "/x/20.png", "/x/12.png"],
+            r#"<img src="/api/cards/c1/images/0"><img src="/api/cards/c1/images/1"><img src="/api/cards/c1/images/2"><img src="/api/cards/c1/images/3"><img src="/api/cards/c1/images/4">"#,
+            &[
+                "/x/tiny.png",
+                "/x/40.png",
+                "/x/20.png",
+                "/x/20.png",
+                "/x/11.png",
+            ],
             &[],
         );
         let r = export_card(&c, None, read, offline);
@@ -2152,22 +2224,68 @@ mod tests {
                 (
                     ExportWarningKind::MediaTooLarge,
                     "/x/40.png",
-                    "over the 32 MB of images and videos one export inlines"
+                    "a 40.0 MB file is over the 32 MB of images and videos one export inlines"
                 ),
                 (
                     ExportWarningKind::MediaTooLarge,
                     "/x/20.png",
-                    "would take the page past the 32 MB of images and videos one export inlines"
+                    "a 20.0 MB file would take the page past the 32 MB of images and videos one export inlines"
                 ),
             ]
         );
         assert_eq!(r.html.matches("image left out: ").count(), 2);
         assert!(r.html.contains("image left out: 40.png"));
-        // 20 MB then 12 MB: exactly the cap.
+        // One byte, 20 MB, then 11 MB: under the cap.
         assert_eq!(
             r.html.matches("<img src=\"data:image/png;base64,").count(),
-            2
+            3
         );
+    }
+
+    #[test]
+    fn media_whose_size_was_found_by_reading_names_a_lower_bound() {
+        // The reader saw more than `limit` bytes it had no size for.
+        let read = |_: &str, limit: u64| {
+            Ok(Media::TooLarge {
+                size: limit,
+                exact: false,
+            })
+        };
+        let c = card(
+            r#"<img src="/api/cards/c1/images/0">"#,
+            &["/dev/a.png"],
+            &[],
+        );
+        let r = export_card(&c, None, read, offline);
+        assert_eq!(
+            r.warnings[0].reason,
+            "a file of more than 32.0 MB is over the 32 MB of images and videos one export inlines"
+        );
+        assert_eq!(megabytes(20 * 1024 * 1024 + 50 * 1024, false), "20.0");
+        assert_eq!(megabytes(20 * 1024 * 1024 + 50 * 1024, true), "20.1");
+        assert_eq!(megabytes(u64::MAX, true), "17592186044416.0");
+    }
+
+    #[test]
+    fn read_media_refuses_a_file_over_the_limit_from_its_size() {
+        let dir = std::env::temp_dir().join(format!("canvasd-read-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.mov");
+        // Sparse: 40 MB the file system reports and nothing written.
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(40 * 1024 * 1024)
+            .unwrap();
+        let small = dir.join("small.png");
+        std::fs::write(&small, b"abc").unwrap();
+        let big = read_media(&big.to_string_lossy(), 1024).unwrap();
+        let small = read_media(&small.to_string_lossy(), 3).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(
+            big,
+            Media::TooLarge { size, exact: true } if size == 40 * 1024 * 1024
+        ));
+        assert!(matches!(small, Media::Bytes(b) if b == b"abc"));
     }
 
     #[test]

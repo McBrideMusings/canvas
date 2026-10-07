@@ -181,8 +181,10 @@ beside the terminal all day.
   Each `/api/cards/:id/images/:n` src becomes a base64 `data:` URI read from
   the card's stored path (a missing file is a `missing-image` warning and an
   "image missing" placeholder; a file that would take the page's media past
-  `MAX_MEDIA_BYTES`, 32 MB in all, is never read whole and is a
-  `media-too-large` warning naming the cap with an "image left out"
+  `MAX_MEDIA_BYTES`, 32 MB in all, is refused from its size before any byte
+  is read (`export::read_media`) and is a `media-too-large` warning naming
+  the file's size and the cap ("a 40.0 MB file is over the 32 MB…", or
+  "would take the page past" when it fits alone) with an "image left out"
   placeholder, while later files that fit still go in; a video or source
   left out either way loses its src), each `#canvas-open-<n>` anchor becomes a real
   `target="_blank"` link (http/https) or plain text (a local path), and a shim
