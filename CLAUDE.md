@@ -196,7 +196,9 @@ beside the terminal all day.
   inlined keeps its text exactly as written. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
-  since the browser ignores an `@import` inside a block. `export_card` drops a
+  since the browser ignores an `@import` inside a block, and every `@import` inlined
+  as rules ahead of a later one in its sheet that writes a link, since the browser
+  ignores an `@import` after rules. `export_card` drops a
   `fetch-failed` warning whose URL's content went into the page through another
   reference (`Cdn`'s list of inlined URLs). Each download
   logs `export fetch` or `export fetch failed`. A debug build fetches through

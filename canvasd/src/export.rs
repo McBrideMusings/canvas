@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -415,6 +416,9 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         let mut out = String::with_capacity(css.len());
         let mut pos = 0usize;
         let mut i = 0usize;
+        // The inlined imports that wrote rules, which turn back into links
+        // when a later import writes a link.
+        let mut ruled: Vec<Inlined> = Vec::new();
         while i < b.len() {
             match b[i] {
                 b'/' if b.get(i + 1) == Some(&b'*') => i = comment_end(b, i),
@@ -425,10 +429,34 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                         i += "@import".len();
                         continue;
                     };
+                    // A rule of the sheet's own before this import leaves it
+                    // ignored however the ones before it are written.
+                    if prelude(&css[pos..i]).1 {
+                        ruled.clear();
+                    }
                     out.push_str(&css[pos..i]);
-                    match self.import(&import, base, depth, warnings) {
-                        Some(text) => out.push_str(&text),
-                        None => out.push_str(&css[i..import.end]),
+                    let (bytes, present, linked) =
+                        (self.inlined, self.present.len(), self.linked.len());
+                    let written = &css[i..import.end];
+                    let (text, inlined) = self.import(&import, base, depth, written, warnings);
+                    let (bytes, mut present) = (self.inlined - bytes, present..self.present.len());
+                    let (links, rules) = prelude(&text);
+                    if links && !ruled.is_empty() {
+                        let later = self.linked.get(linked).unwrap_or(&import.reference).clone();
+                        let dropped =
+                            self.unlink(&mut out, std::mem::take(&mut ruled), &later, warnings);
+                        present = present.start - dropped..present.end - dropped;
+                    }
+                    let at = out.len();
+                    out.push_str(&text);
+                    if let Some(url) = inlined.filter(|_| rules) {
+                        ruled.push(Inlined {
+                            span: at..out.len(),
+                            link: link_text(&import, Some(&url), written),
+                            url,
+                            bytes,
+                            present,
+                        });
                     }
                     pos = import.end;
                     i = import.end;
@@ -452,22 +480,23 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         out
     }
 
-    /// What replaces one `@import`: the stylesheet it names under its
-    /// conditions, or the import itself, made absolute. None keeps it as
-    /// written. An import of a CDN stylesheet that stays a link warns. One
-    /// that closes a cycle is dropped, as the browser ignores it. A
-    /// stylesheet that holds an import staying a link is not inlined under
+    /// What replaces one `@import` written as `written`: the stylesheet it
+    /// names under its conditions, with that stylesheet's URL, or the import
+    /// itself, made absolute. An import of a CDN stylesheet that stays a link
+    /// warns. One that closes a cycle is dropped, as the browser ignores it.
+    /// A stylesheet that holds an import staying a link is not inlined under
     /// conditions, since the browser ignores an `@import` inside a block.
     fn import(
         &mut self,
         import: &Import,
         base: Option<&str>,
         depth: usize,
+        written: &str,
         warnings: &mut Vec<ExportWarning>,
-    ) -> Option<String> {
+    ) -> (String, Option<String>) {
         let absolute = cdn::join(base, &import.reference);
         let inlined = match &absolute {
-            Some(u) if self.importing.contains(u) => return Some(String::new()),
+            Some(u) if self.importing.contains(u) => return (String::new(), None),
             Some(u) if cdn::allowed(u) => {
                 if depth >= MAX_IMPORT_DEPTH {
                     let reason =
@@ -507,25 +536,48 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
             _ => None,
         };
         if let Some(text) = inlined {
-            return Some(import.wrap(text));
+            return (import.wrap(text), absolute);
         }
         self.linked
             .push(absolute.clone().unwrap_or_else(|| import.reference.clone()));
-        match absolute {
-            Some(u) if u != import.reference => {
-                let sep = if import.conditions.is_empty() {
-                    ""
-                } else {
-                    " "
-                };
-                Some(format!(
-                    "@import url(\"{}\"){sep}{};",
-                    u.replace('"', "%22"),
-                    import.conditions
-                ))
-            }
-            _ => None,
+        (link_text(import, absolute.as_deref(), written), None)
+    }
+
+    /// Turns each of `ruled` back into a link in `out`, since the browser
+    /// ignores the link to `later` that follows their rules, and warns.
+    /// Returns how many `present` entries went with them.
+    fn unlink(
+        &mut self,
+        out: &mut String,
+        ruled: Vec<Inlined>,
+        later: &str,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> usize {
+        let Some(start) = ruled.first().map(|r| r.span.start) else {
+            return 0;
+        };
+        let mut relinked = String::new();
+        let mut pos = start;
+        let mut dropped = 0;
+        for r in ruled.iter().rev() {
+            self.inlined -= r.bytes;
+            dropped += r.present.len();
+            self.present.drain(r.present.clone());
         }
+        for r in ruled {
+            relinked.push_str(&out[pos..r.span.start]);
+            relinked.push_str(&r.link);
+            pos = r.span.end;
+            let reason = format!(
+                "kept as a link: the later @import of {later} would be ignored after its rules"
+            );
+            self.warn(&r.url, reason, warnings);
+            self.linked.push(r.url);
+        }
+        relinked.push_str(&out[pos..]);
+        out.truncate(start);
+        out.push_str(&relinked);
+        dropped
     }
 
     /// What replaces one `url()` naming `reference`: a CDN file as a `data:`
@@ -607,6 +659,91 @@ impl Import {
             None => text,
         }
     }
+}
+
+/// One `@import` inlined as rules, kept so it can turn back into a link:
+/// where its stylesheet sits in the output, its URL and link form, the bytes
+/// it inlined and the `present` entries its stylesheet added.
+struct Inlined {
+    span: Range<usize>,
+    url: String,
+    link: String,
+    bytes: usize,
+    present: Range<usize>,
+}
+
+/// `import`, written as `written`, as a link to `absolute`: made absolute
+/// when it was relative, else as written.
+fn link_text(import: &Import, absolute: Option<&str>, written: &str) -> String {
+    match absolute {
+        Some(u) if u != import.reference => {
+            let sep = if import.conditions.is_empty() {
+                ""
+            } else {
+                " "
+            };
+            format!(
+                "@import url(\"{}\"){sep}{};",
+                u.replace('"', "%22"),
+                import.conditions
+            )
+        }
+        _ => written.to_string(),
+    }
+}
+
+/// Whether `css` holds an `@import` before its first rule, and whether it
+/// holds a rule, after which the browser ignores any `@import`. Space,
+/// comments, `<!--`, `-->` and at-rule statements other than `@namespace`
+/// are no rule: the browser keeps an `@layer` statement and drops the rest.
+/// Any block is a rule.
+fn prelude(css: &str) -> (bool, bool) {
+    let b = css.as_bytes();
+    let mut imports = false;
+    let mut i = 0usize;
+    loop {
+        i = skip_space(b, i);
+        if i >= b.len() {
+            return (imports, false);
+        }
+        if b[i..].starts_with(b"/*") {
+            i = comment_end(b, i);
+        } else if b[i..].starts_with(b"<!--") {
+            i += 4;
+        } else if b[i..].starts_with(b"-->") {
+            i += 3;
+        } else if let Some(import) = starts_with_word(b, i, b"@import")
+            .then(|| parse_import(css, i))
+            .flatten()
+        {
+            imports = true;
+            i = import.end;
+        } else if b[i] == b'@' && !starts_with_word(b, i, b"@namespace") {
+            match statement_end(b, i) {
+                Some(end) => i = end,
+                None => return (imports, true),
+            }
+        } else {
+            return (imports, true);
+        }
+    }
+}
+
+/// The index just past the `;` ending the at-rule at `at`, or the end of
+/// the text, or None when a block comes first.
+fn statement_end(b: &[u8], at: usize) -> Option<usize> {
+    let mut i = at;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b';' => return Some(i + 1),
+            b'{' | b'}' => return None,
+            b'"' | b'\'' => i = string_end(b, i).0,
+            b'/' if b.get(i + 1) == Some(&b'*') => i = comment_end(b, i),
+            b'\\' => i += escape_len(b, i),
+            _ => i += 1,
+        }
+    }
+    Some(b.len())
 }
 
 /// The `@import` at `at`, or None when it doesn't parse: no string or
@@ -1479,6 +1616,71 @@ mod tests {
     }
 
     #[test]
+    fn sheets_inlined_before_a_link_stay_links() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css"><link rel="stylesheet" href="https://unpkg.com/n.css"><link rel="stylesheet" href="https://unpkg.com/k.css"><link rel="stylesheet" href="https://unpkg.com/m.css"><link rel="stylesheet" href="https://unpkg.com/o.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => "@import \"e.css\";@import \"https://example.com/z.css\";",
+                Some("n.css") => "@import \"y.css\";@import \"l.css\";@import \"f.css\";",
+                Some("k.css") => "@import \"l.css\";@import \"https://example.com/z.css\";.k{}",
+                // The sheet's own rule already leaves the link ignored.
+                Some("m.css") => "@import \"g.css\";.m{}@import \"https://example.com/z.css\";",
+                Some("o.css") => "@import \"s.css\";@import \"https://example.com/z.css\";",
+                Some("e.css") => ".e{}",
+                Some("g.css") => ".g{}",
+                Some("y.css") => ".y{}",
+                Some("f.css") => "@import \"https://example.com/c.css\";.f{}",
+                Some("l.css") => {
+                    "/*c*/<!-- @charset \"utf-8\";@layer x, y;@media screen;@import foo;-->"
+                }
+                Some("s.css") => "@namespace svg url(http://www.w3.org/2000/svg);",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        let l = r#"/*c*/<!-- @charset "utf-8";@layer x, y;@media screen;@import foo;-->"#;
+        for want in [
+            r#"<style>@import url("https://unpkg.com/e.css");@import "https://example.com/z.css";</style>"#.to_string(),
+            format!(r#"<style>@import url("https://unpkg.com/y.css");{l}@import "https://example.com/c.css";.f{{}}</style>"#),
+            format!(r#"<style>{l}@import "https://example.com/z.css";.k{{}}</style>"#),
+            r#"<style>.g{}.m{}@import "https://example.com/z.css";</style>"#.to_string(),
+            r#"<style>@import url("https://unpkg.com/s.css");@import "https://example.com/z.css";</style>"#.to_string(),
+        ] {
+            assert!(r.html.contains(&want), "{want}\n{}", r.html);
+        }
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.kind, w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/e.css",
+                    "kept as a link: the later @import of https://example.com/z.css would be ignored after its rules"
+                ),
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/y.css",
+                    "kept as a link: the later @import of https://example.com/c.css would be ignored after its rules"
+                ),
+                (
+                    ExportWarningKind::FetchFailed,
+                    "https://unpkg.com/s.css",
+                    "kept as a link: the later @import of https://example.com/z.css would be ignored after its rules"
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn an_import_past_the_depth_limit_warns() {
         let c = card(
             r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
@@ -1526,7 +1728,7 @@ mod tests {
         );
         let fetch = |url: &str, _: Duration| {
             let body = match url.strip_prefix("https://unpkg.com/") {
-                Some("a.css") => "@import \"y.css\";@import \"b.css\";@import \"x.css\";.a{}",
+                Some("a.css") => "@import \"b.css\";@import \"x.css\";@import \"y.css\";.a{}",
                 Some("b.css") => "@import \"c.css\";.b{}",
                 Some("c.css") => "@import \"d.css\";.c{}",
                 Some("d.css") => "@import \"e.css\";.d{}",
@@ -1540,7 +1742,7 @@ mod tests {
         let r = export_card(&c, None, files, fetch);
         assert!(
             r.html.contains(
-                r#"<style>.y{}@import url("https://unpkg.com/x.css");@import url("https://unpkg.com/y.css");.e{}.d{}.c{}.b{}.x{}.a{}</style>"#
+                r#"<style>@import url("https://unpkg.com/x.css");@import url("https://unpkg.com/y.css");.e{}.d{}.c{}.b{}.x{}.y{}.a{}</style>"#
             ),
             "{}",
             r.html
@@ -1636,15 +1838,21 @@ mod tests {
             "{}",
             r.html.len()
         );
-        assert_eq!(r.warnings.len(), 40 - fit);
         assert_eq!(
             r.warnings[0].target,
             format!("https://unpkg.com/b{fit}.css")
         );
-        assert!(r
-            .warnings
-            .iter()
-            .all(|w| w.reason.contains("already inlined 8 MB")));
+        assert!(r.warnings[0].reason.contains("already inlined 8 MB"));
+        // The sheets inlined before a link turn back into links, so every
+        // sheet missing from the page is a link with a warning.
+        let links = r
+            .html
+            .matches(r#"@import url("https://unpkg.com/b"#)
+            .count();
+        assert_eq!(r.warnings.len(), links);
+        assert!(links > 40 - fit, "{links}");
+        // Turning sheets back into links frees their bytes for later ones.
+        assert!(links < 40, "{links}");
     }
 
     #[test]
