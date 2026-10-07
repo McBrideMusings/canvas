@@ -2710,6 +2710,30 @@ mod tests {
     }
 
     #[test]
+    fn an_svg_style_whose_import_stays_its_own_link_stays_as_written() {
+        // The failed @import turns back into the link it was written as, an
+        // edit equal to its text that css_edits drops, so markup_css finds
+        // nothing to change and every piece stays as written.
+        for html in [
+            r#"<svg><style>@import url("https://unpkg.com/gone.css");.c{content:"&#169;&lt;"}</style></svg>"#,
+            r#"<svg><style><![CDATA[@import url("https://unpkg.com/]]>gone.css");.c{}</style></svg>"#,
+        ] {
+            let r = export_card(&card(html, &[], &[]), None, files, cdn_files);
+            assert!(r.html.contains(html), "{html}\n{}", r.html);
+            let got: Vec<_> = r
+                .warnings
+                .iter()
+                .map(|w| (w.kind, w.target.as_str()))
+                .collect();
+            assert_eq!(
+                got,
+                [(ExportWarningKind::FetchFailed, "https://unpkg.com/gone.css")],
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
     fn svg_style_css_inside_child_elements_is_read() {
         // Each pair: the card, and what export writes. WebKit reads an SVG
         // `<style>`'s CSS from all the text inside it, child elements'
