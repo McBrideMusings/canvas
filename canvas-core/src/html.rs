@@ -2,9 +2,7 @@
 //! canvasd's export: no parser, just quote-aware tag boundaries and
 //! attribute lookups over the byte string.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 /// Finds the next `<...>` tag at or after `from`, tracking quote state so a
@@ -100,6 +98,8 @@ fn scan(html: &str, max_open: usize) -> Tags<'_> {
         pos: 0,
         open: OpenElements::default(),
         formatting: Vec::new(),
+        kinds: HashMap::new(),
+        same_kind: vec![HashMap::new()],
         next_id: 0,
         token_ids: 0,
         form: None,
@@ -149,6 +149,14 @@ pub struct Tags<'a> {
     /// stack: text, and most start tags, first reopen every entry since the
     /// last marker whose element was closed, as the browser does.
     formatting: Vec<Option<Formatting>>,
+    /// The [`Formatting::kind`] of each name and attribute list the scan
+    /// has listed.
+    kinds: HashMap<(String, Vec<(String, String)>), usize>,
+    /// For the list's entries before its first marker, then after each
+    /// marker in turn, how many there are of each kind, so Noah's Ark
+    /// knows whether a new entry has three alike since the last marker
+    /// without walking back to it.
+    same_kind: Vec<HashMap<usize, usize>>,
     /// The id the next opened element gets.
     next_id: usize,
     /// The first id opened by the token being read. The browser queues the
@@ -505,13 +513,14 @@ struct Element {
 }
 
 /// An entry in the list of active formatting elements: the open or closed
-/// element `id`, and what tells it from another of its name, its attributes
-/// (lowercased names, decoded values, sorted), with `hash` a hash of both.
+/// element `id`; its `kind`, the same number for every entry with its name
+/// and attributes (lowercased names, decoded values, sorted), which Noah's
+/// Ark compares; and `depth`, how many markers came before it in the list.
 struct Formatting {
     id: usize,
     name: String,
-    attrs: Vec<(String, String)>,
-    hash: u64,
+    kind: usize,
+    depth: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -854,30 +863,56 @@ impl Tags<'_> {
     /// in the browser, a fourth entry since the last marker with the same
     /// name and attributes removes the oldest of those.
     fn push_formatting(&mut self, id: usize, name: &str, tag: &str) {
-        let attrs = attr_key(tag);
-        let mut hasher = DefaultHasher::new();
-        (name, &attrs).hash(&mut hasher);
-        let hash = hasher.finish();
-        let mut same = 0;
-        let mut oldest = None;
-        for (i, entry) in self.formatting.iter().enumerate().rev() {
-            let Some(f) = entry else {
-                break;
-            };
-            if f.hash == hash && f.name == name && f.attrs == attrs {
-                same += 1;
-                oldest = Some(i);
+        let next = self.kinds.len();
+        let kind = *self
+            .kinds
+            .entry((name.to_string(), attr_key(tag)))
+            .or_insert(next);
+        let depth = self.same_kind.len() - 1;
+        if self.same_kind[depth].get(&kind).is_some_and(|&n| n >= 3) {
+            // The oldest of the three is the third found walking back.
+            let oldest = self
+                .formatting
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, f)| f.as_ref().is_some_and(|f| f.kind == kind))
+                .nth(2)
+                .map(|(i, _)| i);
+            if let Some(i) = oldest {
+                self.remove_formatting(i);
             }
         }
-        if let Some(i) = oldest.filter(|_| same >= 3) {
-            self.formatting.remove(i);
-        }
+        *self.same_kind[depth].entry(kind).or_insert(0) += 1;
         self.formatting.push(Some(Formatting {
             id,
             name: name.to_string(),
-            attrs,
-            hash,
+            kind,
+            depth,
         }));
+    }
+
+    /// Removes the list's entry at `i`, keeping [`Tags::same_kind`]'s count.
+    fn remove_formatting(&mut self, i: usize) -> Option<Formatting> {
+        let entry = self.formatting.remove(i)?;
+        if let Some(n) = self.same_kind[entry.depth].get_mut(&entry.kind) {
+            *n -= 1;
+        }
+        Some(entry)
+    }
+
+    /// Puts `entry` back into the list at `at`, counted in the segment
+    /// that position falls in.
+    fn insert_formatting(&mut self, at: usize, mut entry: Formatting) {
+        entry.depth = self.formatting[..at].iter().filter(|f| f.is_none()).count();
+        *self.same_kind[entry.depth].entry(entry.kind).or_insert(0) += 1;
+        self.formatting.insert(at, Some(entry));
+    }
+
+    /// Adds a marker to the list, starting a new count of entries alike.
+    fn push_marker(&mut self) {
+        self.formatting.push(None);
+        self.same_kind.push(HashMap::new());
     }
 
     /// Removes the list's entries back to and including the last marker,
@@ -886,6 +921,11 @@ impl Tags<'_> {
     fn clear_to_marker(&mut self) {
         let marker = self.formatting.iter().rposition(Option::is_none);
         self.formatting.truncate(marker.unwrap_or(0));
+        if marker.is_some() {
+            self.same_kind.pop();
+        } else {
+            self.same_kind = vec![HashMap::new()];
+        }
     }
 
     /// The index on the stack of the open element `id`.
@@ -940,7 +980,7 @@ impl Tags<'_> {
             self.templates.push(Mode::Template);
         }
         if MARKERS.contains(&name) {
-            self.formatting.push(None);
+            self.push_marker();
         }
         id
     }
@@ -1485,7 +1525,7 @@ impl Tags<'_> {
                     let id = self.formatting[i].as_ref().map(|f| f.id);
                     self.adopt(name);
                     if let Some(j) = id.and_then(|id| self.entry_of(id)) {
-                        self.formatting.remove(j);
+                        self.remove_formatting(j);
                     }
                     if let Some(i) = id.and_then(|id| self.open_index(id)) {
                         self.open.remove(i);
@@ -1561,7 +1601,7 @@ impl Tags<'_> {
                 return;
             };
             let Some(fe) = self.open_index(fe_id) else {
-                self.formatting.remove(i);
+                self.remove_formatting(i);
                 return;
             };
             if self
@@ -1573,7 +1613,7 @@ impl Tags<'_> {
             }
             let Some(block) = self.open.first_in_above(Group::Special, fe) else {
                 self.open.truncate(fe);
-                self.formatting.remove(i);
+                self.remove_formatting(i);
                 return;
             };
             // The copy of the formatting element goes into the list after
@@ -1586,7 +1626,7 @@ impl Tags<'_> {
                 let mut entry = self.entry_of(id);
                 if inner >= 3 {
                     if let Some(j) = entry.take() {
-                        self.formatting.remove(j);
+                        self.remove_formatting(j);
                     }
                 }
                 let Some(j) = entry else {
@@ -1605,10 +1645,10 @@ impl Tags<'_> {
             self.next_id += 1;
             let listed = self.entry_of(fe_id);
             if let Some(i) = listed {
-                if let Some(mut entry) = self.formatting.remove(i) {
+                if let Some(mut entry) = self.remove_formatting(i) {
                     entry.id = copy;
                     let at = after.and_then(|a| self.entry_of(a)).map_or(i, |j| j + 1);
-                    self.formatting.insert(at, Some(entry));
+                    self.insert_formatting(at, entry);
                 }
             }
             // The copies take their ids, the unlisted elements go, and the
@@ -2859,6 +2899,50 @@ mod tests {
         }
     }
 
+    /// Asserts that each entry's depth is the count of markers before it,
+    /// and that `same_kind` holds the count of each kind per segment.
+    fn assert_counted(scan: &Tags, context: &str) {
+        let mut counted: Vec<HashMap<usize, usize>> = vec![HashMap::new()];
+        for entry in &scan.formatting {
+            match entry {
+                None => counted.push(HashMap::new()),
+                Some(f) => {
+                    assert_eq!(f.depth, counted.len() - 1, "depth: {context:.60}");
+                    *counted.last_mut().unwrap().entry(f.kind).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut kept = scan.same_kind.clone();
+        for counts in &mut kept {
+            counts.retain(|_, n| *n > 0);
+        }
+        assert_eq!(kept, counted, "counts: {context:.60}");
+    }
+
+    #[test]
+    fn the_counts_match_the_formatting_list() {
+        for html in [
+            "<p><em><em><em><em></p>t</em></em></em>",
+            "<p><em><em><em></em><em><em></p>t",
+            "<em><em><em><object><em><em><em><em></object><em>t",
+            "<table><tr><td><b><b><b><b></td><td><b>x</td></tr></table><b>y",
+            "<b><b><b><template><b><b></template><b>x",
+            "<a><b><a>x<b><b><b>y</a>z",
+            "<strong><i><s><u><code><p></strong></p>t</code></u></s></i></strong>",
+            "<b><i><u><s><div>x</b>y</div><b><b><b>z",
+            "<b><div><div><div><div><div><div><div><div><div><div>x</b>y<b><b><b>",
+            "<nobr><nobr><nobr><nobr>x<p><nobr>y</p>",
+            &format!("{}x{}", "<b><i>".repeat(400), "<b>".repeat(5)),
+            &format!("{}<b><b><b><b>t", "<applet><b>".repeat(300)),
+        ] {
+            let mut scan = tags(html);
+            while scan.next().is_some() {
+                assert_counted(&scan, html);
+            }
+            assert_counted(&scan, html);
+        }
+    }
+
     #[test]
     fn every_change_to_the_open_elements_keeps_the_indexes() {
         let element = |id, name: &str, ns| Element::new(id, name, ns, Point::None);
@@ -2903,10 +2987,10 @@ mod tests {
             assert!(scan.open.len() <= 800);
         }
         assert_eq!((n, scan.open.len()), (8_800, 800));
-        // Noah's Ark compares each new entry with every one before it, as
-        // the browser does, one hash at a time.
-        let bs: String = (0..5_000).map(|i| format!("<b id={i}>t")).collect();
-        assert_eq!(tags(&bs).count(), 5_000);
+        // Noah's Ark reads a count of the entries alike since the last
+        // marker, so a list of distinct entries never walks back.
+        let bs: String = (0..40_000).map(|i| format!("<b id={i}>t")).collect();
+        assert_eq!(tags(&bs).count(), 40_000);
     }
 
     #[test]
