@@ -2379,7 +2379,8 @@ const BLOCK_TAGS: &[&str] = &[
 
 /// `html` with every tag removed, the contents of `<script>`, `<style>`,
 /// `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>` and `<template>`
-/// dropped, each block tag starting a new line, and every character reference decoded once
+/// dropped (an SVG or MathML one's child elements' text with it), each block
+/// tag starting a new line, and every character reference decoded once
 /// ([`decode_entities`]), each run of text between two tags on its own, as
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
 /// written, since the parser decodes nothing there.
@@ -2403,44 +2404,57 @@ fn read_visible(html: &str, scan: &mut Tags, close: Option<&str>) -> (String, bo
     let mut pos = scan.pos;
     // Whether the text after the last tag is inside a `<template>`.
     let mut hidden = scan.in_template();
+    // The SVG or MathML `<script>`, `<style>` or the like the text after the
+    // last tag is inside: the browser renders none of its text, its child
+    // elements' included.
+    let mut muted = None;
     while let Some(Tag {
         start,
         end,
         text_end,
-        ..
+        foreign,
     }) = scan.next()
     {
-        if !hidden {
+        if !hidden && muted.is_none() {
             out.push_str(&decode_entities(&html[pos..start]));
         }
         pos = end;
+        muted = muted.filter(|id| scan.is_open(*id));
         let tag = &html[start..end];
         let name = tag_name(&tag.replacen("</", "<", 1));
         if !hidden && close.is_some() && tag.starts_with("</") && name.as_deref() == close {
             return (out, true);
         }
+        let quiet = hidden || muted.is_some();
         match name.as_deref() {
             Some("script" | "style" | "iframe" | "noembed" | "noframes" | "noscript") => {
-                pos = text_end.unwrap_or(end)
+                match text_end {
+                    Some(text_end) => pos = text_end,
+                    // Its text follows unless it closed itself.
+                    None if foreign && muted.is_none() && !tag.ends_with("/>") => {
+                        muted = scan.current()
+                    }
+                    None => {}
+                }
             }
             // Both open and close a block; the opening tag's raw text follows.
             Some("xmp" | "plaintext") => {
-                if !hidden {
+                if !quiet {
                     out.push('\n');
                 }
                 if let Some(text_end) = text_end {
-                    if !hidden {
+                    if !quiet {
                         out.push_str(&html[end..text_end]);
                     }
                     pos = text_end;
                 }
             }
-            Some(name) if !hidden && BLOCK_TAGS.contains(&name) => out.push('\n'),
+            Some(name) if !quiet && BLOCK_TAGS.contains(&name) => out.push('\n'),
             _ => {}
         }
         hidden = scan.in_template();
     }
-    if pos < html.len() && !hidden {
+    if pos < html.len() && !hidden && muted.is_none() {
         out.push_str(&decode_entities(&html[pos..]));
     }
     (out, false)
@@ -4100,6 +4114,46 @@ mod tests {
         assert_eq!(
             visible_text("<table><tr><template><table><td>x</template><td>y</table>"),
             "\n\n\ny\n"
+        );
+    }
+
+    #[test]
+    fn visible_text_drops_an_svg_or_mathml_script_or_style() {
+        assert_eq!(
+            visible_text("<svg><style>@import \"m.css?a=1&amp;b=2\";.c{}</style></svg>shown"),
+            "shown"
+        );
+        assert_eq!(
+            visible_text("<math><script>s</script><mi>x</mi></math>"),
+            "x"
+        );
+        // Its child elements' text is muted too, until the scan closes it.
+        assert_eq!(
+            visible_text("<svg><style>a<g>b</g>c</style><text>t</text></svg>"),
+            "t"
+        );
+        // A block tag in SVG is an SVG element and starts no line there.
+        assert_eq!(
+            visible_text("<svg><style>a<section>b</section></style></svg>c"),
+            "c"
+        );
+        assert_eq!(visible_text("a<svg><style>never closed"), "a");
+        // A `<p>` breaks out of the SVG and closes the style on the way.
+        assert_eq!(visible_text("<svg><style>a<p>b"), "\nb");
+        // One that closed itself mutes nothing.
+        assert_eq!(visible_text("<svg><style/><text>t</text></svg>"), "t");
+        assert_eq!(visible_text("<svg><noscript>n</noscript></svg>x"), "x");
+    }
+
+    #[test]
+    fn card_label_skips_an_svg_style_for_the_next_line() {
+        assert_eq!(
+            card_label("<svg><style>.c{}\n</style></svg><p>Plan</p>").as_deref(),
+            Some("Plan")
+        );
+        assert_eq!(
+            first_heading("<h1>A<svg><script>s</script></svg>B</h1>").as_deref(),
+            Some("AB")
         );
     }
 
