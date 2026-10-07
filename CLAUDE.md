@@ -185,7 +185,9 @@ beside the terminal all day.
   `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
   and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
   unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
-  cap) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
+  cap; a connection whose TCP connect or TLS handshake outlasts half the time
+  left is dropped for a fresh one, at most three, logging `export fetch setup
+  stalled`) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
   escapes as the browser does. A `<style>` inside SVG or MathML holds markup,

@@ -5,9 +5,11 @@
 //! outbound only; canvasd still listens on nothing but its Unix socket.
 
 use std::io::Read;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use canvas_core::MAX_ASSET_BYTES;
+use ureq::rustls;
 
 /// The hosts the viewer's card CSP allows scripts, styles and fonts from.
 pub const HOSTS: &[&str] = &[
@@ -134,9 +136,12 @@ const MAX_REDIRECTS: usize = 5;
 pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     let origin = std::env::var(OVERRIDE_ENV).ok();
     let started = Instant::now();
-    let result = download(url, timeout, |u| {
-        request_url(u, origin.as_deref(), HONOR_OVERRIDE)
-    });
+    let result = download(
+        url,
+        timeout,
+        |u| request_url(u, origin.as_deref(), HONOR_OVERRIDE),
+        &tls_config(),
+    );
     let ms = started.elapsed().as_millis();
     match &result {
         Ok(bytes) => canvas_core::log::info(
@@ -151,43 +156,159 @@ pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
     result
 }
 
+/// Most connections one request opens. Each but the last gets half the time
+/// left to finish its TCP connect and TLS handshake, the last all of it; one
+/// that stalls there is dropped for a fresh one, since a CDN edge sometimes
+/// sits on a new connection for seconds while the next answers at once.
+const SETUP_ATTEMPTS: u32 = 3;
+
+/// The TLS settings ureq's own default uses: the *ring* provider and the
+/// webpki roots.
+fn tls_config() -> Arc<rustls::ClientConfig> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            Arc::new(
+                rustls::ClientConfig::builder_with_provider(
+                    rustls::crypto::ring::default_provider().into(),
+                )
+                .with_safe_default_protocol_versions()
+                .expect("the ring provider supports the default TLS versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+            )
+        })
+        .clone()
+}
+
+/// Runs the TLS handshake under the attempt's setup limit. ureq leaves the
+/// socket's read and write timeouts at the whole request's deadline while it
+/// shakes hands, so without this one stalled handshake spends all of it.
+struct SetupLimit {
+    tls: Arc<rustls::ClientConfig>,
+    until: Instant,
+}
+
+impl ureq::TlsConnector for SetupLimit {
+    fn connect(
+        &self,
+        dns_name: &str,
+        io: Box<dyn ureq::ReadWrite>,
+    ) -> Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        // A timeout can only shorten here: `until` is never past the deadline.
+        let left = self
+            .until
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        let restore = match io.socket() {
+            Some(socket) => {
+                let saved = (socket.read_timeout()?, socket.write_timeout()?);
+                socket.set_read_timeout(Some(left))?;
+                socket.set_write_timeout(Some(left))?;
+                Some(saved)
+            }
+            None => None,
+        };
+        let stream = self.tls.connect(dns_name, io)?;
+        if let (Some((read, write)), Some(socket)) = (restore, stream.socket()) {
+            socket.set_read_timeout(read)?;
+            socket.set_write_timeout(write)?;
+        }
+        Ok(stream)
+    }
+}
+
+/// Whether `e` is a socket timeout. A socket read or write timeout on macOS
+/// fails with EAGAIN (`WouldBlock`) rather than `TimedOut`; ureq turns that
+/// into `TimedOut` for a response read, but not for the TLS handshake.
+fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<std::io::Error>().is_some_and(|io| {
+        matches!(
+            io.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
+    })
+}
+
+fn first_line(message: String) -> String {
+    message.lines().next().unwrap_or(&message).to_string()
+}
+
+/// GETs `url` by `deadline`, opening a fresh connection when one stalls in
+/// its TCP connect or TLS handshake (see `SETUP_ATTEMPTS`).
+fn get(
+    url: &str,
+    deadline: Instant,
+    tls: &Arc<rustls::ClientConfig>,
+) -> Result<ureq::Response, Box<ureq::Error>> {
+    let mut attempt = 1;
+    loop {
+        let started = Instant::now();
+        let left = deadline.saturating_duration_since(started);
+        if left.is_zero() {
+            return Err(Box::new(
+                std::io::Error::from(std::io::ErrorKind::TimedOut).into(),
+            ));
+        }
+        let setup = if attempt == SETUP_ATTEMPTS {
+            left
+        } else {
+            left / 2
+        };
+        let agent = ureq::AgentBuilder::new()
+            .redirects(0)
+            .timeout_connect(setup)
+            .tls_connector(Arc::new(SetupLimit {
+                tls: tls.clone(),
+                until: started + setup,
+            }))
+            // Google Fonts picks the font format by user agent; this one gets
+            // woff2.
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+            .build();
+        match agent.get(url).timeout(left).call() {
+            Err(ureq::Error::Transport(t))
+                if attempt < SETUP_ATTEMPTS
+                    && t.kind() == ureq::ErrorKind::ConnectionFailed
+                    && std::error::Error::source(&t).is_some_and(is_timeout) =>
+            {
+                canvas_core::log::warn(
+                    "export fetch setup stalled",
+                    &[
+                        ("url", &url),
+                        ("attempt", &attempt),
+                        ("ms", &started.elapsed().as_millis()),
+                    ],
+                );
+                attempt += 1;
+            }
+            other => return other.map_err(Box::new),
+        }
+    }
+}
+
 /// Follows redirects itself so every hop stays on an allowed host; `route`
 /// maps a URL to the one actually requested.
 fn download(
     url: &str,
     timeout: Duration,
     route: impl Fn(&str) -> String,
+    tls: &Arc<rustls::ClientConfig>,
 ) -> Result<Vec<u8>, String> {
     let deadline = Instant::now() + timeout;
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        // Google Fonts picks the font format by user agent; this one gets
-        // woff2.
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
-        .build();
     let timed_out = || format!("timed out after {}s", timeout.as_secs_f32().ceil());
-    let reason = |message: String| {
-        let lower = message.to_ascii_lowercase();
-        if lower.contains("timed out") || lower.contains("timeout") {
-            timed_out()
-        } else {
-            message.lines().next().unwrap_or(&message).to_string()
-        }
-    };
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(timed_out());
-        }
-        let response = agent
-            .get(&route(&current))
-            .timeout(left)
-            .call()
-            .map_err(|e| match e {
-                ureq::Error::Status(code, _) => format!("HTTP {code}"),
-                ureq::Error::Transport(t) => reason(t.to_string()),
-            })?;
+        let response = get(&route(&current), deadline, tls).map_err(|e| match *e {
+            ureq::Error::Status(code, _) => format!("HTTP {code}"),
+            ureq::Error::Transport(t) if std::error::Error::source(&t).is_some_and(is_timeout) => {
+                timed_out()
+            }
+            ureq::Error::Transport(t) => first_line(t.to_string()),
+        })?;
         if (300..400).contains(&response.status()) {
             let next = response
                 .header("location")
@@ -204,7 +325,13 @@ fn download(
             .into_reader()
             .take(MAX_ASSET_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(|e| reason(e.to_string()))?;
+            .map_err(|e| {
+                if is_timeout(&e) {
+                    timed_out()
+                } else {
+                    first_line(e.to_string())
+                }
+            })?;
         return Ok(bytes);
     }
     Err(format!("more than {MAX_REDIRECTS} redirects"))
@@ -213,6 +340,8 @@ fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn only_https_on_the_allowed_hosts() {
@@ -264,5 +393,94 @@ mod tests {
             "http://127.0.0.1:9/unpkg.com/a.js"
         );
         assert_eq!(HONOR_OVERRIDE, cfg!(debug_assertions));
+    }
+
+    /// A local HTTPS server for `localhost` under a test CA; `answer(n)`
+    /// says whether its `n`th connection (from 1) finishes the handshake and
+    /// answers `ok`, or is held open without a byte. Returns the URL, the
+    /// client settings that trust the CA, and the count of connections.
+    fn tls_server(
+        answer: impl Fn(usize) -> bool + Send + 'static,
+    ) -> (String, Arc<rustls::ClientConfig>, Arc<AtomicUsize>) {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        let provider = || Arc::new(rustls::crypto::ring::default_provider());
+        let server = Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(
+                        include_bytes!("../tests/fixtures/tls/localhost.der").to_vec(),
+                    )],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                        include_bytes!("../tests/fixtures/tls/localhost.key.der").to_vec(),
+                    )),
+                )
+                .unwrap(),
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(
+                include_bytes!("../tests/fixtures/tls/ca.der").to_vec(),
+            ))
+            .unwrap();
+        let client = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "https://localhost:{}/",
+            listener.local_addr().unwrap().port()
+        );
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for tcp in listener.incoming().flatten() {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if !answer(n) {
+                    held.push(tcp);
+                    continue;
+                }
+                let conn = rustls::ServerConnection::new(server.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") && tls.read(&mut byte).unwrap_or(0) == 1 {
+                    request.push(byte[0]);
+                }
+                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                let _ = tls.flush();
+            }
+        });
+        (url, client, seen)
+    }
+
+    #[test]
+    fn a_stalled_handshake_is_dropped_for_a_fresh_connection() {
+        let (url, tls, seen) = tls_server(|n| n > 1);
+        let started = Instant::now();
+        let body = download(&url, Duration::from_secs(4), |u| u.to_string(), &tls);
+        assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
+        // The first connection gets half the 4s to shake hands.
+        let ms = started.elapsed().as_millis();
+        assert!((1900..3000).contains(&ms), "took {ms}ms");
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_handshake_that_never_finishes_is_a_timeout() {
+        let (url, tls, seen) = tls_server(|_| false);
+        let started = Instant::now();
+        let body = download(&url, Duration::from_millis(1500), |u| u.to_string(), &tls);
+        assert_eq!(body, Err("timed out after 2s".to_string()));
+        let ms = started.elapsed().as_millis();
+        assert!((1400..2000).contains(&ms), "took {ms}ms");
+        assert_eq!(seen.load(Ordering::SeqCst), SETUP_ATTEMPTS as usize);
     }
 }
