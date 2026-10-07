@@ -35,9 +35,12 @@ use crate::import_map::{self, ImportMap};
 /// How many `@import`s deep a CDN stylesheet is followed.
 const MAX_IMPORT_DEPTH: usize = 4;
 
-/// Total bytes of CDN content one export inlines, counting a stylesheet once
-/// per place it lands, so a stylesheet that imports another many times can't
-/// grow the page without bound.
+/// Total bytes of CDN content one export writes into the page: a stylesheet
+/// once per place it lands, and a file as the `data:` URI that holds it, once
+/// per place that URI is written, so neither a stylesheet that imports another
+/// many times nor base64 can grow the page without bound. What surrounds the
+/// content (an import map's keys, a `url("…")` wrapper, a fragment) is not
+/// counted.
 const MAX_INLINED_BYTES: usize = 16 * MAX_ASSET_BYTES;
 
 /// `read(path, limit)` reads one file of at most `limit` bytes (`read_media`),
@@ -64,6 +67,7 @@ pub fn export_card(
         let import = module_import(&page_map.specifier(Some(key), &mut names));
         body.insert_str(*at, &escape_raw(&import, "script"));
     }
+    let map = page_map.finish(&mut cdn, names, &mut warnings);
     // A file one reference left as a link while another put it in the page
     // isn't missing from the page.
     warnings
@@ -73,7 +77,7 @@ pub fn export_card(
     html.push_str("<!doctype html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     html.push_str(&format!("<title>{title}</title>"));
-    if let Some(map) = page_map.finish(&cdn.modules, names) {
+    if let Some(map) = map {
         html.push_str(&format!("<script type=\"importmap\">{map}</script>"));
     }
     // A post replies to the viewer with parent.postMessage; at the top level
@@ -607,6 +611,22 @@ struct Module {
     url: String,
     source: String,
     imports: Vec<(Range<usize>, Option<String>)>,
+    /// The bytes counted toward the inlining total for it so far: one copy
+    /// of its source as a `data:` URI, until [`PageMap::finish`] counts what
+    /// the page writes.
+    counted: usize,
+}
+
+const MODULE_DATA_PREFIX: &str = "data:text/javascript;base64,";
+
+/// `text` as the `data:` URI an import map serves a module from.
+fn module_data_uri(text: &str) -> String {
+    format!("{MODULE_DATA_PREFIX}{}", base64(text.as_bytes()))
+}
+
+/// The length of [`module_data_uri`] of `len` bytes of text.
+fn module_data_uri_len(len: usize) -> usize {
+    MODULE_DATA_PREFIX.len() + len.div_ceil(3) * 4
 }
 
 /// The name the page's import map keeps what an import of `target` loads
@@ -825,6 +845,23 @@ mod record {
                 return false;
             }
             self.inlined += extra;
+            true
+        }
+
+        /// Counts `written` bytes toward the inlining total for the module
+        /// `url` in place of the `counted` already counted for it. False when
+        /// they would pass `MAX_INLINED_BYTES`: the module stays out of the
+        /// page, its `counted` bytes handed back and its URL no longer present.
+        pub(super) fn settle_module(&mut self, url: &str, counted: usize, written: usize) -> bool {
+            self.inlined -= counted;
+            if self.inlined + written > MAX_INLINED_BYTES {
+                self.refused += written;
+                if let Some(i) = self.present.iter().position(|p| p == url) {
+                    self.present.remove(i);
+                }
+                return false;
+            }
+            self.inlined += written;
             true
         }
 
@@ -1241,7 +1278,14 @@ impl<F: cdn::Fetch> Cdn<F> {
         }
         while let Some(next) = queue.pop_front() {
             self.inline(&next, warnings, |cdn, bytes, warnings| {
-                let source = cdn.text(&next, &bytes, warnings)?;
+                // The page writes it as a `data:` URI, so one copy of that
+                // counts now; `PageMap::finish` counts every copy it writes.
+                let source = String::from_utf8_lossy(&bytes).into_owned();
+                let counted = module_data_uri_len(source.len());
+                if !cdn.charge(counted.saturating_sub(bytes.len())) {
+                    cdn.warn(&next, over_total_reason(), warnings);
+                    return None;
+                }
                 match esm::module(&source) {
                     Ok(module) => {
                         if let Some(reason) = computed_reason(&source, &module.computed) {
@@ -1271,6 +1315,7 @@ impl<F: cdn::Fetch> Cdn<F> {
                             url: next.clone(),
                             source,
                             imports,
+                            counted,
                         });
                         Some(())
                     }
@@ -1568,14 +1613,13 @@ impl<F: cdn::Fetch> Cdn<F> {
             None => (absolute.as_str(), ""),
         };
         if cdn::allowed(target) {
-            let uri = self.inline(target, warnings, |_, bytes, _| {
+            let uri = self.inline(target, warnings, |cdn, bytes, warnings| {
                 let path = target.split('?').next().unwrap_or(target);
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
-                Some(format!(
-                    "url(\"data:{};base64,{}{fragment}\")",
-                    mime.essence_str(),
-                    base64(&bytes)
-                ))
+                let uri = format!("data:{};base64,{}", mime.essence_str(), base64(&bytes));
+                // Its base64 counts toward the total like the bytes it encodes.
+                let uri = cdn.charged(target, uri, bytes.len(), warnings).ok()?;
+                Some(format!("url(\"{uri}{fragment}\")"))
             });
             if uri.is_some() {
                 return uri;
@@ -2214,17 +2258,25 @@ impl PageMap {
         module_name(target)
     }
 
-    /// The map as the page writes it, each of `modules` written with its
-    /// specifiers ([`PageMap::specifier`]) as a `data:` URI, and each of
+    /// The map as the page writes it, each of `cdn`'s modules written with
+    /// its specifiers ([`PageMap::specifier`]) as a `data:` URI, and each of
     /// `names` mapped to its module's `data:` URI, its URL when the module
-    /// wasn't fetched, or null when it loads nothing. None when there is
-    /// nothing to map.
-    fn finish(mut self, modules: &[Module], mut names: BTreeSet<Option<String>>) -> Option<String> {
+    /// isn't in the page, or null when it loads nothing. Each module counts
+    /// toward the inlining total once per entry the map writes it in; one
+    /// that would pass the total stays out of the page, after a warning, so
+    /// its entries keep its URL. None when there is nothing to map.
+    fn finish<F: cdn::Fetch>(
+        mut self,
+        cdn: &mut Cdn<F>,
+        mut names: BTreeSet<Option<String>>,
+        warnings: &mut Vec<ExportWarning>,
+    ) -> Option<String> {
         if self.empty {
             return None;
         }
+        let modules = std::mem::take(&mut cdn.modules);
         let mut data: HashMap<&str, String> = HashMap::with_capacity(modules.len());
-        for m in modules {
+        for m in &modules {
             let mut text = String::with_capacity(m.source.len());
             let mut copied = 0;
             for (range, target) in &m.imports {
@@ -2234,31 +2286,7 @@ impl PageMap {
                 copied = range.end;
             }
             text.push_str(&m.source[copied..]);
-            let uri = format!("data:text/javascript;base64,{}", base64(text.as_bytes()));
-            data.insert(&m.url, uri);
-        }
-        let to_data = |map: &mut Map<String, Value>| {
-            for (key, value) in map.iter_mut() {
-                let uri = match value {
-                    Value::String(address) if !key.ends_with('/') => url::Url::parse(address)
-                        .ok()
-                        .and_then(|url| data.get(url.as_str())),
-                    _ => None,
-                };
-                if let Some(uri) = uri {
-                    *value = Value::String(uri.clone());
-                }
-            }
-        };
-        if let Some(Value::Object(imports)) = self.map.get_mut("imports") {
-            to_data(imports);
-        }
-        if let Some(Value::Object(scopes)) = self.map.get_mut("scopes") {
-            for scope in scopes.values_mut() {
-                if let Value::Object(scope) = scope {
-                    to_data(scope);
-                }
-            }
+            data.insert(&m.url, module_data_uri(&text));
         }
         if !names.is_empty() {
             let imports = self
@@ -2268,10 +2296,54 @@ impl PageMap {
             if let Value::Object(imports) = imports {
                 for target in &names {
                     let address = match target {
-                        Some(url) => Value::String(data.get(url.as_str()).unwrap_or(url).clone()),
+                        Some(url) => Value::String(url.clone()),
                         None => Value::Null,
                     };
                     imports.insert(module_name(target.as_deref()), address);
+                }
+            }
+        }
+        // Every address map, `imports` and each scope: each entry naming a
+        // module becomes its `data:` URI.
+        let mut maps: Vec<&mut Map<String, Value>> = Vec::new();
+        for (field, value) in self.map.iter_mut() {
+            match (field.as_str(), value) {
+                ("imports", Value::Object(imports)) => maps.push(imports),
+                ("scopes", Value::Object(scopes)) => {
+                    maps.extend(scopes.values_mut().filter_map(|scope| match scope {
+                        Value::Object(scope) => Some(scope),
+                        _ => None,
+                    }))
+                }
+                _ => {}
+            }
+        }
+        // The module an entry names, by its key and address.
+        let module = |key: &str, value: &Value| match value {
+            Value::String(address) if !key.ends_with('/') => {
+                url::Url::parse(address).ok().map(|url| url.to_string())
+            }
+            _ => None,
+        };
+        let mut copies: HashMap<String, usize> = HashMap::new();
+        for map in &maps {
+            for (key, value) in map.iter() {
+                if let Some(url) = module(key, value) {
+                    *copies.entry(url).or_default() += 1;
+                }
+            }
+        }
+        for m in &modules {
+            let written = data[m.url.as_str()].len() * copies.get(&m.url).copied().unwrap_or(0);
+            if !cdn.settle_module(&m.url, m.counted, written) {
+                data.remove(m.url.as_str());
+                cdn.warn(&m.url, over_total_reason(), warnings);
+            }
+        }
+        for map in maps {
+            for (key, value) in map.iter_mut() {
+                if let Some(uri) = module(key, value).and_then(|url| data.get(url.as_str())) {
+                    *value = Value::String(uri.clone());
                 }
             }
         }
@@ -4119,21 +4191,28 @@ mod tests {
         // Half an asset of bytes that aren't UTF-8 reads as three halves of
         // one: past the one asset of the total fifteen sheets leave, inside
         // the two fourteen leave, where counting the decoded text on top of
-        // the body would pass it.
+        // the body would pass it. A module is written as the base64 of that
+        // text, two assets and a few bytes: past the two fourteen leave,
+        // inside the three thirteen leave.
         let mut bad = b"/*".to_vec();
         bad.extend(vec![0xFF; MAX_ASSET_BYTES / 2]);
         bad.extend(b"*/");
         let rows = [
-            r#"<script src="https://unpkg.com/x"></script>"#,
-            r#"<link rel="stylesheet" href="https://unpkg.com/x">"#,
-            r#"<script type="module" src="https://unpkg.com/x"></script>"#,
-            r#"<style>@import "https://unpkg.com/x";</style>"#,
+            (r#"<script src="https://unpkg.com/x"></script>"#, 15),
+            (r#"<link rel="stylesheet" href="https://unpkg.com/x">"#, 15),
+            (
+                r#"<script type="module" src="https://unpkg.com/x"></script>"#,
+                14,
+            ),
+            (r#"<style>@import "https://unpkg.com/x";</style>"#, 15),
         ];
-        for (sheets, fits) in [(15, false), (14, true)] {
-            let fill: String = (0..sheets)
-                .map(|n| format!(r#"<link rel="stylesheet" href="https://unpkg.com/big{n}.css">"#))
-                .collect();
-            for row in rows {
+        for (row, misses) in rows {
+            for (sheets, fits) in [(misses, false), (misses - 1, true)] {
+                let fill: String = (0..sheets)
+                    .map(|n| {
+                        format!(r#"<link rel="stylesheet" href="https://unpkg.com/big{n}.css">"#)
+                    })
+                    .collect();
                 let c = card(&format!("{fill}{row}"), &[], &[]);
                 let bad = bad.clone();
                 let fetch = move |url: &str, _: Duration| match url {
@@ -4162,6 +4241,138 @@ mod tests {
                     "{sheets} {row}"
                 );
             }
+        }
+    }
+
+    /// `n` stylesheets of one asset each, filling that much of the total.
+    fn filled(n: usize) -> String {
+        (0..n)
+            .map(|n| format!(r#"<link rel="stylesheet" href="https://unpkg.com/big{n}.css">"#))
+            .collect()
+    }
+
+    fn over_total(url: &str) -> Vec<(String, String)> {
+        vec![(url.to_string(), over_total_reason())]
+    }
+
+    fn warned(r: &ExportResult) -> Vec<(String, String)> {
+        r.warnings
+            .iter()
+            .map(|w| (w.target.clone(), w.reason.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_module_data_uri_len_is_its_length() {
+        for n in 0..8 {
+            let text = "x".repeat(n);
+            assert_eq!(module_data_uri_len(n), module_data_uri(&text).len(), "{n}");
+        }
+    }
+
+    #[test]
+    fn a_module_counts_once_per_map_entry_that_writes_it() {
+        // One asset of module is a third more as base64: one copy fits the
+        // two assets fourteen sheets leave, two copies don't.
+        const M: &str = "https://unpkg.com/m.js";
+        let m = format!("/*{}*/", "x".repeat(MAX_ASSET_BYTES - 4));
+        let rows = [
+            (
+                // The name `m` and the URL itself: two copies.
+                format!(
+                    r#"<script type="importmap">{{"imports":{{"m":"{M}"}}}}</script><script type="module">import "m";</script>"#
+                ),
+                false,
+            ),
+            (
+                format!(r#"<script type="module" src="{M}"></script>"#),
+                true,
+            ),
+        ];
+        for (row, fits) in rows {
+            let c = card(&format!("{}{row}", filled(14)), &[], &[]);
+            let body = m.clone();
+            let fetch = move |url: &str, _: Duration| match url {
+                M => Ok(body.clone().into_bytes()),
+                _ => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            };
+            let r = export_card(&c, None, files, fetch);
+            assert!(
+                r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+                "{row}: {}",
+                r.html.len()
+            );
+            let map = page_map(&r.html);
+            let address = &map["imports"][M];
+            if fits {
+                assert_eq!(warned(&r), [], "{row}");
+                assert_eq!(address, &js_data(&m), "{row}");
+            } else {
+                assert_eq!(warned(&r), over_total(M), "{row}");
+                assert_eq!(map, serde_json::json!({"imports": {"m": M, M: M}}), "{row}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_module_counts_its_specifiers_as_the_page_writes_them() {
+        // Each `"./b.js"` is written as `"https://unpkg.com/b.js"`, sixteen
+        // bytes longer: a.js as fetched fits the asset fifteen sheets leave
+        // as base64 (two thirds of it), as written doesn't (1.38 of it).
+        const A: &str = "https://unpkg.com/a.js";
+        const B: &str = "https://unpkg.com/b.js";
+        let a = "import\"./b.js\";".repeat(MAX_ASSET_BYTES / 30);
+        let c = card(
+            &format!(r#"{}<script type="module" src="{A}"></script>"#, filled(15)),
+            &[],
+            &[],
+        );
+        let fetch = move |url: &str, _: Duration| match url {
+            A => Ok(a.clone().into_bytes()),
+            B => Ok(b"export{}".to_vec()),
+            _ => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+        };
+        let r = export_card(&c, None, files, fetch);
+        assert!(
+            r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+            "{}",
+            r.html.len()
+        );
+        assert_eq!(warned(&r), over_total(A));
+        assert_eq!(
+            page_map(&r.html),
+            serde_json::json!({"imports": {A: A, B: js_data("export{}")}})
+        );
+    }
+
+    #[test]
+    fn a_css_file_counts_its_base64_toward_the_total() {
+        // A font of just under an asset fits the asset fifteen sheets leave,
+        // but not as base64; one of three quarters of it does.
+        const F: &str = "https://unpkg.com/f.woff2";
+        let row = format!("<style>a{{src:url({F})}}</style>");
+        for (size, fits) in [
+            (MAX_ASSET_BYTES - 16, false),
+            ((MAX_ASSET_BYTES - 100) / 4 * 3, true),
+        ] {
+            let c = card(&format!("{}{row}", filled(15)), &[], &[]);
+            let fetch = move |url: &str, _: Duration| match url {
+                F => Ok(vec![b'f'; size]),
+                _ => Ok(vec![b'y'; MAX_ASSET_BYTES]),
+            };
+            let r = export_card(&c, None, files, fetch);
+            assert!(
+                r.html.len() < MAX_INLINED_BYTES + 64 * 1024,
+                "{size}: {}",
+                r.html.len()
+            );
+            assert_eq!(r.html.contains(&row), !fits, "{size}");
+            assert_eq!(r.html.contains("data:font/woff2;base64,"), fits, "{size}");
+            assert_eq!(
+                warned(&r),
+                if fits { vec![] } else { over_total(F) },
+                "{size}"
+            );
         }
     }
 
@@ -4439,7 +4650,9 @@ mod tests {
     #[test]
     fn an_import_whose_link_room_cannot_fix_frees_every_earlier_sheet_for_the_rest() {
         // c.css's 404.css stays a link whatever the room, so s.css and t.css
-        // turn back into links; f.woff2, which missed the total, then fits.
+        // turn back into links; f.woff2, which missed the total, then fits:
+        // its data: URI is 577 bytes under the asset of room the fill leaves,
+        // fewer than s.css and t.css hold.
         let s = format!("p{{}}/*{}*/", "x".repeat(600));
         let t = format!("t{{}}/*{}*/", "x".repeat(600));
         let c = "@import \"404.css\";a{background:url(f.woff2)}";
@@ -4448,7 +4661,7 @@ mod tests {
             "https://unpkg.com/s.css" => Ok(s2.clone().into_bytes()),
             "https://unpkg.com/t.css" => Ok(t2.clone().into_bytes()),
             "https://unpkg.com/c.css" => Ok(c.as_bytes().to_vec()),
-            "https://unpkg.com/f.woff2" => Ok(vec![b'f'; MAX_ASSET_BYTES - 1000]),
+            "https://unpkg.com/f.woff2" => Ok(vec![b'f'; (MAX_ASSET_BYTES - 600) / 4 * 3]),
             u if u.starts_with("https://unpkg.com/big") => Ok(vec![b'y'; MAX_ASSET_BYTES]),
             _ => Err("HTTP 404".to_string()),
         };
