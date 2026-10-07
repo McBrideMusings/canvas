@@ -235,7 +235,6 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
-                        cdn.present.push(url.clone());
                         out.push_str(&without_attr(tag, "src", src));
                         out.push_str(&escape_raw(&String::from_utf8_lossy(&bytes), "script"));
                         // Whatever the element held is dropped with its src.
@@ -251,7 +250,6 @@ fn rewrite<F: Fn(&str, Duration) -> Result<Vec<u8>, String>>(
                 };
                 match cdn.get(&url, warnings) {
                     Some(bytes) => {
-                        cdn.present.push(url.clone());
                         cdn.importing.push(url.clone());
                         let css =
                             cdn.css(&String::from_utf8_lossy(&bytes), Some(&url), 0, warnings);
@@ -332,7 +330,35 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         }
     }
 
-    /// The body of `url`, or None after a `fetch-failed` warning naming it.
+    /// Where the record of the page stands now, for [`Cdn::since`].
+    fn mark(&self) -> Mark {
+        Mark {
+            bytes: self.inlined,
+            present: self.present.len(),
+            linked: self.linked.len(),
+        }
+    }
+
+    /// What went into the record of the page after `mark`.
+    fn since(&self, mark: Mark) -> Added {
+        Added {
+            bytes: self.inlined - mark.bytes,
+            present: mark.present..self.present.len(),
+            linked: mark.linked..self.linked.len(),
+        }
+    }
+
+    /// Takes `added` back out of the record of the page, for content that
+    /// went in and was then thrown away. Later entries move down.
+    fn undo(&mut self, added: &Added) {
+        self.inlined -= added.bytes;
+        self.present.drain(added.present.clone());
+        self.linked.drain(added.linked.clone());
+    }
+
+    /// The body of `url`, recorded as in the page, or None after a
+    /// `fetch-failed` warning naming it. Every caller puts the body in the
+    /// page, or undoes the record ([`Cdn::undo`]) when it throws it away.
     fn get(&mut self, url: &str, warnings: &mut Vec<ExportWarning>) -> Option<Vec<u8>> {
         if !self.cache.contains_key(url) {
             let left = self.deadline.saturating_duration_since(Instant::now());
@@ -364,6 +390,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         match result {
             Ok(bytes) => {
                 self.inlined += bytes.len();
+                self.present.push(url.to_string());
                 Some(bytes)
             }
             Err(reason) => {
@@ -435,17 +462,20 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                         ruled.clear();
                     }
                     out.push_str(&css[pos..i]);
-                    let (bytes, present, linked) =
-                        (self.inlined, self.present.len(), self.linked.len());
+                    let start = self.mark();
                     let written = &css[i..import.end];
                     let (text, inlined) = self.import(&import, base, depth, written, warnings);
-                    let (bytes, mut present) = (self.inlined - bytes, present..self.present.len());
+                    let mut added = self.since(start);
                     let (links, rules) = prelude(&text);
                     if links && !ruled.is_empty() {
-                        let later = self.linked.get(linked).unwrap_or(&import.reference).clone();
-                        let dropped =
-                            self.unlink(&mut out, std::mem::take(&mut ruled), &later, warnings);
-                        present = present.start - dropped..present.end - dropped;
+                        let later = self
+                            .linked
+                            .get(start.linked)
+                            .unwrap_or(&import.reference)
+                            .clone();
+                        let ruled = std::mem::take(&mut ruled);
+                        let undone = self.unlink(&mut out, ruled, &later, warnings);
+                        added.after_undoing(&undone);
                     }
                     let at = out.len();
                     out.push_str(&text);
@@ -454,8 +484,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                             span: at..out.len(),
                             link: link_text(&import, Some(&url), written),
                             url,
-                            bytes,
-                            present,
+                            added,
                         });
                     }
                     pos = import.end;
@@ -504,8 +533,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                     self.warn(u, reason, warnings);
                     None
                 } else {
-                    let (bytes_before, links_before, present_before) =
-                        (self.inlined, self.linked.len(), self.present.len());
+                    let start = self.mark();
                     self.get(u, warnings).and_then(|bytes| {
                         self.importing.push(u.clone());
                         let text = self.css(
@@ -515,20 +543,16 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
                             warnings,
                         );
                         self.importing.pop();
-                        match (import.block(), self.linked.get(links_before)) {
+                        match (import.block(), self.linked.get(start.linked)) {
                             (Some(block), Some(nested)) => {
                                 let reason = format!(
                                     "kept as a link: its @import of {nested} would be ignored inside {block}"
                                 );
-                                self.inlined = bytes_before;
-                                self.present.truncate(present_before);
+                                self.undo(&self.since(start));
                                 self.warn(u, reason, warnings);
                                 None
                             }
-                            _ => {
-                                self.present.push(u.clone());
-                                Some(text)
-                            }
+                            _ => Some(text),
                         }
                     })
                 }
@@ -545,25 +569,24 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
 
     /// Turns each of `ruled` back into a link in `out`, since the browser
     /// ignores the link to `later` that follows their rules, and warns.
-    /// Returns how many `present` entries went with them.
+    /// Returns everything that came out of the record of the page.
     fn unlink(
         &mut self,
         out: &mut String,
         ruled: Vec<Inlined>,
         later: &str,
         warnings: &mut Vec<ExportWarning>,
-    ) -> usize {
+    ) -> Vec<Added> {
         let Some(start) = ruled.first().map(|r| r.span.start) else {
-            return 0;
+            return Vec::new();
         };
         let mut relinked = String::new();
         let mut pos = start;
-        let mut dropped = 0;
+        // Last first, so each one's entries are where it recorded them.
         for r in ruled.iter().rev() {
-            self.inlined -= r.bytes;
-            dropped += r.present.len();
-            self.present.drain(r.present.clone());
+            self.undo(&r.added);
         }
+        let undone = ruled.iter().map(|r| r.added.clone()).collect();
         for r in ruled {
             relinked.push_str(&out[pos..r.span.start]);
             relinked.push_str(&r.link);
@@ -577,7 +600,7 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         relinked.push_str(&out[pos..]);
         out.truncate(start);
         out.push_str(&relinked);
-        dropped
+        undone
     }
 
     /// What replaces one `url()` naming `reference`: a CDN file as a `data:`
@@ -603,7 +626,6 @@ impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Cdn<F> {
         };
         if cdn::allowed(target) {
             if let Some(bytes) = self.get(target, warnings) {
-                self.present.push(target.to_string());
                 let path = target.split('?').next().unwrap_or(target);
                 let mime = mime_guess::from_path(path).first_or_octet_stream();
                 return Some(format!(
@@ -662,14 +684,41 @@ impl Import {
 }
 
 /// One `@import` inlined as rules, kept so it can turn back into a link:
-/// where its stylesheet sits in the output, its URL and link form, the bytes
-/// it inlined and the `present` entries its stylesheet added.
+/// where its stylesheet sits in the output, its URL and link form, and what
+/// its stylesheet added to the record of the page.
 struct Inlined {
     span: Range<usize>,
     url: String,
     link: String,
+    added: Added,
+}
+
+/// A point in a [`Cdn`]'s record of the page: the bytes inlined and the
+/// lengths of `present` and `linked`.
+#[derive(Clone, Copy)]
+struct Mark {
+    bytes: usize,
+    present: usize,
+    linked: usize,
+}
+
+/// What went into a [`Cdn`]'s record of the page between two points.
+#[derive(Clone)]
+struct Added {
     bytes: usize,
     present: Range<usize>,
+    linked: Range<usize>,
+}
+
+impl Added {
+    /// Where these entries sit once each of `undone`, all recorded before
+    /// them, has been taken out.
+    fn after_undoing(&mut self, undone: &[Added]) {
+        let present: usize = undone.iter().map(|a| a.present.len()).sum();
+        let linked: usize = undone.iter().map(|a| a.linked.len()).sum();
+        self.present = self.present.start - present..self.present.end - present;
+        self.linked = self.linked.start - linked..self.linked.end - linked;
+    }
 }
 
 /// `import`, written as `written`, as a link to `absolute`: made absolute
@@ -1675,6 +1724,87 @@ mod tests {
                     ExportWarningKind::FetchFailed,
                     "https://unpkg.com/s.css",
                     "kept as a link: the later @import of https://example.com/z.css would be ignored after its rules"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sheet_that_turned_others_back_into_links_can_turn_back_too() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => {
+                    "@import \"y.css\";@import \"f.css\";@import \"https://example.com/z.css\";"
+                }
+                Some("y.css") => ".y{}",
+                Some("f.css") => "@import \"https://example.com/c.css\";.f{}",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        let want = r#"<style>@import url("https://unpkg.com/y.css");@import url("https://unpkg.com/f.css");@import "https://example.com/z.css";</style>"#;
+        assert!(r.html.contains(want), "{}", r.html);
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.target.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "https://unpkg.com/y.css",
+                    "kept as a link: the later @import of https://example.com/c.css would be ignored after its rules"
+                ),
+                (
+                    "https://unpkg.com/f.css",
+                    "kept as a link: the later @import of https://example.com/z.css would be ignored after its rules"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_kept_as_a_link_names_the_link_that_stays() {
+        let c = card(
+            r#"<link rel="stylesheet" href="https://unpkg.com/a.css">"#,
+            &[],
+            &[],
+        );
+        let fetch = |url: &str, _: Duration| {
+            let body = match url.strip_prefix("https://unpkg.com/") {
+                Some("a.css") => "@import \"g.css\" layer(x);",
+                Some("g.css") => "@import \"h.css\" supports(display:grid);",
+                Some("h.css") => "@import \"https://example.com/c.css\";",
+                _ => return Err("HTTP 404".to_string()),
+            };
+            Ok(body.as_bytes().to_vec())
+        };
+        let r = export_card(&c, None, files, fetch);
+        let want = r#"<style>@import url("https://unpkg.com/g.css") layer(x);</style>"#;
+        assert!(r.html.contains(want), "{}", r.html);
+        let got: Vec<_> = r
+            .warnings
+            .iter()
+            .map(|w| (w.target.as_str(), w.reason.as_str()))
+            .collect();
+        // g.css holds the link to h.css, not h.css's thrown-away c.css.
+        assert_eq!(
+            got,
+            [
+                (
+                    "https://unpkg.com/h.css",
+                    "kept as a link: its @import of https://example.com/c.css would be ignored inside @supports"
+                ),
+                (
+                    "https://unpkg.com/g.css",
+                    "kept as a link: its @import of https://unpkg.com/h.css would be ignored inside @layer"
                 ),
             ]
         );
