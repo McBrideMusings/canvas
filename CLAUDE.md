@@ -529,7 +529,9 @@ beside the terminal all day.
   one the same way (`widget refused: …`) and `artifacts.json` loads it as no
   widget (`widget dropped on load`). An artifact's HTML page is a whole
   document with no wrapper `<div>`, so its cap holds one element more
-  (`webkit_freeze_page_reason`); canvasd answers such a page with a 422 whose
+  (`webkit_freeze_page_reason`, which reads the file's bytes as WebKit decodes
+  them, each invalid UTF-8 sequence one U+FFFD, and names the file's own byte
+  offset); canvasd answers such a page with a 422 whose
   plain text, shown in the pane, says why (`artifact page refused`), and leaves
   the file as it is. The reason
   (`webkit_freeze_reason`) names the tag and its byte offset, never the

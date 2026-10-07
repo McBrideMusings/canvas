@@ -2326,16 +2326,47 @@ fn first_freeze(mut scan: Tags<'_>) -> Option<(usize, Freeze)> {
 /// attributes are left out, so the line stays short whatever the tag holds.
 /// `None` when it holds none.
 pub fn webkit_freeze_reason(html: &str) -> Option<String> {
-    freeze_reason(html, tags(html))
+    freeze_reason(html, tags(html), |at| at)
 }
 
-/// [`webkit_freeze_reason`] for `html` as a whole page in its own frame, such
-/// as an artifact's, where the stack holds one element more than in a card.
-pub fn webkit_freeze_page_reason(html: &str) -> Option<String> {
-    freeze_reason(html, scan(html, MAX_OPEN_PAGE))
+/// [`webkit_freeze_reason`] for a whole page in its own frame, such as an
+/// artifact's, where the stack holds one element more than in a card. The
+/// page is a file's bytes served as UTF-8, so it is read as WebKit decodes
+/// it, each invalid sequence one U+FFFD, and the offset named is the file's.
+pub fn webkit_freeze_page_reason(page: &[u8]) -> Option<String> {
+    let html = String::from_utf8_lossy(page);
+    freeze_reason(&html, scan(&html, MAX_OPEN_PAGE), |at| {
+        source_offset(page, at)
+    })
 }
 
-fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
+/// The offset in `bytes` of offset `at` in `String::from_utf8_lossy(bytes)`,
+/// where each invalid sequence became one three-byte U+FFFD; an offset inside
+/// a U+FFFD maps to the start of the sequence it replaced.
+fn source_offset(bytes: &[u8], at: usize) -> usize {
+    let (mut lossy, mut source) = (0, 0);
+    for chunk in bytes.utf8_chunks() {
+        let valid = chunk.valid().len();
+        if at < lossy + valid {
+            return source + at - lossy;
+        }
+        lossy += valid;
+        source += valid;
+        let invalid = chunk.invalid().len();
+        if invalid > 0 {
+            if at < lossy + '\u{FFFD}'.len_utf8() {
+                return source;
+            }
+            lossy += '\u{FFFD}'.len_utf8();
+            source += invalid;
+        }
+    }
+    source + at.saturating_sub(lossy)
+}
+
+/// The reason line for `html`'s first freeze, naming its offset as
+/// `reported` maps it.
+fn freeze_reason(html: &str, scan: Tags<'_>, reported: impl Fn(usize) -> usize) -> Option<String> {
     let (at, freeze) = first_freeze(scan)?;
     let what = if at == html.len() {
         // Only text reopening formatting elements freezes at the end.
@@ -2353,6 +2384,7 @@ fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
             .unwrap_or(rest.len());
         format!("its <{slash}{}>", rest[..len].to_ascii_lowercase())
     };
+    let at = reported(at);
     let (closes, nest) = match freeze {
         Freeze::Cell => ("closes a table cell", "the table"),
         Freeze::Select => ("closes a select in a table", "the select"),
@@ -3267,15 +3299,43 @@ mod tests {
             )
         };
         assert!(webkit_freeze_reason(&page(505)).is_some());
-        assert_eq!(webkit_freeze_page_reason(&page(505)), None);
+        assert_eq!(webkit_freeze_page_reason(page(505).as_bytes()), None);
         let html = page(506);
         let at = html.find("</table>").unwrap();
         assert_eq!(
-            webkit_freeze_page_reason(&html),
+            webkit_freeze_page_reason(html.as_bytes()),
             Some(format!(
                 "its </table> at byte {at} closes a table cell nested past WebKit's \
                  512-element limit, which freezes Canvas.app; nest the table less deeply"
             ))
+        );
+    }
+
+    #[test]
+    fn a_page_reason_names_the_files_offset_past_invalid_utf8() {
+        // Latin-1 bytes WebKit decodes, as a page served as UTF-8, to one
+        // U+FFFD each: a lone é, a truncated sequence, an overlong one.
+        let mut page = b"<p>caf\xE9 \xE2\x82 \xC0\xAF</p>".to_vec();
+        page.extend("<div>".repeat(507).bytes());
+        page.extend(b"<table><tr><td><svg>\xE9</table>");
+        let at = page.windows(8).position(|w| w == b"</table>").unwrap();
+        assert_eq!(
+            webkit_freeze_page_reason(&page),
+            Some(format!(
+                "its </table> at byte {at} closes a table cell nested past WebKit's \
+                 512-element limit, which freezes Canvas.app; nest the table less deeply"
+            ))
+        );
+        // Text after the last tag that reopens formatting elements freezes
+        // at the end, which is the file's end.
+        let bs: String = (0..400).map(|i| format!("<b id={i}>")).collect();
+        let mut page = b"\xE9".to_vec();
+        page.extend(format!("<p>{bs}</p>{}", "<div>x</div>".repeat(255)).bytes());
+        page.extend(b"x\xE9\xE9");
+        let reason = webkit_freeze_page_reason(&page).unwrap();
+        assert!(
+            reason.starts_with(&format!("by the end of the page at byte {}, ", page.len())),
+            "{reason}"
         );
     }
 

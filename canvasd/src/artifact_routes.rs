@@ -628,7 +628,7 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
 /// (`canvas_core::html::webkit_freeze_page_reason`), naming why in the pane;
 /// the file itself is left as it is. `None` for any other page.
 fn refuse_freezing_page(id: &str, rel: &str, html: &[u8]) -> Option<Response> {
-    let reason = canvas_core::html::webkit_freeze_page_reason(&String::from_utf8_lossy(html))?;
+    let reason = canvas_core::html::webkit_freeze_page_reason(html)?;
     canvas_core::log::warn(
         "artifact page refused",
         &[("id", &id), ("path", &rel), ("reason", &reason.as_str())],
