@@ -541,6 +541,13 @@ impl OpenElements {
     fn in_template(&self) -> bool {
         self.last_named("template").is_some()
     }
+
+    /// Whether the scan is inside an HTML `<template>` whose contents the
+    /// page never shows: see [`Element::inert`].
+    fn in_inert_template(&self) -> bool {
+        self.last_named("template")
+            .is_some_and(|p| self.elements[p].inert)
+    }
 }
 
 /// One open element. `id` tells it from a copy the adoption agency or a
@@ -556,6 +563,10 @@ struct Element {
     /// it without ever attaching it, so it never gets a parent and the depth
     /// cap never closes it: see [`Tags::insert`].
     detached: bool,
+    /// A `<template>` whose contents the page never shows: an ordinary one,
+    /// or a declarative shadow root inside one. The shadow root a card's
+    /// frame attaches renders where its host is.
+    inert: bool,
 }
 
 /// An entry in the list of active formatting elements: the open or closed
@@ -592,6 +603,7 @@ impl Element {
             point,
             groups: 0,
             detached: false,
+            inert: ns == Ns::Html && name == "template",
         };
         let html = ns == Ns::Html;
         let special = match ns {
@@ -837,8 +849,16 @@ impl Tags<'_> {
         if !VOID_TAGS.contains(&name) {
             let id = self.push_html(name);
             self.opened = Some(id);
-            if let Some(template) = self.open.elements.last_mut().filter(|_| shadow_root) {
-                template.detached = true;
+            if shadow_root {
+                let below = self.open.len() - 1;
+                let inert = self
+                    .open
+                    .last_named_below("template", below)
+                    .is_some_and(|p| self.open.elements[p].inert);
+                if let Some(template) = self.open.elements.last_mut() {
+                    template.detached = true;
+                    template.inert = inert;
+                }
             }
             if FORMATTING_TAGS.contains(&name) {
                 self.push_formatting(id, name, tag);
@@ -1773,10 +1793,16 @@ impl Tags<'_> {
         self.open.last_named("template")
     }
 
-    /// Whether the scan is inside an HTML `<template>`, whose contents the
-    /// browser never shows.
+    /// Whether the scan is inside an HTML `<template>`, a declarative shadow
+    /// root's included.
     fn in_template(&self) -> bool {
         self.open.in_template()
+    }
+
+    /// Whether the scan is inside a `<template>` whose contents the browser
+    /// never shows; a declarative shadow root's it shows.
+    fn in_inert_template(&self) -> bool {
+        self.open.in_inert_template()
     }
 
     /// Pops foreign elements until the innermost is HTML or an integration
@@ -2609,7 +2635,8 @@ pub fn card_title(html: &str) -> String {
 }
 
 /// The text of a card's first `<h1>`–`<h3>`, else its first line of visible
-/// text (script, style and template contents skipped), whitespace collapsed.
+/// text (script, style and template contents skipped, a declarative shadow
+/// root's kept), whitespace collapsed.
 /// `None` for a card with no text at all.
 fn card_label(html: &str) -> Option<String> {
     first_heading(html).or_else(|| {
@@ -2620,12 +2647,13 @@ fn card_label(html: &str) -> Option<String> {
     })
 }
 
-/// The visible text of the first `<h1>`–`<h3>` outside a `<template>`,
-/// whitespace collapsed. `None` when it is empty or never closed.
+/// The visible text of the first `<h1>`–`<h3>` outside an inert
+/// `<template>`, whitespace collapsed. `None` when it is empty or never
+/// closed.
 pub fn first_heading(html: &str) -> Option<String> {
     let mut scan = tags(html);
     while let Some(Tag { start, end, .. }) = scan.next() {
-        if scan.in_template() {
+        if scan.in_inert_template() {
             continue;
         }
         let name = tag_name(&html[start..end]);
@@ -2676,7 +2704,8 @@ const BLOCK_TAGS: &[&str] = &[
 
 /// `html` with every tag removed, the contents of `<script>`, `<style>`,
 /// `<iframe>`, `<noembed>`, `<noframes>`, `<noscript>` and `<template>`
-/// dropped (an SVG or MathML one's child elements' text with it), each block
+/// dropped (an SVG or MathML one's child elements' text with it; a
+/// declarative shadow root's template kept, as the page shows it), each block
 /// tag starting a new line, and every character reference decoded once
 /// ([`decode_entities`]), each run of text between two tags on its own, as
 /// the parser reads it. The raw text of `<xmp>` and `<plaintext>` is kept as
@@ -2691,8 +2720,8 @@ fn visible_text(html: &str) -> String {
 }
 
 /// [`visible_text`] of what `scan` reads from where it stopped up to and
-/// including the end tag `</close>` outside a `<template>` (so ending with the
-/// line break a block end tag adds); `None` when that never comes.
+/// including the end tag `</close>` outside an inert `<template>` (so ending
+/// with the line break a block end tag adds); `None` when that never comes.
 fn visible_text_until(html: &str, scan: &mut Tags, close: &str) -> Option<String> {
     let mut text = VisibleText::new(scan);
     while let Some(tag) = scan.next() {
@@ -2710,7 +2739,7 @@ struct VisibleText {
     out: String,
     /// Where the text not yet read starts.
     pos: usize,
-    /// Whether the text after the last tag is inside a `<template>`.
+    /// Whether the text after the last tag is inside an inert `<template>`.
     hidden: bool,
     /// The SVG or MathML `<script>`, `<style>` or the like the text after the
     /// last tag is inside: the browser renders none of its text, its child
@@ -2724,14 +2753,14 @@ impl VisibleText {
         Self {
             out: String::new(),
             pos: scan.pos,
-            hidden: scan.in_template(),
+            hidden: scan.in_inert_template(),
             muted: None,
         }
     }
 
     /// Takes the text between the last tag and `tag`, then `tag`, which `scan`
-    /// has just read. Returns the tag's name when it is an end tag outside a
-    /// `<template>`.
+    /// has just read. Returns the tag's name when it is an end tag outside an
+    /// inert `<template>`.
     fn step(&mut self, html: &str, scan: &Tags, tag: &Tag) -> Option<String> {
         let &Tag {
             start,
@@ -2773,7 +2802,7 @@ impl VisibleText {
             Some(name) if !quiet && BLOCK_TAGS.contains(&name) => self.out.push('\n'),
             _ => {}
         }
-        self.hidden = scan.in_template();
+        self.hidden = scan.in_inert_template();
         name.filter(|_| closes)
     }
 
@@ -4901,6 +4930,54 @@ mod tests {
             "shown"
         );
         assert_eq!(card_label("<template><h1>x</h1>"), None);
+    }
+
+    #[test]
+    fn card_label_reads_a_declarative_shadow_root_the_frame_shows() {
+        // Canvas.app's card frame attaches each of these shadow roots and
+        // renders its contents where the host is.
+        let label = |html| card_label(html).unwrap_or_default();
+        for (html, want) in [
+            (
+                "<div><template shadowrootmode=open><h2>t</h2></template></div><h1>later</h1>",
+                "t",
+            ),
+            (
+                "<div><template shadowrootmode=closed><h3>t</h3></template></div><h1>later</h1>",
+                "t",
+            ),
+            ("<template shadowrootmode=open><h2>t</h2></template><h1>later</h1>", "t"),
+            // The heading beats a line of text ahead of it.
+            ("<p>intro<div><template shadowrootmode=open><h2>t</h2></template></div>", "t"),
+            ("<p><template shadowrootmode=open>shadow</template></p>after", "shadow"),
+            ("<my-card><template shadowrootmode=open>shadow</template></my-card><p>after", "shadow"),
+            // A card is already in a body, so `<head>` is dropped and the
+            // element around the card hosts the template.
+            (
+                "<html><head><template shadowrootmode=open>shadow</template></head><body><p>b",
+                "shadow",
+            ),
+            // An ordinary template inside the shadow root stays hidden.
+            (
+                "<div><template shadowrootmode=open><template><h2>hid</h2></template><h3>s</h3></template></div>",
+                "s",
+            ),
+            // A shadow root inside an ordinary template is never shown.
+            (
+                "<template><div><template shadowrootmode=open><h2>hid</h2></template></div></template><h1>c</h1>",
+                "c",
+            ),
+            // A host holds one shadow root; a second template is an ordinary one.
+            (
+                "<div><template shadowrootmode=open>a</template><template shadowrootmode=open><h2>b</h2></template></div><h1>c</h1>",
+                "c",
+            ),
+            // A `<ul>` can't host one, so its template is an ordinary one.
+            ("<ul><template shadowrootmode=open><h2>hid</h2></template></ul><h1>c</h1>", "c"),
+            ("<div><template shadowrootmode=none>hid</template></div>shown", "shown"),
+        ] {
+            assert_eq!(label(html), want, "{html}");
+        }
     }
 
     #[test]

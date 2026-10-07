@@ -1110,8 +1110,62 @@
     "footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, " +
     "section, table, tr, ul";
 
+  // Whether an element named `name` can host a declarative shadow root, as
+  // canvas-core's is_shadow_host decides: one of the DOM's listed names, or a
+  // valid custom element name not already used by SVG or MathML.
+  const SHADOW_HOSTS = new Set([
+    "article", "aside", "blockquote", "body", "div", "footer", "h1", "h2",
+    "h3", "h4", "h5", "h6", "header", "main", "nav", "p", "section", "span",
+  ]);
+  const RESERVED_CUSTOM_NAMES = new Set([
+    "annotation-xml", "color-profile", "font-face", "font-face-src",
+    "font-face-uri", "font-face-format", "font-face-name", "missing-glyph",
+  ]);
+  const CUSTOM_ELEMENT_NAME =
+    /^[a-z][-.0-9_a-z\u00B7\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u037D\u037F-\u1FFF\u200C-\u200D\u203F-\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u{10000}-\u{EFFFF}]*$/u;
+
+  function isShadowHost(name) {
+    return (
+      SHADOW_HOSTS.has(name) ||
+      (name.includes("-") && CUSTOM_ELEMENT_NAME.test(name) && !RESERVED_CUSTOM_NAMES.has(name))
+    );
+  }
+
+  // Puts each declarative shadow root's contents where its template stands,
+  // as the card frame renders them. DOMParser attaches none, so each stays an
+  // ordinary template: the first with shadowrootmode open or closed on a host
+  // is the one the frame attaches, and a template at the card's start, which
+  // DOMParser puts in <head>, attaches to the element around the card.
+  function unwrapShadowRoots(doc) {
+    const hosts = new Set();
+    for (;;) {
+      const template = Array.from(doc.querySelectorAll("template[shadowrootmode]")).find(
+        (t) => {
+          const mode = t.getAttribute("shadowrootmode").toLowerCase();
+          const host = t.parentElement;
+          return (
+            (mode === "open" || mode === "closed") &&
+            host &&
+            !hosts.has(host) &&
+            (host === doc.head || isShadowHost(host.localName))
+          );
+        }
+      );
+      if (!template) return;
+      const host = template.parentElement;
+      hosts.add(host);
+      if (host === doc.head) {
+        doc.body.prepend(template.content);
+        template.remove();
+      } else {
+        template.replaceWith(template.content);
+      }
+    }
+  }
+
   function postText(card) {
     const doc = new DOMParser().parseFromString(card.html, "text/html");
+    unwrapShadowRoots(doc);
     for (const el of doc.querySelectorAll("style, script, template, noscript")) {
       el.remove();
     }
