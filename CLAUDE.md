@@ -510,7 +510,11 @@ beside the terminal all day.
   `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`). A
   widget is framed like a card, so `canvas artifact new|put --widget` refuses
   one the same way (`widget refused: …`) and `artifacts.json` loads it as no
-  widget (`widget dropped on load`). The reason
+  widget (`widget dropped on load`). An artifact's HTML page is a whole
+  document with no wrapper `<div>`, so its cap holds one element more
+  (`webkit_freeze_page_reason`); canvasd answers such a page with a 422 whose
+  plain text, shown in the pane, says why (`artifact page refused`), and leaves
+  the file as it is. The reason
   (`webkit_freeze_reason`) names the tag and its byte offset, never the
   tag's attributes.
 - An artifact's page is never themed, width-capped or sized to its content by
@@ -519,7 +523,8 @@ beside the terminal all day.
   (no `..`, no symlink out) and always with the artifact CSP; never serve them
   without it. The only change canvasd makes to a served page is to an HTML
   file: the error relay first inside `<head>` and `crossorigin` on each
-  `<script src>` lacking one.
+  `<script src>` lacking one, or the refusal in place of a page that would
+  freeze WebKit.
 - canvasd has no TCP listener, so nothing reaches it except a process that can
   open its 0600 socket, and its routes carry no Host or Origin checks. Never add
   a TCP or other network listener to it; a client that needs it goes through the

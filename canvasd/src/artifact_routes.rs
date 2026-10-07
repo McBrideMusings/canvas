@@ -592,6 +592,9 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
     };
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     let bytes = if mime.essence_str() == "text/html" {
+        if let Some(refused) = refuse_freezing_page(&id, &rel, &bytes) {
+            return refused;
+        }
         artifacts::served_page(&bytes)
     } else {
         bytes
@@ -619,4 +622,33 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
         bytes,
     )
         .into_response()
+}
+
+/// A 422 in place of an HTML page that would freeze Canvas.app's WebKit
+/// (`canvas_core::html::webkit_freeze_page_reason`), naming why in the pane;
+/// the file itself is left as it is. `None` for any other page.
+fn refuse_freezing_page(id: &str, rel: &str, html: &[u8]) -> Option<Response> {
+    let reason = canvas_core::html::webkit_freeze_page_reason(&String::from_utf8_lossy(html))?;
+    canvas_core::log::warn(
+        "artifact page refused",
+        &[("id", &id), ("path", &rel), ("reason", &reason.as_str())],
+    );
+    Some(
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            [
+                (
+                    header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8".to_string(),
+                ),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    artifacts::content_security_policy(id),
+                ),
+            ],
+            format!("Canvas won't show this page: {reason}.\n"),
+        )
+            .into_response(),
+    )
 }

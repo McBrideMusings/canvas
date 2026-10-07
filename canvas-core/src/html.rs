@@ -89,8 +89,14 @@ enum Tok {
 /// `<![CDATA[` section there is one tag through its `]]>`, except at an
 /// integration point such as `<foreignObject>`.
 pub fn tags(html: &str) -> Tags<'_> {
+    scan(html, MAX_OPEN)
+}
+
+/// [`tags`] with the depth cap at `max_open`.
+fn scan(html: &str, max_open: usize) -> Tags<'_> {
     Tags {
         html,
+        max_open,
         pos: 0,
         open: OpenElements::default(),
         formatting: Vec::new(),
@@ -175,6 +181,9 @@ pub struct Tags<'a> {
     freeze: Option<Freeze>,
     /// How many formatting elements the scan has reopened.
     reopened: usize,
+    /// How many elements the stack holds before the depth cap closes one:
+    /// [`MAX_OPEN`] for a card, [`MAX_OPEN_PAGE`] for a page.
+    max_open: usize,
 }
 
 /// A tag that freezes Canvas.app's WebKit, which reprocesses it in the same
@@ -209,6 +218,11 @@ const MAX_REOPENED: usize = 1_000_000;
 /// wrapper `<div>` that the viewer's card frame and an exported page both put
 /// around a card.
 const MAX_OPEN: usize = 512 - 3;
+
+/// WebKit's cap less the `<html>` and `<body>` around a whole page, such as
+/// an artifact's, which the scan reads as body content: what the page's head
+/// holds (a `<meta>`, a `<title>`, a `<style>`, a `<script>`) never nests.
+const MAX_OPEN_PAGE: usize = 512 - 2;
 
 /// The stack of open elements, innermost last, with indexes kept as it
 /// changes: which ids are open, and for each HTML element name, each SVG or
@@ -939,7 +953,7 @@ impl Tags<'_> {
     /// `<tbody>` a `<tr>` implies holds the row, and each formatting element
     /// reopened before text holds the next.
     fn insert(&mut self, tag: &str, name: &str) {
-        if self.open.len() >= MAX_OPEN
+        if self.open.len() >= self.max_open
             && self.open.last().is_some_and(|e| e.id < self.token_ids)
             && !self.fostered(tag, name)
         {
@@ -2103,12 +2117,11 @@ impl Iterator for Tags<'_> {
 /// (see [`Freeze`]): a card holding one must never reach a viewer, and `None`
 /// when it holds none.
 pub fn webkit_freeze(html: &str) -> Option<usize> {
-    first_freeze(html).map(|(at, _)| at)
+    first_freeze(tags(html)).map(|(at, _)| at)
 }
 
 /// The offset of the first tag that freezes Canvas.app's WebKit, and why.
-fn first_freeze(html: &str) -> Option<(usize, Freeze)> {
-    let mut scan = tags(html);
+fn first_freeze(mut scan: Tags<'_>) -> Option<(usize, Freeze)> {
     while let Some(tag) = scan.next() {
         if let Some(freeze) = scan.freeze {
             return Some((tag.start, freeze));
@@ -2122,7 +2135,17 @@ fn first_freeze(html: &str) -> Option<(usize, Freeze)> {
 /// attributes are left out, so the line stays short whatever the tag holds.
 /// `None` when it holds none.
 pub fn webkit_freeze_reason(html: &str) -> Option<String> {
-    let (at, freeze) = first_freeze(html)?;
+    freeze_reason(html, tags(html))
+}
+
+/// [`webkit_freeze_reason`] for `html` as a whole page in its own frame, such
+/// as an artifact's, where the stack holds one element more than in a card.
+pub fn webkit_freeze_page_reason(html: &str) -> Option<String> {
+    freeze_reason(html, scan(html, MAX_OPEN_PAGE))
+}
+
+fn freeze_reason(html: &str, scan: Tags<'_>) -> Option<String> {
+    let (at, freeze) = first_freeze(scan)?;
     // Past the `<` or `</`, which the scan only reads as a tag before a letter.
     let slash = if html[at + 1..].starts_with('/') {
         "/"
@@ -2817,6 +2840,31 @@ mod tests {
         assert_eq!(
             webkit_freeze_reason(&deep(504, "<table><tr><td><svg></table>")),
             None
+        );
+    }
+
+    #[test]
+    fn a_whole_page_freezes_one_element_deeper_than_a_card() {
+        // A page's own frame holds `<html>` and `<body>` but no wrapper
+        // `<div>`, so the depth that freezes a card leaves a page one short.
+        let head = "<!doctype html><html><head><meta charset=utf-8><title>t</title>\
+                    <style>td{}</style><script>let a = '<div>';</script></head><body>";
+        let page = |k: usize| {
+            format!(
+                "{head}{}<table><tr><td><svg></table></body></html>",
+                "<div>".repeat(k)
+            )
+        };
+        assert!(webkit_freeze_reason(&page(505)).is_some());
+        assert_eq!(webkit_freeze_page_reason(&page(505)), None);
+        let html = page(506);
+        let at = html.find("</table>").unwrap();
+        assert_eq!(
+            webkit_freeze_page_reason(&html),
+            Some(format!(
+                "its </table> at byte {at} closes a table cell nested past WebKit's \
+                 512-element limit, which freezes Canvas.app; nest the table less deeply"
+            ))
         );
     }
 
