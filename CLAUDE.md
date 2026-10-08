@@ -165,10 +165,15 @@ beside the terminal all day.
   numbers, Markdown colouring (instructions), counts, and an explicit Save
   with a Saved/Unsaved state (each unsaved draft is kept in the Settings
   page's localStorage, `canvas.layer-drafts`, keyed `<kind>:yours` or
-  `<kind>:<root>`, so a reload or relaunch restores it as Unsaved; saving or
+  `<kind>:<root>`, as `{draft, base}`, base being the file's text the draft
+  was edited from, so a reload or relaunch restores it as Unsaved; saving or
   editing it back to the file's text removes it, and a project whose file is
-  missing keeps its stored draft until the file returns; `LayerPage.page(kind).unsaved()`
-  lists the layers holding one; a project with no file shows a Create button
+  missing keeps its stored draft until the file returns; when the file no
+  longer matches the base, after a reload or while the page is open, the
+  editor header reads "Unsaved · the file changed since this draft" (wrapping,
+  never clipped, and appended to a parse error's text; Save's tooltip adds
+  that Save replaces the file), and the draft stays; `LayerPage.page(kind).unsaved()`
+  lists the layers holding one and `.stale()` those whose file moved; a project with no file shows a Create button
   that writes a one-line `.canvas/` file, since a blank write deletes it); and
   "What a <project> session reads", the compose route's text for the project
   last picked, rebuilt at most every 100ms from the unsaved text, each layer

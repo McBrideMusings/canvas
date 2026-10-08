@@ -892,6 +892,11 @@ body {
   white-space: normal;
 }
 
+/* A warning that must read in full, so it wraps rather than clips. */
+.pane-status.is-moved {
+  white-space: normal;
+}
+
 .pane-body {
   flex: 1;
   min-height: 0;

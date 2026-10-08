@@ -32,6 +32,7 @@
 
   // Unsaved drafts outlive a reload or relaunch of the Settings window: each
   // is kept in localStorage under "<kind>:yours" or "<kind>:<project root>"
+  // as {draft, base}, base being the file's text the draft was edited from,
   // until it is saved or edited back to the file's text.
   const DRAFTS_KEY = "canvas.layer-drafts";
   const drafts = {
@@ -44,13 +45,13 @@
       }
     },
     get(key) {
-      const text = drafts.all()[key];
-      return typeof text === "string" ? text : null;
+      const entry = drafts.all()[key];
+      return entry && typeof entry.draft === "string" && typeof entry.base === "string" ? entry : null;
     },
-    set(key, text) {
+    set(key, entry) {
       const all = drafts.all();
-      if (text === null) delete all[key];
-      else all[key] = text;
+      if (entry === null) delete all[key];
+      else all[key] = entry;
       try {
         localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
       } catch {
@@ -343,14 +344,15 @@
     const editEl = main.querySelector(".lp-edit");
     const outEl = main.querySelector(".lp-out");
 
-    // `person` and each project hold the saved text (null: no file) and the
-    // draft being edited. `target` is "yours" or a project root; `project` is
-    // the root column 3 composes for (null outside any project).
+    // `person` and each project hold the saved text (null: no file), the
+    // draft being edited and its base, the saved text it was edited from.
+    // `target` is "yours" or a project root; `project` is the root column 3
+    // composes for (null outside any project).
     const st = {
       loaded: false,
       down: false,
       include: true,
-      person: { saved: "", draft: "" },
+      person: { saved: "", draft: "", base: "" },
       projects: [],
       target: "yours",
       project: null,
@@ -369,11 +371,17 @@
     const current = () => (st.target === "yours" ? st.person : projectOf(st.target));
     const dirty = (layer) => layer && layer.saved !== null && layer.draft !== layer.saved;
     const draftKey = (layer) => `${kind}:${layer === st.person ? "yours" : layer.root}`;
-    // Keeps the stored draft in step with the layer: stored while unsaved,
-    // gone once it matches the file. A project with no file leaves storage
+    // A draft whose file changed since it was edited from it: Save would
+    // overwrite text the person never saw.
+    const stale = (layer) => dirty(layer) && layer.base !== layer.saved;
+    // Keeps the stored draft in step with the layer: stored with its base
+    // while unsaved, gone once it matches the file, whose text is then the
+    // base of the next edit. A project with no file leaves storage and base
     // alone, so a file missing for one load doesn't cost its draft.
     function storeDraft(layer) {
-      if (layer.saved !== null) drafts.set(draftKey(layer), dirty(layer) ? layer.draft : null);
+      if (layer.saved === null) return;
+      if (!dirty(layer)) layer.base = layer.saved;
+      drafts.set(draftKey(layer), dirty(layer) ? { draft: layer.draft, base: layer.base } : null);
     }
     // A layer's draft after a load: its unsaved text from memory (or, the
     // first time the page loads the layer, from storage) when that differs
@@ -381,8 +389,10 @@
     function restoreDraft(layer, saved) {
       const stored = layer.restored || saved === null ? null : drafts.get(draftKey(layer));
       if (saved !== null) layer.restored = true;
-      if (stored !== null) layer.draft = stored;
-      else if (!dirty(layer)) layer.draft = saved === null ? "" : saved;
+      if (stored !== null) {
+        layer.draft = stored.draft;
+        layer.base = stored.base;
+      } else if (!dirty(layer)) layer.draft = saved === null ? "" : saved;
       layer.saved = saved;
       storeDraft(layer);
     }
@@ -437,7 +447,7 @@
         // Each project keeps its object across reloads, so a save or create
         // still waiting on canvasd lands on the project the page shows.
         st.projects = projects.map((p, i) => {
-          const layer = projectOf(p.root) || { root: p.root, saved: null, draft: "" };
+          const layer = projectOf(p.root) || { root: p.root, saved: null, draft: "", base: null };
           layer.name = p.name;
           restoreDraft(layer, texts[i]);
           return layer;
@@ -698,7 +708,14 @@
         const unsaved = dirty(layer);
         const error = draftError();
         save.disabled = st.down || st.saving || !unsaved || (unsaved && !!error);
-        save.title = st.down ? DOWN : unsaved && error ? `Not saved: ${error}` : "";
+        const moved = stale(layer);
+        save.title = st.down
+          ? DOWN
+          : unsaved && error
+            ? `Not saved: ${error}`
+            : moved
+              ? `The file changed since this draft; Save replaces it with this draft`
+              : "";
         status.className = "pane-status";
         if (st.down) {
           status.classList.add("is-error");
@@ -711,6 +728,10 @@
           // hook then uses the built-in reminders alone.
           status.classList.add("is-error");
           status.textContent = unsaved ? `Not saved: ${error}` : `Sessions ignore this file: ${error}`;
+          if (moved) status.textContent += " · the file changed since this draft";
+        } else if (moved) {
+          status.classList.add("is-unsaved", "is-moved");
+          status.textContent = "Unsaved · the file changed since this draft";
         } else if (unsaved) {
           status.classList.add("is-unsaved");
           status.textContent = "Unsaved";
@@ -770,6 +791,8 @@
         // A blank save deletes the file, so the project has none again.
         const blank = !text.trim();
         layer.saved = blank ? (isYours ? "" : null) : text;
+        // Typing that went on during the save builds on the text saved.
+        layer.base = layer.saved;
         if (blank && layer.draft === text) layer.draft = "";
         // A blank save deleted the file on purpose, draft and all.
         if (layer.saved === null) drafts.set(draftKey(layer), null);
@@ -927,6 +950,9 @@
       // Each layer holding an unsaved draft: "yours" or a project root.
       unsaved: () =>
         [st.person, ...st.projects].filter(dirty).map((l) => (l === st.person ? "yours" : l.root)),
+      // Those whose file changed since the draft was edited from it.
+      stale: () =>
+        [st.person, ...st.projects].filter(stale).map((l) => (l === st.person ? "yours" : l.root)),
     };
   }
 
