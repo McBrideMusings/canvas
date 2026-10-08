@@ -5,7 +5,9 @@ pub mod cdn;
 pub mod esm;
 pub mod export;
 pub mod import_map;
+pub mod instruction_routes;
 pub mod profiles;
+pub mod project_files;
 pub mod provenance;
 pub mod refresh;
 pub mod repo;
@@ -31,6 +33,27 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/posts", post(routes::post_explicit))
         .route("/api/state", get(routes::get_state))
+        .route(
+            "/api/instructions/:kind",
+            get(instruction_routes::get_layers),
+        )
+        .route(
+            "/api/instructions/:kind/compose",
+            post(instruction_routes::compose),
+        )
+        .route(
+            "/api/instructions/:kind/person",
+            put(instruction_routes::put_person),
+        )
+        .route(
+            "/api/instructions/:kind/project",
+            put(instruction_routes::put_project),
+        )
+        .route(
+            "/api/instructions/:kind/include",
+            put(instruction_routes::put_include),
+        )
+        .route("/api/projects", get(instruction_routes::list_projects))
         .route("/api/profiles/:kind", get(routes::get_profiles))
         .route(
             "/api/profiles/:kind/effective",

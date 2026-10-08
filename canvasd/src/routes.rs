@@ -163,7 +163,7 @@ pub async fn post_explicit(
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
-    let card = {
+    let (card, created) = {
         let mut inner = state.inner.write().await;
         let created_session = ensure_session(
             &mut inner,
@@ -186,12 +186,19 @@ pub async fn post_explicit(
         inner.push_card(card.clone());
         // Published under the lock, so the persisted log records changes in
         // the order they were applied.
+        let created = created_session.is_some();
         if let Some(session) = created_session {
             state.publish(CanvasEvent::SessionUpserted(session));
         }
         state.publish(CanvasEvent::CardUpserted(card.clone()));
-        card
+        (card, created)
     };
+    if created {
+        // A git root walk and a file write: off the executor's threads.
+        let state = state.clone();
+        let cwd = req.cwd.clone();
+        let _ = tokio::task::spawn_blocking(move || state.record_project(&cwd)).await;
+    }
 
     (StatusCode::OK, Json(card)).into_response()
 }

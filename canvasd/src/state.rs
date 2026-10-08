@@ -166,6 +166,12 @@ pub struct AppState {
     /// The artifact pane a viewer last reported showing, in memory only;
     /// `None` until a viewer reports one.
     pub(crate) viewer_pane: Arc<std::sync::Mutex<Option<PaneReport>>>,
+    /// The git roots sessions have posted from, newest first, as
+    /// `projects.json` holds them; see [`AppState::record_project`].
+    pub(crate) projects: Arc<std::sync::Mutex<Vec<canvas_core::instructions::SeenProject>>>,
+    /// Held across every instruction-layer write, so two requests never share
+    /// `write_atomic`'s temp file name.
+    pub(crate) layer_writes: Arc<tokio::sync::Mutex<()>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
 }
@@ -195,6 +201,8 @@ impl AppState {
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
             viewer_pane: Arc::default(),
+            projects: Arc::default(),
+            layer_writes: Arc::default(),
             store: None,
             data_dir: None,
         }
@@ -206,6 +214,7 @@ impl AppState {
         let (store, inner) = Store::open(dir);
         let profiles = crate::profiles::load(dir).await;
         let artifacts = crate::artifacts::Artifacts::load(dir).await;
+        let projects = canvas_core::instructions::seen_projects(dir);
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
@@ -218,6 +227,8 @@ impl AppState {
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
             viewer_pane: Arc::default(),
+            projects: Arc::new(std::sync::Mutex::new(projects)),
+            layer_writes: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
         }
@@ -229,6 +240,58 @@ impl AppState {
         if let Some(dir) = &self.data_dir {
             let config = self.profiles.read().await;
             crate::profiles::save(dir, &config).await;
+        }
+    }
+
+    /// The data dir this state persists to; `None` for `AppState::new()`.
+    pub fn data_dir(&self) -> Option<&std::path::Path> {
+        self.data_dir.as_deref()
+    }
+
+    /// The projects recorded so far, newest first.
+    pub fn seen_projects(&self) -> Vec<canvas_core::instructions::SeenProject> {
+        self.projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Records `cwd`'s git root as seen now, moving it to the front, and
+    /// rewrites `projects.json` (kept only in memory without a data dir). A
+    /// `cwd` outside git records nothing.
+    pub fn record_project(&self, cwd: &str) {
+        let Some(root) = canvas_core::instructions::git_root(std::path::Path::new(cwd)) else {
+            return;
+        };
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| root.display().to_string());
+        let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
+        projects.retain(|p| p.root != root);
+        projects.insert(
+            0,
+            canvas_core::instructions::SeenProject {
+                root: root.clone(),
+                name,
+                last_seen: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        let Some(dir) = &self.data_dir else {
+            return;
+        };
+        let path = dir.join(canvas_core::instructions::PROJECTS_FILE);
+        let written = serde_json::to_vec_pretty(&*projects)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                canvas_core::instructions::write_atomic(&path, &json).map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => canvas_core::log::info("project recorded", &[("root", &root.display())]),
+            Err(e) => canvas_core::log::error(
+                "project record failed",
+                &[("root", &root.display()), ("error", &e)],
+            ),
         }
     }
 

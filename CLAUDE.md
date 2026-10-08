@@ -50,8 +50,24 @@ beside the terminal all day.
   bottom, so a project's `no image` cancels the built-in `image` in that repo;
   when the person's or project's layer doesn't parse, `reminders()` returns
   the built-in reminders and the reason (file and line). `seen_projects` reads
-  `projects.json` in `CANVAS_DATA_DIR` (`{root, name, lastSeen}`), empty until
-  canvasd records projects.
+  `projects.json` in `CANVAS_DATA_DIR` (`{root, name, lastSeen}`, newest
+  first): canvasd records the git root of a session's working directory when
+  that session first posts (`AppState::record_project`, logged `project
+  recorded`), outside the 24h stream retention. canvasd's routes
+  (`canvasd/src/instruction_routes.rs`, `:kind` is `instructions` or
+  `reminders`): `GET /api/instructions/:kind?root=` (the layers and the
+  Include flag), `POST /api/instructions/:kind/compose` `{root, person,
+  project}` (unsaved overrides, never written; the same `compose` the hooks
+  call), `PUT /api/instructions/:kind/person` `{text}`, `PUT
+  /api/instructions/:kind/project` `{root, text}` (blank text deletes either
+  file), `PUT /api/instructions/:kind/include` `{include}`, and `GET
+  /api/projects` (each seen root with whether it has each file). A project
+  write is ADR-0005's one write into a person's folder: only a root in the
+  seen list that is still a git root, only the kind's file under `.canvas/`
+  (created when absent), refused (403) when `.canvas` or the file is a
+  symlink; a reminders text that doesn't parse is a 400 naming the line.
+  canvasd holds one lock across these writes; each logs `instruction layer
+  written|deleted|refused` with kind, layer, path and bytes or reason.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The windows load `canvas://localhost/`, a custom scheme `bridge.rs` answers by
   proxying each request to canvasd's Unix socket (a request that can't reach it
