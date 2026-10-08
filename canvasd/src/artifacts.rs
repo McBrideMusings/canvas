@@ -2,7 +2,7 @@
 //! data directory, or a folder or HTML file the person owns that an artifact
 //! links to, shown on the viewer's Artifacts page as real web pages
 //! (ADR-0002). The records persist in `artifacts.json` beside
-//! `profiles.json`, outside the 24h stream, and are never evicted or pruned:
+//! `projects.json`, outside the 24h stream, and are never evicted or pruned:
 //! an artifact stays until someone deletes it.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};

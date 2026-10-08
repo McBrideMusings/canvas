@@ -27,8 +27,9 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  width: 68px;
-  padding: 6px 4px;
+  min-width: 68px;
+  padding: 6px 8px;
+  white-space: nowrap;
   border: none;
   border-radius: 8px;
   background: none;
@@ -93,10 +94,6 @@ body {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--muted);
-}
-
-.pref-note-error {
-  color: var(--danger);
 }
 
 .status-dot {
@@ -205,8 +202,8 @@ body {
 }
 
 /* Integrations tab: one row per agent — a glyph, the name over one status
-   phrase, and a button when there is something to do. Hairline dividers like
-   the profile list; a failed install's stderr line sits under the phrase. The
+   phrase, and a button when there is something to do. Hairline dividers
+   between rows; a failed install's stderr line sits under the phrase. The
    glyph's shape carries the state, its colour only repeats it. */
 .integrations-head {
   display: flex;
@@ -388,74 +385,6 @@ body {
   outline-offset: 2px;
 }
 
-/* Guidance tab: full-width blocks instead of the label/control grid the
-   other tabs use — a prompt doesn't fit a two-column layout. */
-.prefs-wide {
-  gap: 16px;
-}
-
-.guidance-block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.guidance-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.pref-label-wide {
-  font-weight: 600;
-}
-
-.guidance-status {
-  font-size: 11px;
-  color: var(--muted);
-  min-height: 14px;
-}
-
-.guidance-repo-input {
-  flex: 1;
-  max-width: 220px;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--surface);
-  font: inherit;
-  font-size: 12px;
-}
-
-.guidance-repo-input:disabled {
-  opacity: 0.6;
-}
-
-.guidance-text {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  background: var(--surface);
-  color: inherit;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.5;
-  resize: vertical;
-}
-
-.guidance-text:disabled {
-  background: var(--hover);
-  opacity: 0.7;
-}
-
-.guidance-actions {
-  display: flex;
-  gap: 8px;
-}
-
 .btn {
   height: 26px;
   padding: 0 12px;
@@ -488,163 +417,22 @@ body {
   outline-offset: 2px;
 }
 
-.guidance-head-end {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* The Daemon and Integrations tabs: full-width blocks instead of the
+   label/control grid. */
+.prefs-wide {
+  gap: 16px;
 }
 
-.icon-btn {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--fg3);
-  cursor: pointer;
-}
-
-.icon-btn:hover {
-  background: var(--hover);
-  color: var(--fg);
-}
-
-.icon-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* A destructive action must not share its resting look with a hover state
-   or a disabled control (both also #ece9e0) — colour alone signals "this
-   deletes something" until it's armed. */
-.icon-btn-danger {
-  color: var(--danger);
-}
-
-.icon-btn-danger:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.icon-btn-danger[data-armed="true"] {
-  background: #b3261e;
-  color: #fff;
-}
-
-.profile-select {
-  width: 100%;
-  max-width: 280px;
-  height: 28px;
-  cursor: pointer;
-}
-
-.profile-select:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-/* Rows share a hairline divider rather than each getting its own bordered
-   card — a border is the strongest grouping cue there is (grouping.md), and
-   spending it on three interchangeable rows left nothing stronger for the
-   sections (Global assignment / Repo override / Profiles) that actually
-   need to read as distinct. Each profile is collapsed to its name until
-   clicked — the previous always-open textarea per profile was most of what
-   made this tab feel like a wall of text. */
-#profiles-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.profile-row {
-  border-bottom: 1px solid var(--line);
-}
-
-.profile-row:last-child {
-  border-bottom: none;
-}
-
-.profile-row-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 0;
-  cursor: pointer;
-}
-
-.profile-row-name {
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.profile-row-preview {
-  flex: 1;
-  min-width: 0;
+.integrations-status {
+  font-size: 11px;
   color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-height: 14px;
 }
 
-.profile-row-readonly-tag {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--hover);
-  color: var(--fg3);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.profile-row-detail {
+.integrations-head-end {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
-  padding-bottom: 12px;
-}
-
-.profile-row-detail[hidden] {
-  display: none;
-}
-
-.profile-row-chevron {
-  flex: none;
-  color: var(--faint);
-  transition: transform 150ms;
-}
-
-.profile-row-head[aria-expanded="true"] .profile-row-chevron {
-  transform: rotate(90deg);
-}
-
-.profile-row-rename-input {
-  min-width: 0;
-  max-width: 160px;
-  height: 22px;
-  padding: 0 6px;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: var(--surface);
-  font: inherit;
-  font-weight: 600;
-  font-size: 12px;
-}
-
-/* An in-progress "add profile" row: no chevron/preview/delete (it isn't
-   saved yet), always expanded, its own name field instead of a static
-   label. Sits at the top of the list until Save or Cancel. */
-.profile-row-draft {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 0 12px;
 }
 
 /* Post-reminder triggers form: one row per trigger, name left, control right,
@@ -661,7 +449,7 @@ body {
 }
 
 .stop-form[hidden],
-.guidance-text[hidden] {
+.ed-wrap[hidden] {
   display: none;
 }
 
@@ -671,7 +459,7 @@ body {
   border-radius: 6px;
   background: var(--hover);
   color: var(--fg2);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -700,12 +488,12 @@ body {
 
 .stop-form-label {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .stop-form-hint {
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--fg2);
+  font-size: 13px;
 }
 
 .stop-form-number {
@@ -745,7 +533,7 @@ body {
   padding: 1px 2px 1px 8px;
   border-radius: 10px;
   background: var(--hover);
-  font-size: 11.5px;
+  font-size: 13px;
 }
 
 .stop-chip-text {
@@ -786,7 +574,515 @@ body {
   gap: 6px;
 }
 
-.stop-form-add .guidance-repo-input {
+.stop-form-add .lp-input {
   max-width: none;
   min-width: 160px;
+}
+
+/* Instructions and Post reminders: three columns — choose a layer, edit it,
+   read what a session receives. Text is 13px or larger in --fg or --fg2,
+   never dimmed. */
+.layer-page {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  height: calc(100vh - 118px);
+  min-height: 320px;
+  padding: 6px 20px 20px;
+  font-size: 14px;
+}
+
+.layer-page[hidden] {
+  display: none;
+}
+
+.layer-page .btn,
+.layer-page .seg-btn {
+  font-size: 13px;
+}
+
+.layer-page .btn:disabled {
+  background: var(--hover);
+  color: var(--fg3);
+}
+
+/* The editor's header puts the file's path on its own line, so the whole
+   path and the save state both fit. */
+.lp-edit .pane-head {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.lp-edit .pane-head .pane-sub {
+  flex-basis: 100%;
+  order: 1;
+  padding-left: 17px;
+}
+
+.lp-edit .pane-head .pane-status {
+  flex: 1;
+  text-align: right;
+}
+
+/* The reminders form in a narrow column: a threshold and its hint go on
+   their own line under the trigger. */
+.layer-page .stop-form-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.layer-page .stop-form-end {
+  grid-column: 1 / -1;
+}
+
+.layer-page .stop-form-end:empty {
+  display: none;
+}
+
+.lp-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.lp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lp-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lp-note {
+  display: block;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: normal;
+  color: var(--fg2);
+}
+
+.lp-note code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.lp-switchrow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.lp-switchrow .switch {
+  margin-top: 1px;
+}
+
+.lp-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.lp-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lp-row:first-child {
+  border-top: 0;
+}
+
+.lp-row:hover {
+  background: var(--hover);
+}
+
+.lp-row[aria-current="true"] {
+  background: var(--accent-soft);
+}
+
+.lp-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.lp-row-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-row-meta {
+  font-size: 13px;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.lp-row-path {
+  grid-column: 2 / 4;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Clipped from the start: the file name at a path's end is what tells two
+   apart. */
+.lp-path {
+  direction: rtl;
+  text-align: left;
+}
+
+.lp-sub {
+  padding: 10px 10px 4px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.lp-sub + .lp-row {
+  border-top: 0;
+}
+
+.lp-none {
+  padding: 4px 10px 10px;
+  font-size: 13px;
+  color: var(--fg2);
+}
+
+.lp-input {
+  flex: 1;
+  min-width: 160px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.dot-hidden {
+  visibility: hidden;
+}
+
+.dot-builtin {
+  background: #8a8578;
+}
+
+.dot-yours {
+  background: #2f6df6;
+}
+
+.dot-project {
+  background: #1f9d6b;
+}
+
+:root[data-theme="dark"] .dot-builtin {
+  background: #a8a49a;
+}
+
+:root[data-theme="dark"] .dot-yours {
+  background: #6d9bff;
+}
+
+:root[data-theme="dark"] .dot-project {
+  background: #45c08f;
+}
+
+.lp-edit,
+.lp-out {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pane-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pane-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-badge,
+.pane-status {
+  font-size: 13px;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.pane-status.is-saved {
+  color: var(--ok);
+}
+
+.pane-status.is-unsaved {
+  color: var(--warn);
+}
+
+.pane-status.is-error {
+  color: var(--danger);
+  white-space: normal;
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.pane-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--fg2);
+}
+
+.pane-foot .grow {
+  flex: 1;
+}
+
+.out-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.out-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.out-legend-none {
+  font-style: italic;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ln {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+}
+
+.ln-n {
+  padding-right: 10px;
+  color: var(--fg3);
+  text-align: right;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ln-t {
+  padding-right: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-h,
+.md-mark {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.md-code {
+  color: #b5413a;
+}
+
+:root[data-theme="dark"] .md-code {
+  color: #f08a7e;
+}
+
+.md-b {
+  font-weight: 700;
+}
+
+.md-link {
+  color: var(--color-link);
+}
+
+.md-note {
+  color: var(--fg2);
+  font-style: italic;
+}
+
+/* The editor: a transparent textarea over its own coloured, line-numbered
+   copy, so the caret and selection are the browser's own. */
+.ed-wrap {
+  position: relative;
+  padding: 6px 0;
+}
+
+.ed-text {
+  position: absolute;
+  top: 6px;
+  right: 0;
+  bottom: 6px;
+  left: 40px;
+  width: calc(100% - 40px);
+  margin: 0;
+  padding: 0 12px 0 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg);
+  font: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ed-text::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
+
+.ed-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 16px;
+  font-size: 14px;
+}
+
+.lp-error,
+.lp-unavailable {
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.lp-unavailable {
+  color: var(--fg2);
+}
+
+.layer-page .stop-form-bar {
+  padding: 8px 12px 0;
+}
+
+.layer-page .stop-form {
+  padding: 6px 12px 12px;
+}
+
+.out-body {
+  padding: 4px 0 10px;
+}
+
+.out-block.is-active {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+.out-break {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  align-items: center;
+  height: 24px;
+}
+
+.out-break .dot {
+  justify-self: end;
+  margin-right: 6px;
+}
+
+.out-break-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.out-break-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin-right: 12px;
+  background: var(--line2);
+}
+
+.out-blank .ln-n {
+  color: transparent;
+}
+
+@media (max-width: 1000px) {
+  .layer-page {
+    grid-template-columns: 210px minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    padding-inline: 12px;
+  }
 }

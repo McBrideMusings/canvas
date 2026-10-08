@@ -84,10 +84,15 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     let url: tauri::Url = "canvas://localhost/settings.html"
         .parse()
         .map_err(|e: <tauri::Url as std::str::FromStr>::Err| e.to_string())?;
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(url))
+    // Wide enough for the Instructions and Post reminders tabs' three columns.
+    let builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(url))
         .title("Settings")
-        .inner_size(640.0, 640.0)
-        .min_inner_size(480.0, 360.0)
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(900.0, 480.0);
+    // A debug app driven by `admin verify-app` opens it without taking focus.
+    #[cfg(debug_assertions)]
+    let builder = builder.focused(!debug::active());
+    builder
         .resizable(true)
         .minimizable(false)
         .maximizable(false)

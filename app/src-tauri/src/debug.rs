@@ -3,7 +3,8 @@
 //! (`scripts/verify-app.sh` sets it); nothing here runs without it.
 //!
 //! - `eval/*.js`: each file is run in the main window once, in name order,
-//!   then deleted.
+//!   then deleted; a name ending `.settings.js` runs in the Settings window
+//!   instead, which then opens without taking focus.
 //! - `CANVAS_DEBUG_WINDOW=x,y`: moves the main window to that point (logical
 //!   pixels, screen coordinates) at start, without activating it, so a recording
 //!   can put it on a Retina display.
@@ -17,6 +18,11 @@ use tauri::{AppHandle, LogicalPosition, Manager};
 
 fn dir() -> Option<PathBuf> {
     std::env::var_os("CANVAS_DEBUG_DIR").map(PathBuf::from)
+}
+
+/// Whether a program is driving this app through `CANVAS_DEBUG_DIR`.
+pub fn active() -> bool {
+    dir().is_some()
 }
 
 /// `None` when no `save-path` file stands in for the dialog; otherwise the
@@ -63,10 +69,15 @@ pub fn run_eval_queue(app: AppHandle) {
         for file in files {
             let script = std::fs::read_to_string(&file);
             let _ = std::fs::remove_file(&file);
-            let result = match (script, app.get_webview_window("main")) {
+            let label = if file.to_string_lossy().ends_with(".settings.js") {
+                "settings"
+            } else {
+                "main"
+            };
+            let result = match (script, app.get_webview_window(label)) {
                 (Ok(script), Some(window)) => window.eval(&script).map_err(|e| e.to_string()),
                 (Err(e), _) => Err(e.to_string()),
-                (_, None) => Err("no main window".to_string()),
+                (_, None) => Err(format!("no {label} window")),
             };
             match result {
                 Ok(()) => canvas_core::log::info("debug eval", &[("file", &file.display())]),

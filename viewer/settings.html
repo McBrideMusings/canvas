@@ -48,18 +48,33 @@
     <button
       type="button"
       class="settings-tab"
-      id="tab-guidance"
-      data-section="guidance"
+      id="tab-instructions"
+      data-section="instructions"
       role="tab"
       aria-selected="false"
-      aria-controls="section-guidance"
+      aria-controls="section-instructions"
     >
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 4h11l5 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z" />
         <path d="M15 4v5h5" />
         <path d="M7 12h8M7 15.5h5" />
       </svg>
-      Guidance
+      Instructions
+    </button>
+    <button
+      type="button"
+      class="settings-tab"
+      id="tab-reminders"
+      data-section="reminders"
+      role="tab"
+      aria-selected="false"
+      aria-controls="section-reminders"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z" />
+        <path d="M10 20.5a2 2 0 004 0" />
+      </svg>
+      Post reminders
     </button>
     <button
       type="button"
@@ -127,83 +142,41 @@
       </div>
     </div>
   </main>
-  <main class="prefs prefs-wide" id="section-guidance" role="tabpanel" aria-labelledby="tab-guidance" hidden>
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide" id="profile-kind-label">Setting</span>
-        <span class="seg" role="group" aria-labelledby="profile-kind-label">
-          <button type="button" class="seg-btn" data-profile-kind="posting-guidance" aria-pressed="true">Posting guidance</button>
-          <button type="button" class="seg-btn" data-profile-kind="stop-triggers" aria-pressed="false">Post reminders</button>
+  <main class="layer-page" id="section-instructions" data-kind="instructions" role="tabpanel" aria-labelledby="tab-instructions" hidden>
+    <aside class="lp-nav">
+      <label class="lp-switchrow">
+        <input type="checkbox" class="switch lp-include" role="switch" />
+        <span>
+          <b>Include Canvas's built-in instructions</b>
+          <span class="lp-note lp-include-note"></span>
         </span>
-      </div>
-      <p class="pref-note" id="profile-kind-note"></p>
-    </div>
-
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide" id="profile-mode-label">Repo profiles</span>
-        <span class="seg" role="group" aria-labelledby="profile-mode-label">
-          <button type="button" class="seg-btn" data-profile-mode="additive" aria-pressed="false">Add to global</button>
-          <button type="button" class="seg-btn" data-profile-mode="replace" aria-pressed="false">Replace global</button>
+      </label>
+      <section class="lp-group">
+        <h2 class="lp-label">Edit</h2>
+        <div class="lp-list lp-targets"></div>
+        <p class="lp-note">Projects are checkouts that have posted to Canvas. Each one's instructions are <code>.canvas/instructions.md</code> at its git root.</p>
+      </section>
+    </aside>
+    <section class="lp-edit" aria-label="Editor"></section>
+    <section class="lp-out" aria-label="Composed preview"></section>
+  </main>
+  <main class="layer-page" id="section-reminders" data-kind="reminders" role="tabpanel" aria-labelledby="tab-reminders" hidden>
+    <aside class="lp-nav">
+      <label class="lp-switchrow">
+        <input type="checkbox" class="switch lp-include" role="switch" />
+        <span>
+          <b>Include Canvas's built-in reminders</b>
+          <span class="lp-note lp-include-note"></span>
         </span>
-        <span class="guidance-status" id="profile-mode-status"></span>
-      </div>
-      <p class="pref-note" id="profile-mode-note"></p>
-    </div>
-
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide" id="profile-global-label">Global assignment</span>
-        <span class="guidance-status" id="profile-global-status"></span>
-      </div>
-      <p class="pref-note">
-        Applies to every repo unless a repo below overrides it. "Built-in
-        default" uses Canvas's own compiled-in default instead of a profile.
-      </p>
-      <select
-        id="profile-global-select"
-        class="guidance-repo-input profile-select"
-        aria-labelledby="profile-global-label"
-      ></select>
-    </div>
-
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide" id="profile-repo-label">Repo override</span>
-        <input
-          type="text"
-          id="profile-repo-input"
-          class="guidance-repo-input"
-          list="profile-repo-list"
-          placeholder="owner/repo"
-        />
-        <datalist id="profile-repo-list"></datalist>
-        <span class="guidance-status" id="profile-repo-status"></span>
-      </div>
-      <p class="pref-note">Overrides the global assignment for sessions in this one repo.</p>
-      <select
-        id="profile-repo-select"
-        class="guidance-repo-input profile-select"
-        aria-labelledby="profile-repo-label"
-        disabled
-      ></select>
-      <p class="pref-note" id="profile-repo-effective"></p>
-    </div>
-
-    <div class="guidance-block">
-      <div class="guidance-head">
-        <span class="pref-label-wide">Profiles</span>
-        <span class="guidance-head-end">
-          <span class="guidance-status" id="profiles-status"></span>
-          <button type="button" class="icon-btn" id="profile-new" title="Add profile" aria-label="Add profile">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </button>
-        </span>
-      </div>
-      <div id="profiles-list"></div>
-    </div>
+      </label>
+      <section class="lp-group">
+        <h2 class="lp-label">Edit</h2>
+        <div class="lp-list lp-targets"></div>
+        <p class="lp-note">Projects are checkouts that have posted to Canvas. Each one's reminders are <code>.canvas/reminders.txt</code> at its git root.</p>
+      </section>
+    </aside>
+    <section class="lp-edit" aria-label="Editor"></section>
+    <section class="lp-out" aria-label="Composed preview"></section>
   </main>
   <main class="prefs prefs-wide" id="section-daemon" role="tabpanel" aria-labelledby="tab-daemon" hidden>
     <div class="daemon-panel" id="daemon-panel">
@@ -251,8 +224,8 @@
   <main class="prefs prefs-wide" id="section-integrations" role="tabpanel" aria-labelledby="tab-integrations" hidden>
     <div class="integrations-head">
       <span class="pref-note integrations-intro">Canvas keeps each agent's hooks current when it opens.</span>
-      <span class="guidance-head-end">
-        <span class="guidance-status" id="integrations-checked"></span>
+      <span class="integrations-head-end">
+        <span class="integrations-status" id="integrations-checked"></span>
         <button type="button" class="btn btn-secondary" id="integrations-refresh">Check now</button>
       </span>
     </div>
@@ -265,6 +238,7 @@
     <pre class="daemon-error" id="integrations-load-error" role="alert" hidden></pre>
   </main>
   <script src="stop-form.js"></script>
+  <script src="layer-page.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

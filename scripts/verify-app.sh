@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bash scripts/verify-app.sh <start|shot <png>|eval <js|->|env|dir|stop> — run a throwaway canvas daemon
+# bash scripts/verify-app.sh <start|shot <png> [settings]|eval <js|-> [settings]|env|dir|stop> — run a throwaway canvas daemon
 # and a dev Canvas.app on their own Unix socket, and capture the app window.
 #
 # Canvas has no browser-reachable port, so the app window is the only viewer;
@@ -12,8 +12,13 @@
 # page choice) lives under ~/Library/WebKit/app and is shared by every checkout.
 #
 #   start       build both, start daemon and app, print the folder and socket
-#   shot <png>  capture the app's "Canvas" window to <png> (no focus taken)
-#   eval <js|-> run a script in the app's main window (no focus taken); the
+#   shot <png> [settings]
+#               capture the app's "Canvas" window, or its "Settings" window, to
+#               <png> (no focus taken)
+#   eval <js|-> [settings]
+#               run a script in the app's main window, or its Settings window
+#               (no focus taken; open it first with an eval in the main window
+#               that invokes `open_settings`); the
 #               debug app reads it from ${dir}/debug/eval within 200ms. A
 #               ${dir}/debug/save-path file answers an export's save dialog
 #               (its path; empty for cancelled) — see app/src-tauri/src/debug.rs
@@ -56,26 +61,30 @@ case "${1:-}" in
     echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), dir ${dir}, socket ${socket}"
     ;;
   shot)
-    out="${2:?usage: bash scripts/verify-app.sh shot <png>}"
+    out="${2:?usage: bash scripts/verify-app.sh shot <png> [settings]}"
+    title="Canvas"
+    [ "${3:-}" = "settings" ] && title="Settings"
     pid="$(cat "${dir}/app.pid")"
     cat > "${dir}/winid.swift" <<EOF
 import CoreGraphics
 import Foundation
 let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
-for w in list where (w[kCGWindowOwnerPID as String] as? Int) == ${pid} && (w[kCGWindowName as String] as? String) == "Canvas" {
+for w in list where (w[kCGWindowOwnerPID as String] as? Int) == ${pid} && (w[kCGWindowName as String] as? String) == "${title}" {
   print(w[kCGWindowNumber as String] ?? 0)
 }
 EOF
     win="$(swift "${dir}/winid.swift")"
-    [ -n "${win}" ] || { echo "verify-app: no Canvas window for pid ${pid}" >&2; exit 1; }
+    [ -n "${win}" ] || { echo "verify-app: no ${title} window for pid ${pid}" >&2; exit 1; }
     screencapture -x -o -l "${win}" "${out}"
     echo "verify-app: wrote ${out}"
     ;;
   eval)
-    src="${2:?usage: bash scripts/verify-app.sh eval <js|->}"
+    src="${2:?usage: bash scripts/verify-app.sh eval <js|-> [settings]}"
+    suffix="js"
+    [ "${3:-}" = "settings" ] && suffix="settings.js"
     tmp="${dir}/debug/eval/.$$.tmp"
     if [ "${src}" = "-" ]; then cat > "${tmp}"; else cp "${src}" "${tmp}"; fi
-    mv "${tmp}" "${dir}/debug/eval/$(date +%s%N)-$$.js"
+    mv "${tmp}" "${dir}/debug/eval/$(date +%s%N)-$$.${suffix}"
     ;;
   env)
     printf 'export CANVAS_DATA_DIR=%q CANVAS_SOCKET=%q\n' "${dir}" "${socket}"
@@ -93,7 +102,7 @@ EOF
     echo "verify-app: stopped"
     ;;
   *)
-    echo "usage: bash scripts/verify-app.sh <start|shot <png>|eval <js|->|env|dir|stop>" >&2
+    echo "usage: bash scripts/verify-app.sh <start|shot <png> [settings]|eval <js|-> [settings]|env|dir|stop>" >&2
     exit 2
     ;;
 esac

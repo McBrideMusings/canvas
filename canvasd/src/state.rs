@@ -6,7 +6,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::profiles::ProfilesConfig;
 use crate::store::Store;
 
 pub const CARD_RING_CAPACITY: usize = 500;
@@ -149,7 +148,6 @@ pub struct Inner {
 pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
-    pub profiles: Arc<RwLock<ProfilesConfig>>,
     /// Every artifact record; see [`crate::artifacts`].
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// The artifact folders being watched; see [`crate::watcher`].
@@ -193,7 +191,6 @@ impl AppState {
                 data: HashMap::new(),
             })),
             events: tx,
-            profiles: Arc::new(RwLock::new(ProfilesConfig::default())),
             artifacts: Arc::default(),
             watcher: Arc::default(),
             refreshes: Arc::default(),
@@ -209,17 +206,15 @@ impl AppState {
     }
 
     /// State backed by `dir/stream.jsonl` for sessions and cards, and
-    /// `dir/profiles.json` for named-profile overrides: reloads both on start.
+    /// `dir/artifacts.json` and `dir/projects.json`: reloads them on start.
     pub async fn open(dir: &std::path::Path) -> Self {
         let (store, inner) = Store::open(dir);
-        let profiles = crate::profiles::load(dir).await;
         let artifacts = crate::artifacts::Artifacts::load(dir).await;
         let projects = canvas_core::instructions::seen_projects(dir);
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
-            profiles: Arc::new(RwLock::new(profiles)),
             artifacts: Arc::new(RwLock::new(artifacts)),
             watcher: Arc::default(),
             refreshes: Arc::default(),
@@ -231,15 +226,6 @@ impl AppState {
             layer_writes: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
-        }
-    }
-
-    /// Persist the current profiles config to `profiles.json`. No-op
-    /// without a data dir (e.g. `AppState::new()` in tests).
-    pub async fn save_profiles(&self) {
-        if let Some(dir) = &self.data_dir {
-            let config = self.profiles.read().await;
-            crate::profiles::save(dir, &config).await;
         }
     }
 

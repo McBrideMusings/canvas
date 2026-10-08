@@ -3,15 +3,13 @@ use std::path::Path as StdPath;
 use std::process::Stdio;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
-    Agent, AssignGlobalProfileRequest, AssignRepoProfileRequest, Card, EffectiveProfile,
-    OpenRequest, PostRequest, ProfilesState, Session, SetProfileModeRequest, SetProfileTextRequest,
-    StateResponse, UpdateCardRequest,
+    Agent, Card, OpenRequest, PostRequest, Session, StateResponse, UpdateCardRequest,
 };
 use futures::stream::Stream;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -841,145 +839,6 @@ pub async fn get_card_image(
         buf,
     )
         .into_response()
-}
-
-/// The settings page's read: every named profile for `kind`, the global
-/// assignment and each repo's assignment.
-pub async fn get_profiles(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-) -> impl IntoResponse {
-    let config = state.profiles.read().await;
-    let set = config.kind(&kind);
-    let builtin = crate::profiles::builtin_default(&kind).map(str::to_string);
-    Json(ProfilesState {
-        kind,
-        mode: set.mode,
-        profiles: set.profiles,
-        global: set.global,
-        repos: set.repos,
-        builtin,
-    })
-}
-
-/// `cwd` names the directory a session runs in (resolved to its GitHub repo);
-/// `repo` names the repo directly and wins when both are given.
-#[derive(serde::Deserialize)]
-pub struct EffectiveProfileQuery {
-    cwd: Option<String>,
-    repo: Option<String>,
-}
-
-/// The session/CLI read: the text a session in the repo receives, joined per
-/// the kind's mode, and the sources it came from. Both are absent when nothing
-/// is assigned, and the caller falls back to its own compiled-in default.
-pub async fn get_effective_profile(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-    Query(params): Query<EffectiveProfileQuery>,
-) -> impl IntoResponse {
-    let repo = match params.repo {
-        Some(repo) => Some(repo),
-        None => match params.cwd {
-            Some(cwd) => github_repo(&cwd).await,
-            None => None,
-        },
-    };
-    let config = state.profiles.read().await;
-    let set = config.kind(&kind);
-    let composed = set.compose(&kind, repo.as_deref());
-    Json(EffectiveProfile {
-        kind,
-        profiles: composed
-            .as_ref()
-            .map(|c| c.sources.clone())
-            .unwrap_or_default(),
-        text: composed.map(|c| c.text),
-    })
-}
-
-/// An assignment naming a profile that isn't in that kind's set would
-/// silently fall back to the compiled-in default with no sign why — reject
-/// it instead.
-fn unknown_profile_response(name: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        format!("no profile named {name:?}"),
-    )
-        .into_response()
-}
-
-/// The settings page writes a kind's profiles and
-/// assignments through these three routes.
-pub async fn set_profile_text(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-    Json(req): Json<SetProfileTextRequest>,
-) -> Response {
-    // A stop-triggers profile the hook can't parse would silently stop
-    // asking for posts, so refuse it here with the offending line.
-    if kind == crate::profiles::KIND_STOP_TRIGGERS {
-        if let Some(text) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            if let Err(message) = canvas_core::reminders::parse(text) {
-                return (StatusCode::BAD_REQUEST, message).into_response();
-            }
-        }
-    }
-    {
-        let mut config = state.profiles.write().await;
-        config.set_profile_text(&kind, &req.name, req.text);
-    }
-    state.save_profiles().await;
-    StatusCode::OK.into_response()
-}
-
-pub async fn set_profile_mode(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-    Json(req): Json<SetProfileModeRequest>,
-) -> Response {
-    {
-        let mut config = state.profiles.write().await;
-        config.set_mode(&kind, req.mode);
-    }
-    state.save_profiles().await;
-    StatusCode::OK.into_response()
-}
-
-pub async fn set_global_profile(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-    Json(req): Json<AssignGlobalProfileRequest>,
-) -> Response {
-    {
-        let mut config = state.profiles.write().await;
-        if let Some(name) = &req.profile {
-            if !config.kind(&kind).profiles.contains_key(name) {
-                return unknown_profile_response(name);
-            }
-        }
-        config.set_global(&kind, req.profile);
-    }
-    state.save_profiles().await;
-    StatusCode::OK.into_response()
-}
-
-pub async fn set_repo_profile(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-    Json(req): Json<AssignRepoProfileRequest>,
-) -> Response {
-    {
-        let mut config = state.profiles.write().await;
-        if let Some(name) = &req.profile {
-            if !config.kind(&kind).profiles.contains_key(name) {
-                return unknown_profile_response(name);
-            }
-        }
-        config.set_repo(&kind, &req.repo, req.profile);
-    }
-    state.save_profiles().await;
-    StatusCode::OK.into_response()
 }
 
 fn is_openable(path: &str) -> bool {

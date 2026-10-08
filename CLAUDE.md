@@ -16,22 +16,6 @@ beside the terminal all day.
   Code, the first `codex` ancestor for Codex), and a 30s sweep ends a session whose
   pid is gone; sessions with no pid are never swept), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
-  `profiles.rs` is the generalized named-profile store a future feature can
-  reuse instead of growing its own bespoke override: a "kind" owns its own
-  set of named text profiles, which one is assigned globally, which repos
-  have their own assignment, and a mode. In `additive` mode (the default) a
-  session gets the global profile's text (the built-in default when none is
-  assigned) followed by its repo's profile, joined by a blank line and never
-  the same profile twice; in `replace` mode it gets the repo's profile alone,
-  else the global one. `ProfileSet::compose` returns the joined text and the
-  ordered source names (`"built-in"` marks the default). Two kinds ship:
-  `posting-guidance` and `stop-triggers` (the daemon answers 400 with the
-  offending line for a `stop-triggers` profile `canvas_core::reminders`
-  doesn't parse). Only Settings' Guidance tab reads and writes them; no hook
-  or CLI command does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
-  (the mode is written only when it isn't `additive`), outside the 24h
-  `stream.jsonl` retention window; `AppState::open` loads it alongside the
-  stream reload, so it's async.
 - Instructions (`canvas-core/src/instructions.rs`): what an agent reads at
   session start, and the post reminders (`canvas-core/src/reminders.rs`, the
   directive parser), each come from up to three layers, joined in this order
@@ -111,8 +95,10 @@ beside the terminal all day.
   the item shows as "Export failed: …";
   it logs `post exported`, `post export cancelled` or `post export failed`.
   A debug build with `CANVAS_DEBUG_DIR` set (`debug.rs`; `verify-app.sh` sets
-  it) runs each `eval/*.js` in that folder in the main window, so a script can
-  drive the viewer without taking focus (`admin verify-app eval <js|->`), and a
+  it) runs each `eval/*.js` in that folder in the main window, or in the
+  Settings window for a name ending `.settings.js`, so a script can drive
+  either without taking focus (`admin verify-app eval <js|-> [settings]`, `shot
+  <png> [settings]`; the Settings window then opens unfocused), and a
   `save-path` file there answers the save dialog (empty for cancelled).
   `verify-app.sh` runs each checkout's throwaway daemon and dev app in its own
   `/tmp/cv-<8 hex hashed from the checkout's path>` (`CANVAS_VERIFY_DIR`
@@ -165,9 +151,20 @@ beside the terminal all day.
   image toggles fit and 2.5x, wheel or pinch zooms at the cursor (1x to 8x),
   drag pans while zoomed, `+` `-` `0` zoom and reset, and only the X button,
   Esc or a click on the bare backdrop closes it.
-  Settings > Guidance > Post reminders edits each profile as a form
-  (`stop-form.js` parses the directive text into a model and re-emits it, keeping
-  comments, unknown lines and order) or as raw text; the text stays the only store.
+  Settings' Instructions and Post reminders tabs (`layer-page.js`, one page
+  per kind, built on canvasd's instruction routes) are three columns: the
+  Include switch and an Edit list (Yours, then each seen project with its
+  line count or "no file"); an editor for the selected layer with line
+  numbers, Markdown colouring (instructions), counts, and an explicit Save
+  with a Saved/Unsaved state (a project with no file shows a Create button
+  that writes a one-line `.canvas/` file, since a blank write deletes it); and
+  "What a <project> session reads", the compose route's text for the project
+  last picked, rebuilt at most every 100ms from the unsaved text, each layer
+  marked with a dot and its name. `LayerPage.page(kind).composedText()` returns
+  that text for `admin verify-app eval … settings`. The Post reminders editor
+  has a Form/Text switch (`stop-form.js` parses the directive text into a
+  model and re-emits it, keeping comments, unknown lines and order); the text
+  stays the only store. The Settings window opens at 1180×760.
 - `cli/` — the `canvas` binary: one binary, both roles. `canvas daemon` builds
   `canvasd`'s router and serves it on a Unix socket, `canvasd.sock` in
   `CANVAS_DATA_DIR` (`CANVAS_SOCKET` to override), mode 0600 — there is no TCP
@@ -395,7 +392,7 @@ beside the terminal all day.
   page an agent keeps until someone deletes it. An owned one is a folder canvasd
   owns at `artifacts/<id>/` in `CANVAS_DATA_DIR`, its id `art-` plus 10 hex
   digits; the records (id, title, kind `owned` or `linked` with its `link`,
-  created/updated times) persist in `artifacts.json` beside `profiles.json`,
+  created/updated times) persist in `artifacts.json` beside `projects.json`,
   loaded by `AppState::open`, never evicted or pruned by age. `canvas artifact
   new [--title t]` prints the record with its folder `path`; `new --link <path>`
   instead records an existing absolute folder or `.html` file the person owns

@@ -6,7 +6,6 @@ pub mod esm;
 pub mod export;
 pub mod import_map;
 pub mod instruction_routes;
-pub mod profiles;
 pub mod project_files;
 pub mod provenance;
 pub mod refresh;
@@ -54,21 +53,6 @@ pub fn build_router(state: AppState) -> Router {
             put(instruction_routes::put_include),
         )
         .route("/api/projects", get(instruction_routes::list_projects))
-        .route("/api/profiles/:kind", get(routes::get_profiles))
-        .route(
-            "/api/profiles/:kind/effective",
-            get(routes::get_effective_profile),
-        )
-        .route(
-            "/api/profiles/:kind/definitions",
-            put(routes::set_profile_text),
-        )
-        .route("/api/profiles/:kind/mode", put(routes::set_profile_mode))
-        .route(
-            "/api/profiles/:kind/global",
-            put(routes::set_global_profile),
-        )
-        .route("/api/profiles/:kind/repos", put(routes::set_repo_profile))
         .route(
             "/api/cards/:id",
             get(routes::get_card)
