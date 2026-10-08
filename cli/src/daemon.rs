@@ -1,6 +1,29 @@
 use canvasd::build_router;
 use canvasd::state::AppState;
 
+/// `canvas daemon install`: installs this binary as the launchd agent's, the
+/// same install Canvas.app runs on launch, restarting canvasd only when the
+/// binary or the plist changed.
+pub fn install() -> Result<serde_json::Value, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("couldn't locate this binary: {e}"))?;
+    let home = std::env::var_os("HOME").ok_or("no HOME: cannot place the launchd agent")?;
+    let outcome = canvas_core::service::install(&exe, std::path::Path::new(&home))?;
+    canvas_core::log::info(
+        "daemon install",
+        &[
+            ("from", &exe.display()),
+            ("binary_changed", &outcome.binary_changed),
+            ("plist_changed", &outcome.plist_changed),
+            ("action", &outcome.action.as_str()),
+        ],
+    );
+    Ok(serde_json::json!({
+        "binaryChanged": outcome.binary_changed,
+        "plistChanged": outcome.plist_changed,
+        "action": outcome.action.as_str(),
+    }))
+}
+
 pub fn run() {
     canvas_core::log::init_background(canvas_core::log::Process::Daemon);
     let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");

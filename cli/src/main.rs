@@ -1,16 +1,29 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) != Some("daemon") {
+    let serving = args.get(1).map(String::as_str) == Some("daemon") && args.len() == 2;
+    if !serving {
         canvas_core::log::init(canvas_core::log::Process::Cli);
     }
 
     match args.get(1).map(String::as_str) {
-        Some("daemon") => {
-            canvas::daemon::run();
-        }
+        Some("daemon") => match args.get(2).map(String::as_str) {
+            None => canvas::daemon::run(),
+            Some("install") if args.len() == 3 => match canvas::daemon::install() {
+                Ok(report) => println!("{report}"),
+                Err(e) => {
+                    eprintln!("canvas daemon install: {e}");
+                    canvas_core::log::error("daemon install failed", &[("error", &e)]);
+                    std::process::exit(1);
+                }
+            },
+            _ => {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            }
+        },
         Some("guidance") => {
             let text = std::env::current_dir()
                 .ok()

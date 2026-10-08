@@ -119,6 +119,8 @@ fn daemon_status(app: tauri::AppHandle, state: tauri::State<daemon::DaemonState>
 // grants it to Canvas's own pages only).
 #[tauri::command]
 fn relaunch(app: tauri::AppHandle) {
+    canvas_core::log::info("relaunch requested", &[]);
+    canvas_core::log::flush();
     app.restart();
 }
 

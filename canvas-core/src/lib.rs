@@ -504,4 +504,5 @@ pub mod export;
 pub mod html;
 pub mod log;
 pub mod paths;
+pub mod service;
 pub mod unix_http;

@@ -45,14 +45,20 @@ beside the terminal all day.
   gets no `window.__TAURI__` and can't invoke any command (probed in the app). Its own
   Cargo workspace, outside the root one. It holds no persisted state;
   quitting it loses nothing. `daemon.rs` makes the app self-installing: on a
-  release build's `setup()`, `ensure_daemon` copies the `canvas` binary
-  bundled as a Tauri resource (`tauri.conf.json`) out to `~/.local/bin` and
-  registers it as the `com.piercemakes.canvasd` launchd agent (no `ProcessType`
-  key, so canvasd and every refresh command it spawns run at standard priority;
-  a plist that differs from what the app writes is rewritten and the agent
-  restarted even when the binary matches), skipping the
-  copy and restart when the bundled binary already matches what's installed
-  so an ordinary relaunch doesn't empty the daemon's in-memory stream. A
+  release build's `setup()`, `ensure_daemon` installs the `canvas` binary
+  bundled as a Tauri resource (`tauri.conf.json`) through
+  `canvas_core::service::install`, the one installer `canvas daemon install`
+  also runs, so the app and a deploy write the same bytes and never restart
+  canvasd over each other. It writes the binary to `~/.local/bin` (a temp file
+  renamed into place, so a running daemon's inode is never written through)
+  and the `com.piercemakes.canvasd` launchd agent's plist (no `ProcessType`
+  key, so canvasd and every refresh command it spawns run at standard
+  priority), then restarts only what changed: nothing when both match and
+  canvasd is running, `kickstart -k` when the plist matches and the agent is
+  loaded, bootout and bootstrap when the plist changed, the agent wasn't
+  loaded or the kickstart failed (a failed bootstrap gets a `kickstart -k` and
+  passes only if canvasd then runs). An ordinary
+  relaunch therefore doesn't empty the daemon's in-memory stream. A
   debug build skips this — `admin dev canvas` runs the daemon separately.
   It registers the `canvas-post` URL scheme (`tauri-plugin-deep-link`,
   `tauri.conf.json`; only a bundled build carries it in `Info.plist`): opening
@@ -131,7 +137,12 @@ beside the terminal all day.
   `CANVAS_DATA_DIR` (`CANVAS_SOCKET` to override), mode 0600 — there is no TCP
   port. The CLI, hooks and app reach it through `canvas-core`'s `unix_http`
   client; `canvas daemon` refuses to start when something already answers on
-  the socket. It runs as a launchd agent (`com.piercemakes.canvasd`).
+  the socket. It runs as a launchd agent (`com.piercemakes.canvasd`), which
+  `canvas daemon install` installs from the running binary and prints
+  `{"binaryChanged", "plistChanged", "action"}` (`unchanged`, `restarted` or
+  `loaded`); nothing else writes that plist. `admin service install` builds,
+  signs and runs it; `admin service stop|start|restart|status` call
+  `launchctl` on the agent as installed.
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
   stdin and ends a session (a no-op for one that never posted); `session-start`
   registers nothing and always prints the guidance block to stdout (Claude Code
@@ -565,10 +576,14 @@ beside the terminal all day.
   person's environment; the build fails without it) and the fixed identifier
   `com.piercemakes.canvas.cli` (`scripts/sign-canvas.sh`), because macOS keeps a
   privacy answer for `canvas` only while its signature stays the same.
-  `admin deploy` (`scripts/deploy.sh`) installs the `canvas` binary and then runs `canvas integrations install` for each
-  detected agent, so the binary and the plugin always come from the same commit;
-  it then quits a running Canvas.app, replaces `/Applications/Canvas.app` and
-  opens it again in the background (`open -g`). Bump `plugin/.claude-plugin/plugin.json`'s
+  `admin deploy` (`scripts/deploy.sh`) builds `canvas` and Canvas.app, quits a
+  running Canvas.app (an older app launched while the new binary is installed
+  would put its own bundled copy back), installs the `canvas` binary
+  (`target/release/canvas daemon install`), runs `canvas integrations install`
+  for each detected agent, so the binary and the plugin always come from the
+  same commit, then replaces `/Applications/Canvas.app` and opens it again in
+  the background (`open -g`), where it finds binary and plist current and
+  leaves canvasd running. Bump `plugin/.claude-plugin/plugin.json`'s
   `version` when `plugin/` changes, or `claude plugin update` keeps the old copy.
 
 ## Rules

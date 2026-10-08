@@ -6,7 +6,7 @@
 # ad-hoc signature changes with every build, so each deploy would ask again;
 # CANVAS_SIGN_IDENTITY (a codesigning identity's name or SHA-1, from
 # `security find-identity -v -p codesigning`) and a fixed identifier keep it the
-# same. Both installers (admin service install, Canvas.app's bundled copy) take
+# same. Both installs (`canvas daemon install`, Canvas.app's bundled copy) take
 # these exact bytes, so the app never sees a mismatch and restarts the daemon.
 set -euo pipefail
 

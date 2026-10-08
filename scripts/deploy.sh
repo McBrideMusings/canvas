@@ -2,10 +2,12 @@
 # bash scripts/deploy.sh — build and install canvas and Canvas.app from this
 # checkout, then install each detected agent's Canvas hooks.
 #
-# Installing the canvas binary restarts the daemon, which empties the
-# in-memory stream. A running Canvas.app is quit before its bundle is
-# replaced, and Canvas.app is opened again afterwards (in the background, so
-# it never takes focus), whether or not it was running.
+# Installing a changed canvas binary restarts the daemon once, which empties
+# the in-memory stream. Both builds finish first and a running Canvas.app is
+# quit before the install: an older app launched (or relaunched from its
+# banner) while the new binary is installed would put its own bundled copy
+# back. Canvas.app is opened again afterwards (in the background, so it never
+# takes focus), whether or not it was running, and finds the daemon current.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,14 +18,6 @@ canvas="$HOME/.local/bin/canvas"
 cd "$repo_root"
 cargo build --release -p canvas
 bash scripts/sign-canvas.sh
-admin service install
-
-for agent in claude-code codex; do
-  if "$canvas" integrations list --json | grep -q "\"agent\":\"$agent\",\"found\":true"; then
-    "$canvas" integrations install "$agent" "$repo_root"
-  fi
-done
-
 (cd app/src-tauri && cargo tauri build -b app)
 
 if pgrep -f "^$exe" >/dev/null; then
@@ -38,6 +32,14 @@ if pgrep -f "^$exe" >/dev/null; then
     exit 1
   fi
 fi
+
+target/release/canvas daemon install
+
+for agent in claude-code codex; do
+  if "$canvas" integrations list --json | grep -q "\"agent\":\"$agent\",\"found\":true"; then
+    "$canvas" integrations install "$agent" "$repo_root"
+  fi
+done
 
 rm -rf "$app"
 cp -R app/src-tauri/target/release/bundle/macos/Canvas.app /Applications/
