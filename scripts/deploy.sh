@@ -15,6 +15,7 @@ canvas="$HOME/.local/bin/canvas"
 
 cd "$repo_root"
 cargo build --release -p canvas
+bash scripts/sign-canvas.sh
 admin service install
 
 for agent in claude-code codex; do
