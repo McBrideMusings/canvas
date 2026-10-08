@@ -34,7 +34,8 @@ case "${1:-}" in
       exit 1
     fi
     rm -rf "${dir}"
-    mkdir -p "${dir}"
+    # Not -p: fail if anything recreated the folder after the rm, and keep it private.
+    mkdir -m 700 "${dir}"
     cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
     # The app's build script needs the release binary it bundles as a resource
     # (tauri.conf.json) to exist, even though a debug app never installs it.
