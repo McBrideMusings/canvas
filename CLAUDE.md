@@ -166,7 +166,9 @@ beside the terminal all day.
   with a Saved/Unsaved state (each unsaved draft is kept in the Settings
   page's localStorage, `canvas.layer-drafts`, keyed `<kind>:yours` or
   `<kind>:<root>`, as `{draft, base}`, base being the file's text the draft
-  was edited from, so a reload or relaunch restores it as Unsaved; saving or
+  was edited from (plus `writing` while a save is in flight: the text it will
+  leave in the file, which a reload before the save answers takes as the
+  base), so a reload or relaunch restores it as Unsaved; saving or
   editing it back to the file's text removes it, and a project whose file is
   missing keeps its stored draft until the file returns; when the file no
   longer matches the base, after a reload or while the page is open, the

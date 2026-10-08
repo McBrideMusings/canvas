@@ -33,7 +33,9 @@
   // Unsaved drafts outlive a reload or relaunch of the Settings window: each
   // is kept in localStorage under "<kind>:yours" or "<kind>:<project root>"
   // as {draft, base}, base being the file's text the draft was edited from,
-  // until it is saved or edited back to the file's text.
+  // until it is saved or edited back to the file's text. While a save is in
+  // flight the entry also holds `writing`, the text the file will hold, so a
+  // reload before the save answers reads a file holding it as the base.
   const DRAFTS_KEY = "canvas.layer-drafts";
   const drafts = {
     all() {
@@ -381,12 +383,16 @@
     function storeDraft(layer) {
       if (layer.saved === null) return;
       if (!dirty(layer)) layer.base = layer.saved;
-      drafts.set(draftKey(layer), dirty(layer) ? { draft: layer.draft, base: layer.base } : null);
+      const entry = { draft: layer.draft, base: layer.base };
+      if (typeof layer.writing === "string") entry.writing = layer.writing;
+      drafts.set(draftKey(layer), dirty(layer) ? entry : null);
     }
     // A layer's draft after a load: its unsaved text from memory (or, the
     // first time the page loads the layer, from storage) when that differs
     // from the file, else the file's text. A draft held while its file is
     // missing still differs from its base, so it survives the file's return.
+    // A file holding the text a save was writing (this page's, or one a
+    // reload cut short) is the person's own change, so it becomes the base.
     function restoreDraft(layer, saved) {
       const stored = layer.restored || saved === null ? null : drafts.get(draftKey(layer));
       if (saved !== null) layer.restored = true;
@@ -395,6 +401,13 @@
         layer.draft = stored.draft;
         layer.base = stored.base;
       } else if (!dirty(layer) && !held) layer.draft = saved === null ? "" : saved;
+      // A save a reload cut short may land after this read: keep its text so
+      // the next load still recognizes the file it leaves.
+      if (stored !== null && typeof stored.writing === "string") layer.writing = stored.writing;
+      if (saved !== null && layer.writing === saved) {
+        layer.base = saved;
+        delete layer.writing;
+      }
       layer.saved = saved;
       storeDraft(layer);
     }
@@ -786,12 +799,15 @@
       const text = layer.draft;
       st.saving = true;
       st.saveError = "";
+      layer.writing = text.trim() ? text : "";
+      storeDraft(layer);
       renderAll();
       try {
         if (isYours) await call("PUT", `/api/instructions/${kind}/person`, { text });
         else await call("PUT", `/api/instructions/${kind}/project`, { root: layer.root, text });
         // A blank save deletes the file, so the project has none again.
         const blank = !text.trim();
+        delete layer.writing;
         layer.saved = blank ? (isYours ? "" : null) : text;
         // Typing that went on during the save builds on the text saved.
         layer.base = layer.saved;
@@ -800,6 +816,8 @@
         if (layer.saved === null) drafts.set(draftKey(layer), null);
         else storeDraft(layer);
       } catch (e) {
+        delete layer.writing;
+        storeDraft(layer);
         if (e instanceof DownError) markDown();
         else st.saveError = `Not saved: ${e.message}`;
       }
