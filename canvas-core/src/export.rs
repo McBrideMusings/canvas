@@ -23,7 +23,7 @@ pub enum Exported {
 pub fn fetch(card_id: &str) -> Result<Exported, String> {
     let path = format!("/api/cards/{}/export", unix_http::percent_encode(card_id));
     let response = unix_http::call("GET", &path, &[], &[], EXPORT_TIMEOUT)
-        .map_err(|e| format!("could not reach canvasd: {e}"))?;
+        .map_err(|e| unix_http::failure_text(&e))?;
     match response.status {
         200..=299 => serde_json::from_slice(&response.body)
             .map(Exported::Page)

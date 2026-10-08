@@ -522,9 +522,10 @@ beside the terminal all day.
   canvasd's in-process tests never touch the real data dir. canvasd logs every
   request (an axum middleware in `canvasd/src/lib.rs`: method, path, status, ms, and
   the body of a 4xx/5xx as `error`) plus start, reload, store, sweep and refresh
-  failures; `canvas_core::unix_http::call` logs each request it sends (status, or
-  `canvasd unreachable` with the reason): every CLI call to canvasd and the app's
-  export fetch; the CLI also logs each hook's outcome; the app logs bridge
+  failures; `canvas_core::unix_http::call` logs each request it sends (status;
+  `canvasd timed out` when canvasd took the connection and stalled past the
+  timeout; `canvasd unreachable` with the reason the connect failed): every CLI
+  call to canvasd and the app's export fetch; the CLI also logs each hook's outcome; the app logs bridge
   failures, event-stream changes, daemon install and integration sync. Every write
   failure is swallowed. New features log through it.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)

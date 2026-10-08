@@ -24,6 +24,7 @@ fn timeout() -> Duration {
 
 /// Why a call to canvasd failed: it answered with a non-2xx status, or the
 /// request never got a complete answer (no socket, refused, timed out).
+/// `Transport` holds the finished sentence [`unix_http::failure_text`] wrote.
 #[derive(Debug)]
 enum Failure {
     Status(u16),
@@ -34,7 +35,7 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Failure::Status(code) => write!(f, "canvasd returned HTTP {code}"),
-            Failure::Transport(e) => write!(f, "could not reach canvasd: {e}"),
+            Failure::Transport(e) => write!(f, "{e}"),
         }
     }
 }
@@ -76,7 +77,7 @@ fn call_with_headers(
         headers.push(("Content-Type", "application/json"));
     }
     unix_http::call(method, path, &headers, &payload, timeout)
-        .map_err(|e| Failure::Transport(e.to_string()))
+        .map_err(|e| Failure::Transport(unix_http::failure_text(&e)))
 }
 
 fn into_json<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, String> {
