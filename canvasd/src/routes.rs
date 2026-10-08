@@ -837,9 +837,7 @@ pub async fn get_card_image(
 }
 
 /// The settings page's read: every named profile for `kind`, the global
-/// assignment and each repo's assignment. Sessions never call this — a
-/// growing set of profile texts has no business on the hook's 1s path; they
-/// use `get_effective_profile`.
+/// assignment and each repo's assignment.
 pub async fn get_profiles(
     State(state): State<AppState>,
     Path(kind): Path<String>,
@@ -904,7 +902,7 @@ fn unknown_profile_response(name: &str) -> Response {
         .into_response()
 }
 
-/// The settings page and `canvas profile` write a kind's profiles and
+/// The settings page writes a kind's profiles and
 /// assignments through these three routes.
 pub async fn set_profile_text(
     State(state): State<AppState>,
@@ -915,7 +913,7 @@ pub async fn set_profile_text(
     // asking for posts, so refuse it here with the offending line.
     if kind == crate::profiles::KIND_STOP_TRIGGERS {
         if let Some(text) = req.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            if let Err(message) = crate::stop_triggers::parse(text) {
+            if let Err(message) = canvas_core::reminders::parse(text) {
                 return (StatusCode::BAD_REQUEST, message).into_response();
             }
         }

@@ -11,7 +11,6 @@ pub mod refresh;
 pub mod repo;
 pub mod routes;
 pub mod state;
-pub mod stop_triggers;
 pub mod store;
 pub mod viewer;
 pub mod watcher;

@@ -17,7 +17,7 @@ import sys
 from collections import Counter, defaultdict
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
-TRIGGERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../plugin/stop-triggers.txt")
+TRIGGERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../plugin/reminders.txt")
 
 # A request to post is a short chat line; a long prompt is a dispatch brief that merely names Canvas.
 ASK_MAX_CHARS = 500

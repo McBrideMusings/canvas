@@ -35,10 +35,10 @@ const EVENTS: [(&str, &str, &str); 3] = [
 const MARKER: &str = "canvas-hooks-version";
 const RULES: &str = "rules/canvas.rules";
 const RULES_TEXT: &str = r#"# Written by `canvas integrations install codex`; it replaces this file.
-# Codex's sandbox blocks canvasd's Unix socket, so these subcommands, which
-# only talk to canvasd, run outside it.
+# Codex's sandbox blocks canvasd's Unix socket and writes to Canvas's data folder, so
+# these subcommands, which touch only those, run outside it.
 prefix_rule(
-    pattern = ["canvas", ["post", "data", "focus", "wait", "replies", "card", "theme", "artifact", "profile", "guidance"]],
+    pattern = ["canvas", ["post", "data", "focus", "wait", "replies", "card", "theme", "artifact", "instructions"]],
     decision = "allow",
     justification = "Canvas reaches canvasd over a Unix socket the sandbox blocks",
     match = ["canvas post plan.html", "canvas artifact put art-0123456789 dir"],

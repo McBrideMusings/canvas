@@ -502,7 +502,9 @@ pub struct PutArtifactRequest {
 
 pub mod export;
 pub mod html;
+pub mod instructions;
 pub mod log;
 pub mod paths;
+pub mod reminders;
 pub mod service;
 pub mod unix_http;

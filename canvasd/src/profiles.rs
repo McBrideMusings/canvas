@@ -23,18 +23,16 @@ pub const PROFILES_FILE: &str = "profiles.json";
 /// single-purpose `GuidanceConfig` for.
 pub const KIND_POSTING_GUIDANCE: &str = "posting-guidance";
 
-/// Same file `cli/src/guidance.rs` embeds as `canvas::guidance::TEXT` — the
-/// two copies stay in sync because there's only one `plugin/guidance.md` to
-/// edit, not because either crate depends on the other for it. Shown
+/// The compiled-in instructions (`canvas_core::instructions`). Shown
 /// read-only in the settings page's profile list so the fallback a session
 /// gets when nothing is assigned isn't invisible.
-const BUILTIN_POSTING_GUIDANCE: &str = include_str!("../../plugin/guidance.md");
+const BUILTIN_POSTING_GUIDANCE: &str = canvas_core::instructions::BUILTIN_INSTRUCTIONS;
 
 /// Which turns the plugin's prompt hook reminds an agent to post; the text is
-/// directives, parsed by `stop_triggers`.
+/// directives, parsed by `canvas_core::reminders`.
 pub const KIND_STOP_TRIGGERS: &str = "stop-triggers";
 
-const BUILTIN_STOP_TRIGGERS: &str = include_str!("../../plugin/stop-triggers.txt");
+const BUILTIN_STOP_TRIGGERS: &str = canvas_core::instructions::BUILTIN_REMINDERS;
 
 /// The compiled-in default for `kind`, for kinds that have one.
 pub fn builtin_default(kind: &str) -> Option<&'static str> {

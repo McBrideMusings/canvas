@@ -62,7 +62,7 @@ Step 4 registers this checkout as a local plugin marketplace and installs
 
 ## Using it
 
-A new Claude Code session gets posting guidance from the plugin's SessionStart
+A new Claude Code session gets posting instructions from the plugin's SessionStart
 hook, and agents post on their own when a turn has something worth showing. To
 post by hand from inside a session's shell:
 
@@ -73,8 +73,11 @@ canvas post --update <card_id> plan.md   # replace a card in place
 ```
 
 `canvas post` reads the session from `CLAUDE_CODE_SESSION_ID`, which Claude Code
-sets in every Bash tool shell. `canvas guidance` prints the guidance text, and
-`canvas profile` changes it globally or per repo (also editable in Settings).
+sets in every Bash tool shell. `canvas instructions` prints the instructions a
+session in the current directory reads: Canvas's built-in text, then your own
+`instructions.md` in Canvas's data folder, then the repo's
+`.canvas/instructions.md`. Post reminders follow the same layers
+(`canvas instructions --reminders`, `reminders.txt`).
 
 HTML cards run in a sandboxed iframe with no network access; scripts may load
 only from cdnjs, jsdelivr and unpkg.

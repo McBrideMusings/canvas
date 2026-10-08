@@ -1,10 +1,10 @@
-//! The `stop-triggers` profile kind: which turns the plugin's prompt hook reminds
-//! an agent to post. A profile's text is one directive per line; the parser
-//! lives here, beside the profile store, so the daemon can refuse a bad
-//! profile when it is saved and the hook parses the same text at run time.
+//! Post reminders: which finished turns make the plugin's prompt hook remind
+//! an agent to post. The text is one directive per line; it lives in canvas-core
+//! so the hook parses the composed layers (`crate::instructions`) and canvasd
+//! can refuse a layer that doesn't parse when it is saved.
 //!
 //! Directives, applied top to bottom (a later line overrides an earlier one,
-//! which is how a repo profile joined after the global one edits it):
+//! which is how a project's layer joined after the person's edits it):
 //!
 //! - `image`, `file`, `report`, `verify` turn a trigger on
 //! - `links [N]` and `long-block [N]` turn one on with a threshold
@@ -22,7 +22,7 @@ pub const DIRECTIVES: &str = "image, file, report, verify, links [N], long-block
     phrase <text>, scratch <prefix>, no <directive>, off, on";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StopTriggers {
+pub struct Reminders {
     pub enabled: bool,
     pub image: bool,
     pub file: bool,
@@ -37,10 +37,10 @@ pub struct StopTriggers {
     pub scratch: Vec<String>,
 }
 
-impl Default for StopTriggers {
+impl Default for Reminders {
     /// Nothing triggers: text with no directives asks for nothing.
     fn default() -> Self {
-        StopTriggers {
+        Reminders {
             enabled: true,
             image: false,
             file: false,
@@ -54,9 +54,9 @@ impl Default for StopTriggers {
     }
 }
 
-/// Parses profile text; the error names the first line that isn't a directive.
-pub fn parse(text: &str) -> Result<StopTriggers, String> {
-    let mut t = StopTriggers::default();
+/// Parses reminders text; the error names the first line that isn't a directive.
+pub fn parse(text: &str) -> Result<Reminders, String> {
+    let mut t = Reminders::default();
     for (i, raw) in text.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_built_in_default_reminds_only_for_an_image() {
-        let t = parse(include_str!("../../plugin/stop-triggers.txt")).unwrap();
+        let t = parse(crate::instructions::BUILTIN_REMINDERS).unwrap();
         assert!(t.enabled && t.image && !t.file && !t.report && !t.verify);
         assert_eq!(t.links, None);
         assert_eq!(t.long_block, None);

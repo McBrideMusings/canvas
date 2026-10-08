@@ -521,41 +521,48 @@ Check the exit code and read the message rather than assuming the post
 landed, and read `hints` after every post: when it isn't empty, fix the source
 and repost it with `canvas post --update <card_id>`.
 
-## Adjusting guidance
+## Adjusting instructions
 
-The posting guidance a session receives is a named profile: the one assigned to the
-session's GitHub repo, else the one assigned globally, else the built-in default. Change
-the guidance for the repo you are working in:
+The instructions a session reads at start come from up to three layers, joined in this order
+with one blank line between them:
+
+1. Canvas's built-in text (what this skill's rules summarize), unless the person has switched
+   it off with `canvas instructions include off`;
+2. the person's own `instructions.md` in Canvas's data folder
+   (`~/Library/Application Support/canvas/`, or `CANVAS_DATA_DIR`), read in every repo;
+3. the project's `.canvas/instructions.md` at the git root of the session's directory, which
+   travels with the repo when it is committed.
+
+**The person's and the project's instructions win where they differ from this skill.** A local
+rule such as "record motion as video with <tool>" beats the general motion advice above.
 
 ```
-canvas profile set terse notes.md     # create or replace a profile from a file (or "-" for stdin)
-canvas profile assign terse --here    # use it for this directory's GitHub repo
-canvas profile show --effective       # print the text this repo's sessions get
-canvas profile unassign --here        # back to the global profile or the default
+canvas instructions                     # the composed text a session here reads
+canvas instructions --json              # each layer: name, source, path, start line, text
+canvas instructions --cwd <dir>         # for another directory
+canvas instructions include off         # stop sending the built-in layer (on to restore)
+canvas instructions projects            # the checkouts that have posted to Canvas, as JSON
 ```
 
-Other verbs: `canvas profile list` (profiles, the global and per-repo assignments, whether the
-built-in default exists), `canvas profile show <name>`, `canvas profile delete <name>`,
-`canvas profile assign <name>` (globally), and `--repo owner/name` in place of `--here` to
-name a repo directly. `--kind <k>` selects the profile kind; it defaults to `posting-guidance`;
-`stop-triggers` is the other kind. `--here` fails if the directory has no GitHub `origin`; every verb prints
-one line on stderr and exits non-zero on any error.
+The hooks read these files directly, with or without canvasd running. A change applies to
+sessions that start after it: the SessionStart hook reads the layers once, when the session
+starts.
 
-A change applies to sessions that start after it: the SessionStart hook reads the effective
-profile once, when the session starts.
-
-### Post-reminder triggers
+### Post reminders
 
 The prompt hook reminds a session to post when its previous turn ended with something worth
-showing and no `canvas post`. Which turns count is the `stop-triggers` profile kind: one directive per line
-(`image`, `file`, `report`, `verify`, `links [N]`, `long-block [N]`, `phrase <text>`,
-`scratch <prefix>`, `no <directive>`, `off`, `on`), applied top to bottom. The same verbs
-apply with `--kind stop-triggers`:
+showing and no `canvas post`. Which turns count comes from the same three layers: the built-in
+`reminders.txt`, the person's `reminders.txt` in the data folder, and the project's
+`.canvas/reminders.txt`. Each holds one directive per line (`image`, `file`, `report`,
+`verify`, `links [N]`, `long-block [N]`, `phrase <text>`, `scratch <prefix>`,
+`no <directive>`, `off`, `on`), applied top to bottom across the joined layers, so a project's
+`no image` cancels the built-in `image` in that repo only.
 
 ```
-canvas profile show --kind stop-triggers --effective   # the directives in effect here
-printf 'no links\nlong-block 30\n' | canvas profile set --kind stop-triggers quieter -
-canvas profile assign --kind stop-triggers quieter --here
+canvas instructions --reminders                 # the directives in effect here
+canvas instructions include off --reminders     # drop the built-in reminders
 ```
 
-`canvas profile set` refuses text that doesn't parse and names the line.
+When the person's or the project's file has a line that doesn't parse, the hook uses the
+built-in reminders and logs the file and line; `canvas instructions --reminders` prints the
+same reason on stderr.

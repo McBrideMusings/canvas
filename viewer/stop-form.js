@@ -1,5 +1,5 @@
 // The stop-triggers form's model: a view over the profile's directive text
-// (parsed by canvasd/src/stop_triggers.rs). Text stays the only store — the
+// (parsed by canvas-core/src/reminders.rs). Text stays the only store — the
 // model keeps every line, so comments, blank lines, ordering and lines the
 // form doesn't understand survive an edit. Later lines override earlier
 // ones, so a change rewrites a key's last line in place, never reorders.

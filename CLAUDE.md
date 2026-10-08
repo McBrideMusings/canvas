@@ -25,13 +25,33 @@ beside the terminal all day.
   the same profile twice; in `replace` mode it gets the repo's profile alone,
   else the global one. `ProfileSet::compose` returns the joined text and the
   ordered source names (`"built-in"` marks the default). Two kinds ship:
-  `posting-guidance` (text an agent reads) and `stop-triggers` (directives
-  the prompt hook parses; `stop_triggers.rs` holds the parser, and the daemon
-  answers 400 with the offending line for a `stop-triggers` profile that
-  doesn't parse). Settings' Guidance tab switches between them. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
+  `posting-guidance` and `stop-triggers` (the daemon answers 400 with the
+  offending line for a `stop-triggers` profile `canvas_core::reminders`
+  doesn't parse). Only Settings' Guidance tab reads and writes them; no hook
+  or CLI command does. Persisted as `profiles.json` in `CANVAS_DATA_DIR`
   (the mode is written only when it isn't `additive`), outside the 24h
   `stream.jsonl` retention window; `AppState::open` loads it alongside the
   stream reload, so it's async.
+- Instructions (`canvas-core/src/instructions.rs`): what an agent reads at
+  session start, and the post reminders (`canvas-core/src/reminders.rs`, the
+  directive parser), each come from up to three layers, joined in this order
+  with one blank line and a missing or empty layer skipped: the built-in text
+  compiled in from `plugin/instructions.md` or `plugin/reminders.txt` (dropped
+  when the person's Include flag for that kind is off: `{"instructions",
+  "reminders"}` in `instructions-include.json` in `CANVAS_DATA_DIR`, missing
+  means on), the person's `instructions.md` or `reminders.txt` in
+  `CANVAS_DATA_DIR`, and the project's `.canvas/instructions.md` or
+  `.canvas/reminders.txt` at the nearest folder above the working directory
+  holding `.git` (none outside git). `compose(kind, data_dir, cwd, overrides)`
+  returns the text and each layer's name (`Built-in`, `Yours`, the git root's
+  folder name), source (`built-in`, `person`, `project`), path, text, start
+  line, line and character counts; `overrides` stands unsaved text in for the
+  person's or project's file. Reminders are parsed from the joined text top to
+  bottom, so a project's `no image` cancels the built-in `image` in that repo;
+  when the person's or project's layer doesn't parse, `reminders()` returns
+  the built-in reminders and the reason (file and line). `seen_projects` reads
+  `projects.json` in `CANVAS_DATA_DIR` (`{root, name, lastSeen}`), empty until
+  canvasd records projects.
 - `app/src-tauri/` — Tauri 2 shell: one WKWebView window plus a menu bar icon.
   The windows load `canvas://localhost/`, a custom scheme `bridge.rs` answers by
   proxying each request to canvasd's Unix socket (a request that can't reach it
@@ -145,19 +165,20 @@ beside the terminal all day.
   `launchctl` on the agent as installed.
   `canvas hook session-start|session-end` reads Claude Code hook JSON on
   stdin and ends a session (a no-op for one that never posted); `session-start`
-  registers nothing and always prints the guidance block to stdout (Claude Code
+  registers nothing and always prints the composed instructions to stdout (Claude Code
   adds SessionStart stdout to the session's context). A session exists in
   canvasd only once its first `canvas post` creates it, so one that never posts
   never appears in Canvas; there is no session-registration route.
   `canvas hook prompt` (the plugin's UserPromptSubmit hook, `cli/src/stop.rs`)
-  reads the transcript's last finished turn and, when a trigger the `stop-triggers` profile in
-  effect for the session's cwd enables fired (an image looked at, a file
+  reads the transcript's last finished turn and, when a trigger the reminders in
+  effect for the session's cwd enable fired (an image looked at, a file
   changed outside scratch space, a long block, several links, `report`,
   `verify`; the default enables only the image trigger) and no `canvas post` ran, prints a
   one-line reminder that Claude Code adds to the new prompt's context (no block,
   no error label, no re-sent reply; the post comes a turn late); otherwise it
-  prints nothing. With nothing assigned or canvasd unreachable it uses
-  `plugin/stop-triggers.txt`, compiled in.
+  prints nothing. Both hooks read the layers from files and never contact
+  canvasd for them; a reminders layer that doesn't parse logs `reminders fell
+  back to the built-in` with the file and line.
   Everything that differs between coding agents sits behind the `AgentAdapter`
   trait in `cli/src/agent.rs`: the environment variable that names the session
   (`CLAUDE_CODE_SESSION_ID` for Claude Code, `CODEX_THREAD_ID` for Codex; `canvas
@@ -166,12 +187,13 @@ beside the terminal all day.
   files through the shell, so its turns list only images (`view_image`) as read paths. `canvas hook
   <event> --agent <name>` picks the adapter; with no flag it is Claude Code, and
   an unknown name makes the hook exit 0 silently.
-  `canvas guidance` prints that same block unconditionally, for a person or
-  agent to read on demand.
-  `canvas profile list|show|set|delete|assign|unassign` reads and changes the
-  named profiles from the shell, globally or per repo (`--repo owner/name`, or
-  `--here` for the current directory's GitHub repo, resolved by canvasd's own
-  `repo::github_repo_blocking`), failing loudly like `canvas post`.
+  `canvas instructions [--reminders] [--cwd <dir>]` (`cli/src/instructions.rs`)
+  prints the composed text a session in that directory (default: the current
+  one) reads, and `--json` the layers instead; with `--reminders`, a layer that
+  doesn't parse is named on stderr. `canvas instructions include on|off
+  [--reminders]` sets the Include flag and prints both flags (logged
+  `instructions include set`); `canvas instructions projects` prints the seen
+  projects as JSON. None of them contacts canvasd.
   `canvas post <file|-> [--format md|text|html]`
   reads the session id from `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in
   every Bash tool shell) and creates a new card from Markdown, text or HTML
@@ -550,25 +572,22 @@ beside the terminal all day.
   `workspace-write`) refuses the socket connect, so install also writes
   `rules/canvas.rules` there, a file Canvas owns whole: a `prefix_rule` that
   runs the subcommands which only talk to canvasd (`post`, `data`, `focus`,
-  `wait`, `replies`, `card`, `theme`, `artifact`, `profile`, `guidance`; not
+  `wait`, `replies`, `card`, `theme`, `artifact`, and `instructions`, which
+  writes the Include flag into Canvas's data folder; not
   `export` or `snapshot`, which write anywhere) outside the sandbox. Codex
   matches it only for a plain `canvas …` command with no pipe or heredoc, which
-  the guidance tells agents to use; a missing or changed file reads as
+  the instructions tell agents to use; a missing or changed file reads as
   `out of date`. Codex runs a hook only after the user
   trusts it (the TUI's "Hooks need review"; `trusted_hash` tables in
   `config.toml`, computed by Codex), so status is `needs review` until those
   tables exist for Canvas's groups.
 - `plugin/` — the Claude Code plugin (`.claude-plugin/marketplace.json` at the
   repo root lists it): `hooks/hooks.json` wires SessionStart, SessionEnd and UserPromptSubmit to
-  `~/.local/bin/canvas hook …`, `guidance.md` holds the compiled-in default
-  guidance text (`include_str!`), and `skills/canvas/` is the skill agents
-  load to know how to post. `canvas hook session-start` and `canvas
-  guidance` call `GET /api/profiles/posting-guidance/effective?cwd=<cwd>`, which
-  returns the text already joined per the kind's mode plus the ordered `profiles`
-  it came from (`GET /api/profiles/:kind` is the settings page's full read; `PUT
-  /api/profiles/:kind/mode` sets the mode), and print that text; when nothing is
-  assigned the response has no text and they print the compiled-in default from
-  `guidance.md`. Claude Code runs a cached copy of
+  `~/.local/bin/canvas hook …`, `instructions.md` and `reminders.txt` hold
+  the built-in instruction and reminder layers (`include_str!` in
+  `canvas_core::instructions`; the instructions' last line says the person's
+  and the project's instructions after it win), and `skills/canvas/` is the
+  skill agents load to know how to post. Claude Code runs a cached copy of
   `plugin/`, not the repo: `canvas integrations install claude-code [repo]` registers the checkout as a
   local `directory` marketplace (never a git remote, so the plugin comes from the same checkout as the binary) and
   installs or updates `canvas@canvas` from it. `admin build` and `admin deploy` sign

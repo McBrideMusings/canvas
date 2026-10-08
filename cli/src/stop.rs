@@ -11,14 +11,14 @@
 //! runs; a trailing prompt with no turn after it is skipped.
 
 use crate::agent::{AgentAdapter, Turn};
-use canvasd::stop_triggers::StopTriggers;
+use canvas_core::reminders::Reminders;
 
 const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
 /// Returns the reminder when the last finished turn in `transcript` (in
 /// `adapter`'s format) has a trigger `cfg` enables and no `canvas post`;
 /// `None` otherwise.
-pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &StopTriggers) -> Option<String> {
+pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> Option<String> {
     if !cfg.enabled {
         return None;
     }
@@ -267,14 +267,14 @@ mod tests {
     use crate::agent::ClaudeCode;
     use serde_json::Value;
 
-    fn reason(transcript: &str, cfg: &StopTriggers) -> Option<String> {
+    fn reason(transcript: &str, cfg: &Reminders) -> Option<String> {
         super::reason(&ClaudeCode, transcript, cfg)
     }
 
     /// The volume triggers on, so each is exercised; the built-in default has
     /// only `image` on.
-    fn cfg() -> StopTriggers {
-        canvasd::stop_triggers::parse(
+    fn cfg() -> Reminders {
+        canvas_core::reminders::parse(
             "image\nfile\nlinks 3\nlong-block 15\nscratch /private/tmp/\nscratch /tmp/\n",
         )
         .unwrap()
@@ -362,10 +362,8 @@ mod tests {
 
     #[test]
     fn the_built_in_default_reminds_for_an_image_and_not_for_volume() {
-        let default = canvasd::stop_triggers::parse(
-            canvasd::profiles::builtin_default("stop-triggers").unwrap(),
-        )
-        .unwrap();
+        let default =
+            canvas_core::reminders::parse(canvas_core::instructions::BUILTIN_REMINDERS).unwrap();
         let edit = transcript(&[
             user("fix it"),
             tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
@@ -505,13 +503,13 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_text_decides_what_triggers() {
+    fn the_reminders_text_decides_what_triggers() {
         let t = transcript(&[
             user("q"),
             tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
             say("done"),
         ]);
-        let parse = |text| canvasd::stop_triggers::parse(text).unwrap();
+        let parse = |text| canvas_core::reminders::parse(text).unwrap();
         assert!(reason(&t, &parse("file")).is_some());
         assert_eq!(reason(&t, &parse("image")), None);
         assert_eq!(reason(&t, &parse("file\noff")), None);
@@ -519,10 +517,10 @@ mod tests {
     }
 
     #[test]
-    fn report_and_verify_remind_only_when_the_profile_enables_them() {
+    fn report_and_verify_remind_only_when_the_reminders_enable_them() {
         let gate = transcript(&[user("q"), say("**Look for:** y")]);
         let ask = transcript(&[user("q"), say("Please verify the header.")]);
-        let parse = |text| canvasd::stop_triggers::parse(text).unwrap();
+        let parse = |text| canvas_core::reminders::parse(text).unwrap();
         assert!(reason(&gate, &parse("report"))
             .unwrap()
             .contains("closing report"));

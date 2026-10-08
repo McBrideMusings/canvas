@@ -1,6 +1,6 @@
 # Building a card as a document
 
-A card that earns its post (see the test in the guidance) is a page the user reads,
+A card that earns its post (see the test in the instructions) is a page the user reads,
 not a note. This file is how to build one. Everything stays in one self-contained
 HTML file posted with `canvas post file.html`.
 

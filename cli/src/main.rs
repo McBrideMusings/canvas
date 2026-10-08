@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas profile <list|show|set|delete|assign|unassign> [--kind k] [--repo owner/name | --here] | canvas guidance | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>]] [--focus] | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas instructions [--reminders] [--cwd <dir>] [--json] | canvas instructions include on|off [--reminders] | canvas instructions projects | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -24,18 +24,15 @@ fn main() {
                 std::process::exit(2);
             }
         },
-        Some("guidance") => {
-            let text = std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .and_then(|cwd| {
-                    canvas::client::fetch_profile_text(
-                        canvasd::profiles::KIND_POSTING_GUIDANCE,
-                        &cwd,
-                    )
-                })
-                .unwrap_or_else(|| canvas::guidance::TEXT.to_string());
-            print!("{text}");
+        Some("instructions") => {
+            let Ok(command) = canvas::instructions::parse_args(&args[2..]) else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            };
+            if let Err(e) = canvas::instructions::run(command) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
         Some("logs") => {
             if args.get(2).map(String::as_str) != Some("--path") {
@@ -119,20 +116,6 @@ fn main() {
                 }
             };
             if let Err(e) = canvas::post::run(parsed) {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        Some("profile") => {
-            // Run on purpose, so failures are loud like `canvas post`.
-            let parsed = match canvas::profile::parse_args(&args[2..]) {
-                Ok(parsed) => parsed,
-                Err(canvas::profile::UsageError) => {
-                    eprintln!("{USAGE}");
-                    std::process::exit(2);
-                }
-            };
-            if let Err(e) = canvas::profile::run(parsed) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

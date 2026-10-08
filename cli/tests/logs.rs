@@ -70,8 +70,8 @@ fn run(dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
     child.wait_with_output().unwrap()
 }
 
-/// `canvas hook prompt` with an empty transcript, so the only thing it does is
-/// ask canvasd for the stop-triggers profile.
+/// `canvas hook prompt` with an empty transcript: it reads the reminder layers
+/// and prints nothing.
 fn run_hook_prompt(dir: &Path) -> Output {
     let transcript = dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();
@@ -121,7 +121,8 @@ fn a_post_writes_its_request_line_to_the_daemon_log() {
 #[test]
 fn a_hook_with_canvasd_stopped_exits_0_and_logs_it_was_unreachable() {
     let dir = test_dir("unreachable");
-    let output = run_hook_prompt(&dir);
+    let input = serde_json::json!({"session_id": "logs-test", "cwd": dir});
+    let output = run(&dir, &["hook", "session-end"], input.to_string().as_bytes());
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
 
@@ -129,11 +130,11 @@ fn a_hook_with_canvasd_stopped_exits_0_and_logs_it_was_unreachable() {
     assert!(
         log.lines()
             .any(|l| l.contains(" cli WARN canvasd unreachable ")
-                && l.contains("/api/profiles/stop-triggers/effective")),
+                && l.contains("/api/sessions/logs-test/end")),
         "{log}"
     );
     assert!(
-        log.contains("hook event=prompt agent=claude-code outcome=silent"),
+        log.contains("hook failed event=session-end agent=claude-code"),
         "{log}"
     );
 }

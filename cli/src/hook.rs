@@ -1,11 +1,16 @@
 //! Dispatches one Claude Code hook invocation: reads the hook JSON Claude
-//! Code writes to stdin, and calls canvasd. `session-start` only prints the guidance
-//! block and registers nothing; every other
-//! error — bad stdin, no canvasd listening, an unrecognised event — is
-//! returned as `Err` so `main` can swallow it and exit 0 silently. A hook
-//! must never slow or break the Claude session it's attached to.
+//! Code writes to stdin. `session-start` and `prompt` read the instruction and
+//! reminder layers from files (`canvas_core::instructions`) and never contact
+//! canvasd, so the daemon's state never changes what an agent reads;
+//! `session-end` tells canvasd the session ended. Every error — bad stdin, no
+//! canvasd listening, an unrecognised event — is returned as `Err` so `main`
+//! can swallow it and exit 0 silently. A hook must never slow or break the
+//! Claude session it's attached to.
 
 use std::io::Read;
+use std::path::PathBuf;
+
+use canvas_core::instructions::{self, Kind, Overrides};
 
 use crate::agent::{AgentAdapter, HookInput};
 use crate::client;
@@ -16,28 +21,31 @@ fn read_input(adapter: &dyn AgentAdapter) -> Result<HookInput, Box<dyn std::erro
     Ok(adapter.parse_hook(&raw)?)
 }
 
-/// Returns the guidance block on every `session-start` (Claude Code adds
-/// SessionStart stdout to the session's context, including the times it
+/// Returns the composed instructions on every `session-start` (Claude Code
+/// adds SessionStart stdout to the session's context, including the times it
 /// re-fires after compaction) — `None` for every other event. It registers
 /// nothing: the daemon creates a session when its first `canvas post`
-/// arrives, so a session that never posts never shows up in Canvas. The text
-/// is whichever `posting-guidance` profile (repo, else global) the settings
-/// page has assigned for this `cwd`, falling back to the compiled-in default
-/// on any fetch failure or when nothing is assigned.
+/// arrives, so a session that never posts never shows up in Canvas.
 pub fn run(
     event: &str,
     adapter: &dyn AgentAdapter,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     match event {
         "session-start" => {
-            let text = match read_input(adapter) {
-                Ok(input) => {
-                    client::fetch_profile_text(canvasd::profiles::KIND_POSTING_GUIDANCE, &input.cwd)
-                        .unwrap_or_else(|| crate::guidance::TEXT.to_string())
-                }
-                Err(_) => crate::guidance::TEXT.to_string(),
-            };
-            Ok(Some(text))
+            // Unreadable stdin still gets the built-in and the person's
+            // layers, read against the hook's own directory.
+            let cwd = read_input(adapter)
+                .ok()
+                .map(|input| PathBuf::from(input.cwd))
+                .or_else(|| std::env::current_dir().ok());
+            let data_dir = canvas_core::paths::data_dir();
+            let composed = instructions::compose(
+                Kind::Instructions,
+                data_dir.as_deref(),
+                cwd.as_deref(),
+                &Overrides::default(),
+            );
+            Ok(Some(composed.text))
         }
         "session-end" => {
             let input = read_input(adapter)?;
@@ -50,20 +58,16 @@ pub fn run(
         "prompt" => {
             let input = read_input(adapter)?;
             let transcript = std::fs::read_to_string(&input.transcript_path)?;
-            // The profile in effect for this directory; the compiled-in
-            // default when nothing is assigned, canvasd is unreachable, or
-            // the text no longer parses.
-            let builtin = || {
-                canvasd::stop_triggers::parse(
-                    canvasd::profiles::builtin_default(canvasd::profiles::KIND_STOP_TRIGGERS)
-                        .unwrap_or_default(),
-                )
-            };
-            let triggers =
-                client::fetch_profile_text(canvasd::profiles::KIND_STOP_TRIGGERS, &input.cwd)
-                    .and_then(|text| canvasd::stop_triggers::parse(&text).ok())
-                    .map_or_else(builtin, Ok)?;
-            Ok(crate::stop::reason(adapter, &transcript, &triggers))
+            let data_dir = canvas_core::paths::data_dir();
+            let cwd = PathBuf::from(&input.cwd);
+            let (reminders, fallback) = instructions::reminders(data_dir.as_deref(), Some(&cwd));
+            if let Some(why) = fallback {
+                canvas_core::log::warn(
+                    "reminders fell back to the built-in",
+                    &[("cwd", &input.cwd), ("error", &why)],
+                );
+            }
+            Ok(crate::stop::reason(adapter, &transcript, &reminders))
         }
         other => Err(format!("unknown hook event: {other}").into()),
     }

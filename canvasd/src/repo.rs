@@ -26,26 +26,9 @@ pub async fn github_repo(cwd: &str) -> Option<String> {
     parse_github_remote(String::from_utf8_lossy(&output.stdout).trim())
 }
 
-/// The git arguments that print `cwd`'s `origin` URL. Shared by the async and
-/// blocking resolvers so a repo key never depends on which one produced it.
+/// The git arguments that print `cwd`'s `origin` URL.
 fn origin_url_args(cwd: &str) -> [&str; 5] {
     ["-C", cwd, "remote", "get-url", "origin"]
-}
-
-/// `github_repo` for callers with no async runtime (the CLI never starts
-/// one outside `canvas daemon`). Same git call, same parsing, so the key
-/// `canvas profile --here` writes is the key the daemon reads for `?cwd=`.
-pub fn github_repo_blocking(cwd: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(origin_url_args(cwd))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_github_remote(String::from_utf8_lossy(&output.stdout).trim())
 }
 
 /// `owner/repo` from a github.com remote URL in any of the forms git accepts:

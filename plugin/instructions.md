@@ -19,7 +19,7 @@ Anything interactive — a prototype, an app, a page someone clicks through — 
 
 Run Canvas as plain `canvas`, never by its full path, and hand `canvas post` a file rather than a pipe or heredoc: a sandboxed Codex session lets only that form reach canvasd.
 
-Work handed back to you counts as yours. A subagent's or delegated session's findings, screenshots and numbers reach you as plain text, and the same test decides whether to post them. Subagents never receive this guidance.
+Work handed back to you counts as yours. A subagent's or delegated session's findings, screenshots and numbers reach you as plain text, and the same test decides whether to post them. Subagents never receive these instructions.
 
 In HTML, Canvas picks the light or dark theme, not the post, and it forces the page's background and text color to match. Don't set `html` or `body` background or color. Leave colors you don't need to choose unset so they inherit, and where you do paint a background (a callout, a table header) set a `color` beside it. To adapt to both themes, define a light palette on `:root` and override it under `@media (prefers-color-scheme: dark)`; Canvas makes that query match the active theme. Text that ends up unreadable against its background is recolored automatically. `<link rel="stylesheet" href="/canvas.css">` adds Canvas's own tokens (`--color-text`, `--color-surface`, `--space-16`, … listed in the canvas skill) and base element styles to a post or an artifact, in both themes.
 
@@ -28,3 +28,5 @@ In HTML, a `<pre>` block renders dark with light text; give any background you p
 Motion shows in a card three ways: an animated GIF, WebP or APNG as an ordinary image; a local video as `<video src="/abs/clip.webm" controls muted loop playsinline autoplay>`; or, when the reviewer must replay it or judge exact timing, the real HTML/CSS/JS running in the card. A live animation card carries its own CSS (a local `<link rel="stylesheet" href="/abs/x.css">` is inlined for you), loops on its own, has a Replay button and honours `prefers-reduced-motion`; the canvas skill has the details.
 
 Size a card on purpose. The viewer sets the width (846px of content at the default window size, and never wider); you set the height. A document can run several screens; each panel should still read in about one. Clicking any image opens it full size in a lightbox, so screenshots can sit smaller in the card (`<img src="/abs/shot.png" width="360">`, or side by side for a before/after).
+
+Instructions after this line are the person's own, then the project's; where they differ from anything above, they win.

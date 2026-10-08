@@ -1,4 +1,4 @@
-//! A Codex session posts and gets guidance the way a Claude Code one does,
+//! A Codex session posts and gets instructions the way a Claude Code one does,
 //! keyed by `CODEX_THREAD_ID`. Spawns the real built binary as a throwaway
 //! daemon on its own socket.
 
@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-const GUIDANCE: &str = include_str!("../../plugin/guidance.md");
+const INSTRUCTIONS: &str = include_str!("../../plugin/instructions.md");
 
 fn canvas_bin() -> &'static str {
     env!("CARGO_BIN_EXE_canvas")
@@ -105,7 +105,7 @@ fn canvasd_sessions(daemon: &Daemon) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn session_start_with_codex_stdin_prints_the_guidance() {
+fn session_start_with_codex_stdin_prints_the_instructions() {
     let daemon = spawn_daemon();
     let output = run(
         &daemon,
@@ -113,5 +113,5 @@ fn session_start_with_codex_stdin_prints_the_guidance() {
         br#"{"session_id":"abc","transcript_path":null,"cwd":"/tmp","hook_event_name":"SessionStart","model":"m","source":"startup"}"#,
     );
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), GUIDANCE);
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), INSTRUCTIONS);
 }
