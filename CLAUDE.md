@@ -47,7 +47,10 @@ beside the terminal all day.
   quitting it loses nothing. `daemon.rs` makes the app self-installing: on a
   release build's `setup()`, `ensure_daemon` copies the `canvas` binary
   bundled as a Tauri resource (`tauri.conf.json`) out to `~/.local/bin` and
-  registers it as the `com.piercemakes.canvasd` launchd agent, skipping the
+  registers it as the `com.piercemakes.canvasd` launchd agent (no `ProcessType`
+  key, so canvasd and every refresh command it spawns run at standard priority;
+  a plist that differs from what the app writes is rewritten and the agent
+  restarted even when the binary matches), skipping the
   copy and restart when the bundled binary already matches what's installed
   so an ordinary relaunch doesn't empty the daemon's in-memory stream. A
   debug build skips this — `admin dev canvas` runs the daemon separately.

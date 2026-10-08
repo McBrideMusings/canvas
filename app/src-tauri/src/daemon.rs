@@ -51,9 +51,12 @@ fn gui_target() -> Result<String, String> {
     Ok(format!("gui/{uid}"))
 }
 
-fn write_plist(canvas_path: &std::path::Path) -> Result<(), String> {
-    let log_path = dirs_home().join("Library/Logs/canvasd.log");
-    let contents = format!(
+// No ProcessType key: launchd's default is Standard. `Background` would run
+// canvasd, and every artifact refresh command it spawns, at darwin background
+// priority with throttled disk I/O.
+fn render_plist(canvas_path: &std::path::Path, home: &std::path::Path) -> String {
+    let log_path = home.join("Library/Logs/canvasd.log");
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,8 +72,6 @@ fn write_plist(canvas_path: &std::path::Path) -> Result<(), String> {
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
-	<key>ProcessType</key>
-	<string>Background</string>
 	<key>WorkingDirectory</key>
 	<string>{home}</string>
 	<key>StandardOutPath</key>
@@ -81,9 +82,18 @@ fn write_plist(canvas_path: &std::path::Path) -> Result<(), String> {
 </plist>
 "#,
         canvas = canvas_path.display(),
-        home = dirs_home().display(),
+        home = home.display(),
         log = log_path.display(),
-    );
+    )
+}
+
+fn plist_is_current(canvas_path: &std::path::Path) -> bool {
+    std::fs::read_to_string(plist_path()).ok().as_deref()
+        == Some(render_plist(canvas_path, &dirs_home()).as_str())
+}
+
+fn write_plist(canvas_path: &std::path::Path) -> Result<(), String> {
+    let contents = render_plist(canvas_path, &dirs_home());
     let dir = plist_path();
     std::fs::create_dir_all(dir.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&dir, contents).map_err(|e| e.to_string())
@@ -133,6 +143,21 @@ fn kickstart(gui: &str) {
         .status();
 }
 
+fn install_binary(bundled: &std::path::Path, installed: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = installed.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("couldn't create {}: {e}", parent.display()))?;
+    }
+    std::fs::copy(bundled, installed).map_err(|e| format!("couldn't install daemon binary: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(installed, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("couldn't make daemon binary executable: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Installs or updates the daemon from the binary bundled into the app, and
 /// makes sure it's running. Called once from setup(), before the main
 /// window's waiting page starts polling canvasd. Returns the outcome so it
@@ -161,7 +186,9 @@ pub fn ensure_daemon(app: &tauri::AppHandle) -> DaemonStatus {
         Err(e) => return failed(&installed, format!("couldn't determine launchd target: {e}")),
     };
 
-    if up_to_date {
+    // The binary matching doesn't mean the agent file does: an app that changes
+    // the plist must reach installs whose binary it leaves alone.
+    if up_to_date && plist_is_current(&installed) {
         if !service_loaded(&gui) {
             if let Err(e) = bootstrap(&gui) {
                 return failed(&installed, format!("daemon installed but wouldn't start: {e}"));
@@ -170,23 +197,15 @@ pub fn ensure_daemon(app: &tauri::AppHandle) -> DaemonStatus {
         return query_status(app, None);
     }
 
-    canvas_core::log::info(
-        "installing bundled daemon",
-        &[("from", &bundled.display()), ("to", &installed.display())],
-    );
-    if let Some(parent) = installed.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return failed(&installed, format!("couldn't create {}: {e}", parent.display()));
-        }
-    }
-    if let Err(e) = std::fs::copy(&bundled, &installed) {
-        return failed(&installed, format!("couldn't install daemon binary: {e}"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)) {
-            return failed(&installed, format!("couldn't make daemon binary executable: {e}"));
+    if up_to_date {
+        canvas_core::log::info("rewriting launchd agent", &[("plist", &plist_path().display())]);
+    } else {
+        canvas_core::log::info(
+            "installing bundled daemon",
+            &[("from", &bundled.display()), ("to", &installed.display())],
+        );
+        if let Err(message) = install_binary(&bundled, &installed) {
+            return failed(&installed, message);
         }
     }
 
@@ -256,5 +275,21 @@ pub fn query_status(app: &tauri::AppHandle, stored_error: Option<String>) -> Dae
         loaded,
         running,
         error: stored_error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plist_runs_the_daemon_at_standard_priority() {
+        let plist = render_plist(
+            std::path::Path::new("/h/.local/bin/canvas"),
+            std::path::Path::new("/h"),
+        );
+        assert!(!plist.contains("ProcessType"), "{plist}");
+        assert!(plist.contains("<string>/h/.local/bin/canvas</string>"));
+        assert!(plist.contains("<string>/h/Library/Logs/canvasd.log</string>"));
     }
 }
