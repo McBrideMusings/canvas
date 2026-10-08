@@ -21,9 +21,10 @@ beside the terminal all day.
   directive parser), each come from up to three layers, joined in this order
   with one blank line and a missing or empty layer skipped: the built-in text
   compiled in from `plugin/instructions.md` or `plugin/reminders.txt` (dropped
-  when the person's Include flag for that kind is off: `{"instructions",
-  "reminders"}` in `instructions-include.json` in `CANVAS_DATA_DIR`, missing
-  means on), the person's `instructions.md` or `reminders.txt` in
+  when the person's Include flag for that kind is off: a bare `true` or
+  `false` in `instructions-include.json` or `reminders-include.json` in
+  `CANVAS_DATA_DIR`, one file per kind so a write never reads or rewrites the
+  other's, missing or unparseable means on), the person's `instructions.md` or `reminders.txt` in
   `CANVAS_DATA_DIR`, and the project's `.canvas/instructions.md` or
   `.canvas/reminders.txt` at the nearest folder above the working directory
   holding `.git` (none outside git). `compose(kind, data_dir, cwd, overrides)`

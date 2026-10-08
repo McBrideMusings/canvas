@@ -20,9 +20,6 @@ use serde::{Deserialize, Serialize};
 pub const BUILTIN_INSTRUCTIONS: &str = include_str!("../../plugin/instructions.md");
 pub const BUILTIN_REMINDERS: &str = include_str!("../../plugin/reminders.txt");
 
-/// The file in the data dir that holds the Include flag per kind.
-pub const INCLUDE_FILE: &str = "instructions-include.json";
-
 /// The file in the data dir listing the projects that have posted.
 pub const PROJECTS_FILE: &str = "projects.json";
 
@@ -57,6 +54,16 @@ impl Kind {
         match self {
             Kind::Instructions => "instructions.md",
             Kind::Reminders => "reminders.txt",
+        }
+    }
+
+    /// The file in the data dir holding this kind's Include flag, a bare
+    /// `true` or `false`. One file per kind, so setting one flag never reads
+    /// or rewrites the other's.
+    pub fn include_file(self) -> &'static str {
+        match self {
+            Kind::Instructions => "instructions-include.json",
+            Kind::Reminders => "reminders-include.json",
         }
     }
 
@@ -109,18 +116,11 @@ pub struct Overrides {
     pub project: Option<String>,
 }
 
-/// The person's Include-built-in switch per kind; a missing file, or a
-/// missing field, means on.
+/// The person's Include-built-in switch per kind; a missing file means on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Include {
-    #[serde(default = "on")]
     pub instructions: bool,
-    #[serde(default = "on")]
     pub reminders: bool,
-}
-
-fn on() -> bool {
-    true
 }
 
 impl Default for Include {
@@ -150,37 +150,40 @@ pub struct SeenProject {
     pub last_seen: String,
 }
 
-/// The Include flags in `data_dir`; on for both when the file is missing. A
-/// file that can't be read or parsed also reads as on, and logs why.
+/// The Include flags in `data_dir`, each read from its own file; a missing
+/// file means on. A file that can't be read or parsed also reads as on, and
+/// logs why.
 pub fn include(data_dir: &Path) -> Include {
-    read_include(data_dir).unwrap_or_else(|why| {
-        crate::log::warn("include flags unreadable, using on", &[("error", &why)]);
-        Include::default()
+    Include {
+        instructions: read_include(data_dir, Kind::Instructions),
+        reminders: read_include(data_dir, Kind::Reminders),
+    }
+}
+
+fn read_include(data_dir: &Path, kind: Kind) -> bool {
+    let path = data_dir.join(kind.include_file());
+    let read = match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e.to_string()),
+    };
+    read.unwrap_or_else(|why| {
+        crate::log::warn(
+            "include flag unreadable, using on",
+            &[("path", &path.display()), ("error", &why)],
+        );
+        true
     })
 }
 
-fn read_include(data_dir: &Path) -> Result<Include, String> {
-    let path = data_dir.join(INCLUDE_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Include::default()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
-/// Sets one kind's Include flag, writing through a temp file and a rename.
-/// Refuses to overwrite a file it can't read, which would reset the other
-/// kind's flag.
+/// Sets one kind's Include flag by renaming a temp file over that kind's
+/// file, which it never reads first, so two writers can't drop each other's
+/// change. Answers both flags as they stand after the write.
 pub fn set_include(data_dir: &Path, kind: Kind, value: bool) -> Result<Include, String> {
-    let mut flags = read_include(data_dir)?;
-    match kind {
-        Kind::Instructions => flags.instructions = value,
-        Kind::Reminders => flags.reminders = value,
-    }
-    let path = data_dir.join(INCLUDE_FILE);
-    let json = serde_json::to_string_pretty(&flags).map_err(|e| e.to_string())?;
-    write_atomic(&path, json.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(flags)
+    let path = data_dir.join(kind.include_file());
+    write_atomic(&path, value.to_string().as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(include(data_dir))
 }
 
 /// The projects canvasd has recorded, newest first as stored; empty when
@@ -454,14 +457,46 @@ mod tests {
     }
 
     #[test]
-    fn a_corrupt_include_file_reads_as_on_and_is_never_overwritten() {
+    fn a_corrupt_include_file_reads_as_on_and_leaves_the_other_kind_settable() {
         let d = dirs("corrupt");
-        std::fs::write(d.data.join(INCLUDE_FILE), "{not json").unwrap();
+        let instructions = d.data.join(Kind::Instructions.include_file());
+        std::fs::write(&instructions, "{not json").unwrap();
         assert_eq!(include(&d.data), Include::default());
-        assert!(set_include(&d.data, Kind::Reminders, false).is_err());
+        let flags = set_include(&d.data, Kind::Reminders, false).unwrap();
         assert_eq!(
-            std::fs::read_to_string(d.data.join(INCLUDE_FILE)).unwrap(),
-            "{not json"
+            flags,
+            Include {
+                instructions: true,
+                reminders: false
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&instructions).unwrap(), "{not json");
+    }
+
+    #[test]
+    fn writers_setting_different_kinds_at_once_both_land() {
+        let d = dirs("race");
+        let writers: Vec<_> = [Kind::Instructions, Kind::Reminders]
+            .into_iter()
+            .map(|kind| {
+                let data = d.data.clone();
+                std::thread::spawn(move || {
+                    for i in 0..300 {
+                        set_include(&data, kind, i % 2 == 0).unwrap();
+                    }
+                    set_include(&data, kind, false).unwrap();
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert_eq!(
+            include(&d.data),
+            Include {
+                instructions: false,
+                reminders: false
+            }
         );
     }
 

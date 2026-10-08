@@ -305,7 +305,7 @@ pub async fn put_include(
             ("kind", &kind.name()),
             ("layer", &"built-in"),
             ("include", &body.include),
-            ("path", &dir.join(instructions::INCLUDE_FILE).display()),
+            ("path", &dir.join(kind.include_file()).display()),
         ],
     );
     Ok(Json(flags))
