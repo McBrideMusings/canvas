@@ -89,9 +89,17 @@ pub fn run(args: PostArgs) -> Result<(), String> {
     validate(&input)?;
     let converted = format::convert(&input, format);
     let inlined = inline_css::inline_stylesheets(&converted, read_stylesheet);
-    let scanned = scan::scan(&inlined.html, |path| std::path::Path::new(path).exists());
+    let home = std::env::var("HOME").ok();
+    let exists = |path: &str| std::path::Path::new(path).exists();
+    let mut scanned = scan::scan(&inlined.html, home.as_deref(), exists);
+    if format == Format::Text {
+        scanned.hints = scan::text_hints(&input, home.as_deref(), exists);
+    }
     for warning in inlined.warnings.iter().chain(&scanned.warnings) {
         eprintln!("{warning}");
+    }
+    for hint in &scanned.hints {
+        eprintln!("canvas post: {hint}");
     }
     let card = match args.update_id {
         Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
@@ -109,10 +117,14 @@ pub fn run(args: PostArgs) -> Result<(), String> {
             })?
         }
     };
+    for hint in &scanned.hints {
+        canvas_core::log::info("post hint", &[("card", &card.id), ("hint", hint)]);
+    }
     let mut output = serde_json::json!({
         "card_id": card.id,
         "images": card.images,
         "targets": card.targets,
+        "hints": scanned.hints,
     });
     if args.focus {
         // The card exists either way, so a focus that reached nobody is a

@@ -149,7 +149,14 @@ inside a `<video>`, in HTML or in Markdown's raw-HTML passthrough — plays inli
 the same way (WebM/VP9 and MP4/H.264 play; `.m4v` and `.mov` are served too).
 Canvas adds no attributes to your tag; it does not open a video in the lightbox,
 since the player has its own controls and fullscreen. Only these forms are
-picked up: a bare path in the text stays plain text. An absolute local path that
+picked up: a bare path in the text stays plain text. A report written for the
+terminal, with bare paths, is not ready to post: rewrite each image path as
+`![](/abs/shot.png)` and each file you want clickable as `[name](/abs/file)`
+first. `canvas post` returns a hint for each absolute or `~/` path in the text
+(inline code included, `<pre>` and link text not) that names an existing `png`,
+`jpg`, `jpeg`, `gif`, `webp`, `apng`, `svg`, `avif`, `mp4`, `webm` or `mov`
+file, giving the `![](…)` that shows it (`<video src="…" controls></video>`
+for a video); a `--format text` post is checked on its raw input. An absolute local path that
 doesn't exist is left unchanged (a broken image, video or dead link) and `canvas
 post` warns about it on stderr — the post still lands.
 
@@ -507,9 +514,12 @@ canvasd pull them:
 `CLAUDE_CODE_SESSION_ID` isn't set (it only runs inside a Claude Code
 session), or the input is empty, it prints one line to stderr and exits
 non-zero. On success it prints one JSON line to stdout —
-`{"card_id": "...", "images": [...], "targets": [...]}` — listing the local
-images and clickable targets it found. Check the exit code and read the
-message rather than assuming the post landed.
+`{"card_id": "...", "images": [...], "targets": [...], "hints": [...]}` —
+listing the local images and clickable targets it found, and a hint for each
+media file the post names only as plain text (each hint also goes to stderr).
+Check the exit code and read the message rather than assuming the post
+landed, and read `hints` after every post: when it isn't empty, fix the source
+and repost it with `canvas post --update <card_id>`.
 
 ## Adjusting guidance
 

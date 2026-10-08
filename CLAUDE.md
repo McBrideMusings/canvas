@@ -166,8 +166,13 @@ beside the terminal all day.
   already know it (e.g. after a daemon restart) — and unlike a hook it fails
   loudly — one line on stderr, non-zero exit — on any error, including when
   `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
-  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`, plus
-  `"viewers": N` with `--focus`. A local
+  stdout: `{"card_id": "...", "images": [...], "targets": [...], "hints":
+  [...]}`, plus `"viewers": N` with `--focus`. `hints` (`scan.rs`) holds one
+  line per existing media file (an absolute or `~/` path ending in png, jpg,
+  jpeg, gif, webp, apng, svg, avif, mp4, webm or mov) the post names only as
+  text, outside `<pre>`, links and raw-text elements; a `--format text` post
+  is checked on its raw input instead. Each hint also goes to stderr and is
+  logged as `post hint`. A local
   `<video src>` or `<source src>` joins `images` and is served by the same
   `/api/cards/:id/images/:n` route (which honours `Range`, since a video needs
   it); the viewer's lightbox skips those entries and the card CSP carries
