@@ -54,6 +54,10 @@ _Avoid_: gallery, library
 A post saved as one standalone HTML page with its images, scripts, styles and fonts inlined, so it opens without Canvas or the network. Exporting every post or one session produces a zip of such pages plus an index.
 _Avoid_: download, save, backup
 
+**Instructions**:
+The text an agent reads at session start about when to post to Canvas and how to build a post. It has up to three layers, read in this order: built-in (ships in `plugin/`, read-only, with an Include switch), yours (one per Mac), and the project's (`.canvas/instructions.md` at the repo's git root). Later layers win where they differ.
+_Avoid_: guidance, posting-guidance profile
+
 ### Architecture
 
 {Seeded on first run of `improve`. Don't seed up front.}
