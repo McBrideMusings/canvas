@@ -326,6 +326,8 @@
       target: "yours",
       project: null,
       composed: null,
+      // The {person, project} texts `composed` was built from.
+      composedFrom: null,
       composeError: "",
       view: "form",
       saving: false,
@@ -337,6 +339,19 @@
     const projectOf = (rootPath) => st.projects.find((p) => p.root === rootPath) || null;
     const current = () => (st.target === "yours" ? st.person : projectOf(st.target));
     const dirty = (layer) => layer && layer.saved !== null && layer.draft !== layer.saved;
+    // Why the edited layer's text doesn't parse (`line N: …`, the PUT's 400
+    // wording); null when it parses, or when the last compose read other text.
+    function draftError() {
+      if (!st.composed || !st.composedFrom) return null;
+      if (st.target !== "yours" && st.target !== st.project) return null;
+      const source = st.target === "yours" ? "person" : "project";
+      const draft = source === "person" ? st.person.draft : (projectOf(st.project) || {}).draft;
+      if (st.composedFrom[source] !== draft) return null;
+      const layer = st.composed.layers.find((l) => l.source === source);
+      return (layer && layer.error) || null;
+    }
+    // The line `line N: …` names, or 0.
+    const errorLine = (error) => Number((/^line (\d+):/.exec(error || "") || [])[1] || 0);
 
     function markDown() {
       st.down = true;
@@ -424,11 +439,12 @@
         (composed) => {
           if (seq !== composeSeq) return;
           st.composed = composed;
+          st.composedFrom = body;
           st.composeError = "";
           if (st.down) {
             st.down = false;
-            renderEditor();
-          }
+            keepCaret(renderEditor);
+          } else if (editEl._repaint) editEl._repaint();
           renderOut();
         },
         (e) => {
@@ -532,6 +548,7 @@
       const isYours = st.target === "yours";
       const layer = current();
       editEl._focus = null;
+      editEl._repaint = null;
       const pane = h("div", "pane");
       editEl.append(pane);
       if (!layer) return;
@@ -631,8 +648,9 @@
 
       const paintStatus = () => {
         const unsaved = dirty(layer);
-        save.disabled = st.down || st.saving || !unsaved;
-        save.title = st.down ? DOWN : "";
+        const error = draftError();
+        save.disabled = st.down || st.saving || !unsaved || (unsaved && !!error);
+        save.title = st.down ? DOWN : unsaved && error ? `Not saved: ${error}` : "";
         status.className = "pane-status";
         if (st.down) {
           status.classList.add("is-error");
@@ -640,6 +658,11 @@
         } else if (st.saveError) {
           status.classList.add("is-error");
           status.textContent = st.saveError;
+        } else if (error) {
+          // Saved text that doesn't parse came from outside Settings; the
+          // hook then uses the built-in reminders alone.
+          status.classList.add("is-error");
+          status.textContent = unsaved ? `Not saved: ${error}` : `Sessions ignore this file: ${error}`;
         } else if (unsaved) {
           status.classList.add("is-unsaved");
           status.textContent = "Unsaved";
@@ -651,9 +674,10 @@
 
       const paint = () => {
         const fn = spec.markdown ? markdownLine : directiveLine;
+        const bad = errorLine(draftError());
         hl.innerHTML = ta.value
           .split("\n")
-          .map((l, i) => lineRow(i + 1, fn(l)))
+          .map((l, i) => lineRow(i + 1, fn(l), i + 1 === bad ? "ln-error" : ""))
           .join("");
         // As many lines as the gutter numbers.
         linesEl.textContent = plural(ta.value.split("\n").length, "line");
@@ -677,6 +701,7 @@
       });
       save.addEventListener("click", () => saveLayer(layer));
       paint();
+      editEl._repaint = paint;
       editEl._focus = () => {
         if (wrap.hidden) return;
         ta.focus();
@@ -780,7 +805,11 @@
         const dot = { "built-in": "dot-builtin", person: "dot-yours", project: "dot-project" }[layer.source];
         html += `<div class="out-block${layer.source === activeSource ? " is-active" : ""}" data-source="${layer.source}">`;
         html += `<div class="out-break"><span class="dot ${dot}"></span><span class="out-break-label">${esc(layer.name)}</span></div>`;
-        for (let i = 0; i < layer.lines; i += 1, n += 1) html += lineRow(n, fn(textLines[n - 1] || ""));
+        if (layer.error) html += `<div class="out-break-error">${esc(layer.error)}</div>`;
+        const bad = errorLine(layer.error);
+        for (let i = 0; i < layer.lines; i += 1, n += 1) {
+          html += lineRow(n, fn(textLines[n - 1] || ""), i + 1 === bad ? "ln-error" : "");
+        }
         html += "</div>";
       }
       out.innerHTML = html;

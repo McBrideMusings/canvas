@@ -210,6 +210,36 @@ async fn a_reminders_text_that_does_not_parse_is_refused_with_its_line() {
 }
 
 #[tokio::test]
+async fn compose_flags_an_unsaved_reminders_override_that_does_not_parse_with_the_put_wording() {
+    let d = dirs();
+    let app = build_router(AppState::open(&d.data).await);
+    post_from(&app, "s1", &d.repo).await;
+    let bad = "no image\nfile\nlinks many\n";
+    let (_, put) = send(
+        &app,
+        "PUT",
+        "/api/instructions/reminders/person",
+        Some(json!({"text": bad})),
+    )
+    .await;
+    let route = json_of(
+        &app,
+        "POST",
+        "/api/instructions/reminders/compose",
+        Some(json!({"root": d.repo, "person": bad, "project": "image\n"})),
+    )
+    .await;
+    assert!(route["text"].as_str().unwrap().contains("links many"));
+    let layers = route["layers"].as_array().unwrap();
+    let person = layers.iter().find(|l| l["source"] == "person").unwrap();
+    assert_eq!(person["error"], json!(String::from_utf8_lossy(&put)));
+    assert!(person["error"].as_str().unwrap().starts_with("line 3:"));
+    for layer in layers.iter().filter(|l| l["source"] != "person") {
+        assert!(layer.get("error").is_none(), "{layer}");
+    }
+}
+
+#[tokio::test]
 async fn the_compose_route_matches_the_hook_and_takes_unsaved_overrides() {
     let d = dirs();
     let app = build_router(AppState::open(&d.data).await);

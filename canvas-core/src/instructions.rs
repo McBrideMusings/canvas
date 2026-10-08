@@ -100,6 +100,11 @@ pub struct Layer {
     pub start_line: usize,
     pub lines: usize,
     pub chars: usize,
+    /// Why a reminders layer doesn't parse, as `reminders::parse` words it
+    /// (`line N: …`, the layer's own line); absent when it does, and always
+    /// for instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,11 +281,16 @@ pub fn compose(
             next_line += 1;
         }
         let lines = text.lines().count();
+        let error = match kind {
+            Kind::Reminders => crate::reminders::parse(&text).err(),
+            Kind::Instructions => None,
+        };
         composed.text.push_str(&text);
         composed.layers.push(Layer {
             name,
             source,
             path,
+            error,
             chars: text.chars().count(),
             text,
             start_line: next_line,
@@ -320,12 +330,13 @@ pub fn reminders(
     }
 }
 
-/// Checks each layer on its own, so an error's line number is the file's. A
+/// The first layer `compose` found unparseable, named by its file. Each
+/// layer is parsed on its own, so an error's line number is the file's; a
 /// directive parses the same alone as joined, so this is the joined text's
 /// verdict too.
 pub fn check_reminders(composed: &Composed) -> Result<(), String> {
     for layer in &composed.layers {
-        if let Err(e) = crate::reminders::parse(&layer.text) {
+        if let Some(e) = &layer.error {
             let place = layer
                 .path
                 .as_ref()

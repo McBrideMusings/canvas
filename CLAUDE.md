@@ -30,8 +30,9 @@ beside the terminal all day.
   holding `.git` (none outside git). `compose(kind, data_dir, cwd, overrides)`
   returns the text and each layer's name (`Built-in`, `Yours`, the git root's
   folder name), source (`built-in`, `person`, `project`), path, text, start
-  line, line and character counts; `overrides` stands unsaved text in for the
-  person's or project's file. Reminders are parsed from the joined text top to
+  line, line and character counts, and for a reminders layer that doesn't
+  parse its `error` (`line N: …`, the layer's own line, worded as the PUT's
+  400); `overrides` stands unsaved text in for the person's or project's file. Reminders are parsed from the joined text top to
   bottom, so a project's `no image` cancels the built-in `image` in that repo;
   when the person's or project's layer doesn't parse, `reminders()` returns
   the built-in reminders and the reason (file and line). `seen_projects` reads
@@ -161,7 +162,10 @@ beside the terminal all day.
   that writes a one-line `.canvas/` file, since a blank write deletes it); and
   "What a <project> session reads", the compose route's text for the project
   last picked, rebuilt at most every 100ms from the unsaved text, each layer
-  marked with a dot and its name. `LayerPage.page(kind).composedText()` returns
+  marked with a dot and its name. A reminders draft that doesn't parse reads
+  `Not saved: line N: …` in the editor header before any Save, with Save
+  disabled and line N marked in the editor and column 3, which shows the same
+  error under that layer's label. `LayerPage.page(kind).composedText()` returns
   that text for `admin verify-app eval … settings`. The Post reminders editor
   has a Form/Text switch (`stop-form.js` parses the directive text into a
   model and re-emits it, keeping comments, unknown lines and order); the text

@@ -103,7 +103,8 @@ pub struct ComposeBody {
 
 /// `POST /api/instructions/:kind/compose`: the text a session at `root`
 /// would read with `person` and `project` standing in for those files,
-/// unsaved. Settings' live preview.
+/// unsaved. Settings' live preview. A reminders override that doesn't parse
+/// still answers 200: the layer carries `error`, worded as the PUT's 400.
 pub async fn compose(
     State(state): State<AppState>,
     UrlPath(kind): UrlPath<String>,
