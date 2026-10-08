@@ -401,6 +401,63 @@ async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
 }
 
 #[tokio::test]
+async fn artifact_reset_drops_data_and_errors_and_tells_viewers() {
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let created = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await;
+        ids.push(created["id"].as_str().unwrap().to_string());
+    }
+    let (a, b) = (&ids[0], &ids[1]);
+    for id in [a, b] {
+        send(
+            &app,
+            "PUT",
+            &format!("/api/artifacts/{id}/data"),
+            Some(json!({ "n": 1 })),
+        )
+        .await;
+        send(
+            &app,
+            "POST",
+            &format!("/api/artifacts/{id}/errors"),
+            Some(json!({ "kind": "error", "message": "boom" })),
+        )
+        .await;
+    }
+    let mut events = state.events.subscribe();
+
+    let answer: Value = serde_json::from_slice(
+        &send(&app, "POST", &format!("/api/artifacts/{a}/reset"), None).await,
+    )
+    .unwrap();
+    assert_eq!(answer, json!({ "viewers": 1 }));
+    match events.try_recv() {
+        Ok(canvasd::state::CanvasEvent::ArtifactReset(id)) => assert_eq!(&id, a),
+        other => panic!("expected artifact-reset, got {other:?}"),
+    }
+
+    let shown: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{a}"), None).await)
+            .unwrap();
+    assert_eq!(shown.get("data"), None);
+    assert_eq!(shown.get("scriptErrors"), None);
+    let other: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{b}"), None).await)
+            .unwrap();
+    assert_eq!(other["data"], json!({ "n": 1 }));
+    assert_eq!(other["scriptErrors"].as_array().map(Vec::len), Some(1));
+
+    let unknown = send(&app, "POST", "/api/artifacts/art-0000000000/reset", None).await;
+    assert_eq!(
+        String::from_utf8_lossy(&unknown),
+        "no artifact with that id"
+    );
+}
+
+#[tokio::test]
 async fn script_errors_list_per_artifact_and_keep_the_newest_50() {
     let dir = temp_dir();
     let app = build_router(AppState::open(&dir).await);
@@ -565,6 +622,60 @@ async fn artifact_html_is_served_with_the_error_relay_and_other_files_untouched(
     assert!(relay_at < page.find("app.js").unwrap());
     let script = send(&app, "GET", &format!("/artifacts/{id}/app.js"), None).await;
     assert_eq!(String::from_utf8_lossy(&script), "throw new Error('x')");
+}
+
+#[tokio::test]
+async fn a_linked_page_that_would_freeze_the_viewer_is_refused_and_left_as_is() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let page = |k: usize| {
+        format!(
+            "<!doctype html><html><head><title>t</title></head><body>{}\
+             <table><tr><td><svg></table></body></html>",
+            "<div>".repeat(k)
+        )
+    };
+    let file = dir.join("deep.html");
+    std::fs::write(&file, page(506)).unwrap();
+    let id = send_as(
+        &app,
+        "POST",
+        "/api/artifacts",
+        Some(json!({ "link": file })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let get = |uri: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            let status = res.status();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8(body.to_vec()).unwrap())
+        }
+    };
+    let (status, body) = get(format!("/artifacts/{id}/")).await;
+    assert_eq!(status, 422);
+    let at = page(506).find("</table>").unwrap();
+    assert_eq!(
+        body,
+        format!(
+            "Canvas won't show this page: its </table> at byte {at} closes a table cell \
+             nested past WebKit's 512-element limit, which freezes Canvas.app; nest the \
+             table less deeply.\n"
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), page(506));
+
+    // One `<div>` fewer fits the page's frame, which has no wrapper.
+    std::fs::write(&file, page(505)).unwrap();
+    let (status, body) = get(format!("/artifacts/{id}/")).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("canvas-artifact-error"));
 }
 
 #[cfg(debug_assertions)]

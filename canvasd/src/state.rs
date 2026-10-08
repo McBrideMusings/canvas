@@ -53,6 +53,10 @@ pub enum CanvasEvent {
     /// Asks every open viewer to switch to the Artifacts page and open this
     /// artifact (`canvas focus art-…`). Sent to viewers only.
     ArtifactFocus(String),
+    /// Asks every open viewer to rebuild this artifact's pane at its entry
+    /// page, forgetting where its page last was (`canvas artifact reset`).
+    /// Sent to viewers only.
+    ArtifactReset(String),
     /// Asks a viewer to capture an artifact's pane as rendered (`canvas
     /// snapshot art-…`); answered like `CardSnapshot`. Sent to viewers only.
     ArtifactSnapshot {
@@ -277,6 +281,7 @@ impl AppState {
                     | CanvasEvent::ArtifactRemoved(_)
                     | CanvasEvent::ArtifactData { .. }
                     | CanvasEvent::ArtifactFocus(_)
+                    | CanvasEvent::ArtifactReset(_)
                     | CanvasEvent::ArtifactSnapshot { .. }
                     | CanvasEvent::ArtifactPane { .. }
             ) {
@@ -347,6 +352,7 @@ impl Inner {
             | CanvasEvent::ArtifactRemoved(_)
             | CanvasEvent::ArtifactData { .. }
             | CanvasEvent::ArtifactFocus(_)
+            | CanvasEvent::ArtifactReset(_)
             | CanvasEvent::ArtifactSnapshot { .. }
             | CanvasEvent::ArtifactPane { .. } => {}
         }

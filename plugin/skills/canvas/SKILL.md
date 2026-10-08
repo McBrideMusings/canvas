@@ -299,6 +299,12 @@ canvas artifact list | show <id> | delete <id>
   of an error thrown at the top level of an inline `<script>` or by an
   `onclick="…"` attribute; the entry says so, and moving that code into a
   `.js` file brings the message and line back.
+- A page wedged by a value it was sent or an address it keeps reloading into
+  starts over with `canvas artifact reset <id>` (or the pane menu's Reset):
+  canvasd drops its held `data` and `scriptErrors`, and every open viewer
+  reopens the pane at the entry page. Files and pane size stay. A refresh
+  command's next run sends `data` again. It can't unstick a page spinning
+  the CPU; that needs Canvas relaunched.
 - An artifact belongs to no session: any agent with its id can `put` to it,
   and it outlives the session that made it. Delete one whose job is done.
   `canvas artifact log <id>` prints which session and agent created, put,

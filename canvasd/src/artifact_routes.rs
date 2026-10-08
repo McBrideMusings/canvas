@@ -473,6 +473,23 @@ pub async fn focus_artifact(State(state): State<AppState>, Path(id): Path<String
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
+/// `canvas artifact reset` and the pane menu's Reset: drops the artifact's
+/// held `data` and `scriptErrors`, then asks every open viewer to rebuild its
+/// pane at the entry page. Its files, pane size and full window stay. Answers
+/// how many viewers the event reached.
+pub async fn reset_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    {
+        let mut artifacts = state.artifacts.write().await;
+        if !artifacts.records.contains_key(&id) {
+            return not_found();
+        }
+        artifacts.reset(&id);
+    }
+    let viewers = state.publish(CanvasEvent::ArtifactReset(id.clone()));
+    canvas_core::log::info("artifact reset", &[("id", &id), ("viewers", &viewers)]);
+    Json(serde_json::json!({ "viewers": viewers })).into_response()
+}
+
 /// `canvas snapshot art-…`: asks the open viewers to capture the artifact's
 /// pane as rendered, answered like a card's snapshot. 404 for an unknown id.
 pub async fn snapshot_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -594,7 +611,21 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
     };
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
     let bytes = if mime.essence_str() == "text/html" {
-        artifacts::served_page(&bytes)
+        // The freeze scan costs about 20ms per MB of page, so it runs off the
+        // runtime's workers.
+        let page = tokio::task::spawn_blocking(move || {
+            let freeze = canvas_core::html::webkit_freeze_page_reason(&bytes);
+            match freeze {
+                Some(reason) => Err(reason),
+                None => Ok(artifacts::served_page(&bytes)),
+            }
+        })
+        .await;
+        match page {
+            Ok(Ok(page)) => page,
+            Ok(Err(reason)) => return refused_page(&id, &rel, &reason),
+            Err(e) => return failed("serving an artifact page failed", &id, &e),
+        }
     } else {
         bytes
     };
@@ -724,4 +755,30 @@ pub async fn clear_artifact_state(
         }
         Err(e) => state_refused(&id, "", &e),
     }
+}
+
+/// The 422 canvasd answers in place of an HTML page that would freeze
+/// Canvas.app's WebKit (`canvas_core::html::webkit_freeze_page_reason`),
+/// naming why in the pane; the file itself is left as it is.
+fn refused_page(id: &str, rel: &str, reason: &str) -> Response {
+    canvas_core::log::warn(
+        "artifact page refused",
+        &[("id", &id), ("path", &rel), ("reason", &reason)],
+    );
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [
+            (
+                header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_string(),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                artifacts::content_security_policy(id),
+            ),
+        ],
+        format!("Canvas won't show this page: {reason}.\n"),
+    )
+        .into_response()
 }

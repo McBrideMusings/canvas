@@ -4,8 +4,11 @@
 //! read, so the export can tell an oversize body from one that fits. This is
 //! outbound only; canvasd still listens on nothing but its Unix socket.
 
+use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, OnceLock};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use canvas_core::MAX_ASSET_BYTES;
@@ -131,9 +134,42 @@ fn request_url(url: &str, origin: Option<&str>, honor: bool) -> String {
 /// Most redirects one download follows, each to an allowed host.
 const MAX_REDIRECTS: usize = 5;
 
-/// Downloads `url`, which `allowed` has passed, within `timeout`. Errors are
-/// one line naming why, for an export warning's `reason`.
-pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+/// A download's body and the URL it came from after any redirects, which is
+/// what the body's own relative references resolve against.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub body: Vec<u8>,
+    pub url: String,
+}
+
+/// How an export downloads one URL within a timeout. Errors are one line
+/// naming why, for an export warning's `reason`.
+pub trait Fetch {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String>;
+}
+
+/// A downloader that answers with bodies alone, so each comes from the URL
+/// asked for, as a test's stand-in does.
+impl<F: Fn(&str, Duration) -> Result<Vec<u8>, String>> Fetch for F {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String> {
+        self(url, timeout).map(|body| Fetched {
+            body,
+            url: url.to_string(),
+        })
+    }
+}
+
+/// Downloads from the CDN hosts themselves (`fetch`).
+pub struct Network;
+
+impl Fetch for Network {
+    fn fetch(&self, url: &str, timeout: Duration) -> Result<Fetched, String> {
+        fetch(url, timeout)
+    }
+}
+
+/// Downloads `url`, which `allowed` has passed, within `timeout`.
+pub fn fetch(url: &str, timeout: Duration) -> Result<Fetched, String> {
     let origin = std::env::var(OVERRIDE_ENV).ok();
     let started = Instant::now();
     let result = download(
@@ -141,12 +177,18 @@ pub fn fetch(url: &str, timeout: Duration) -> Result<Vec<u8>, String> {
         timeout,
         |u| request_url(u, origin.as_deref(), HONOR_OVERRIDE),
         &tls_config(),
+        &system_lookup(),
     );
     let ms = started.elapsed().as_millis();
     match &result {
-        Ok(bytes) => canvas_core::log::info(
+        Ok(fetched) => canvas_core::log::info(
             "export fetch",
-            &[("url", &url), ("bytes", &bytes.len()), ("ms", &ms)],
+            &[
+                ("url", &url),
+                ("from", &fetched.url),
+                ("bytes", &fetched.body.len()),
+                ("ms", &ms),
+            ],
         ),
         Err(reason) => canvas_core::log::warn(
             "export fetch failed",
@@ -233,17 +275,142 @@ fn is_timeout(e: &(dyn std::error::Error + 'static)) -> bool {
     })
 }
 
+/// A lookup's addresses, or its error's kind and text (an `io::Error` can't
+/// be shared between the requests waiting on one lookup).
+type Found = Result<Vec<SocketAddr>, (std::io::ErrorKind, String)>;
+
+/// One lookup still running, and its result once it returns.
+#[derive(Default)]
+struct Pending {
+    found: Mutex<Option<Found>>,
+    done: Condvar,
+}
+
+/// Looks up a `host:port`'s addresses: the system resolver, or a test's
+/// stand-in.
+type Lookup = Box<dyn Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
+
+/// Runs `Lookup`s, one per `host:port` at a time. A lookup can't be
+/// cancelled, so one that outlasts a request's deadline keeps its thread;
+/// every request for that `host:port` while it runs waits on it rather than
+/// starting another, so a hung resolver holds one thread per host, never one
+/// per download. Nothing is kept once a lookup returns; until it does, every
+/// request for its host waits on it and times out, however long it hangs.
+struct Resolver {
+    lookup: Lookup,
+    running: Mutex<HashMap<String, Arc<Pending>>>,
+}
+
+impl Resolver {
+    fn new(
+        lookup: impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            lookup: Box::new(lookup),
+            running: Mutex::default(),
+        })
+    }
+
+    /// `netloc`'s addresses, or None when its lookup hasn't returned by
+    /// `deadline`.
+    fn find(self: &Arc<Self>, netloc: &str, deadline: Instant) -> Option<Found> {
+        let pending = {
+            let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+            match running.get(netloc) {
+                Some(pending) => pending.clone(),
+                None => {
+                    let pending = Arc::new(Pending::default());
+                    let (resolver, name, shared) =
+                        (self.clone(), netloc.to_string(), pending.clone());
+                    if let Err(e) =
+                        std::thread::Builder::new().spawn(move || resolver.run(&name, &shared))
+                    {
+                        return Some(Err((e.kind(), format!("couldn't start the lookup: {e}"))));
+                    }
+                    // The thread waits on this lock to forget the entry, so
+                    // it can't remove it before it's here.
+                    running.insert(netloc.to_string(), pending.clone());
+                    pending
+                }
+            }
+        };
+        let found = pending.found.lock().unwrap_or_else(PoisonError::into_inner);
+        let (found, _) = pending
+            .done
+            .wait_timeout_while(
+                found,
+                deadline.saturating_duration_since(Instant::now()),
+                |found| found.is_none(),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+        found.clone()
+    }
+
+    /// Runs one lookup, hands its result to every request waiting on it and
+    /// forgets it, so the next request for `netloc` looks it up afresh.
+    fn run(&self, netloc: &str, pending: &Pending) {
+        let found = std::panic::catch_unwind(AssertUnwindSafe(|| (self.lookup)(netloc)))
+            .unwrap_or_else(|_| Err(std::io::Error::other("the lookup panicked")))
+            .map_err(|e| (e.kind(), e.to_string()));
+        *pending.found.lock().unwrap_or_else(PoisonError::into_inner) = Some(found);
+        pending.done.notify_all();
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(netloc);
+    }
+}
+
+fn system_lookup() -> Arc<Resolver> {
+    static SYSTEM: OnceLock<Arc<Resolver>> = OnceLock::new();
+    SYSTEM
+        .get_or_init(|| Resolver::new(|netloc| netloc.to_socket_addrs().map(Iterator::collect)))
+        .clone()
+}
+
+/// Looks up `url`'s host by `deadline`. ureq's own lookup has no deadline and
+/// runs after its connect timeout has started, so a slow resolver would spend
+/// both the request's time and an attempt's setup window. Only a timeout or a
+/// URL with no host is an `Err`; the lookup's own result, failure included, is
+/// handed to ureq to report as it would its own.
+fn resolve(
+    url: &str,
+    deadline: Instant,
+    lookup: &Arc<Resolver>,
+) -> Result<Found, Box<ureq::Error>> {
+    let fail = |kind, message: String| Box::new(std::io::Error::new(kind, message).into());
+    let parsed = url::Url::parse(url)
+        .map_err(|e| fail(std::io::ErrorKind::InvalidInput, format!("{url}: {e}")))?;
+    let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
+        return Err(fail(
+            std::io::ErrorKind::InvalidInput,
+            format!("{url}: no host"),
+        ));
+    };
+    lookup
+        .find(&format!("{host}:{port}"), deadline)
+        .ok_or_else(|| {
+            fail(
+                std::io::ErrorKind::TimedOut,
+                format!("looking up {host} timed out"),
+            )
+        })
+}
+
 fn first_line(message: String) -> String {
     message.lines().next().unwrap_or(&message).to_string()
 }
 
 /// GETs `url` by `deadline`, opening a fresh connection when one stalls in
-/// its TCP connect or TLS handshake (see `SETUP_ATTEMPTS`).
+/// its TCP connect or TLS handshake (see `SETUP_ATTEMPTS`). The host is
+/// looked up once per request, before the first attempt's setup window starts.
 fn get(
     url: &str,
     deadline: Instant,
     tls: &Arc<rustls::ClientConfig>,
+    lookup: &Arc<Resolver>,
 ) -> Result<ureq::Response, Box<ureq::Error>> {
+    let found = Arc::new(resolve(url, deadline, lookup)?);
     let mut attempt = 1;
     loop {
         let started = Instant::now();
@@ -258,8 +425,14 @@ fn get(
         } else {
             left / 2
         };
+        let found = found.clone();
         let agent = ureq::AgentBuilder::new()
             .redirects(0)
+            // With no redirects and no proxy, ureq asks only for `url`'s host.
+            .resolver(move |_: &str| match &*found {
+                Ok(addrs) => Ok(addrs.clone()),
+                Err((kind, message)) => Err(std::io::Error::new(*kind, message.clone())),
+            })
             .timeout_connect(setup)
             .tls_connector(Arc::new(SetupLimit {
                 tls: tls.clone(),
@@ -297,12 +470,13 @@ fn download(
     timeout: Duration,
     route: impl Fn(&str) -> String,
     tls: &Arc<rustls::ClientConfig>,
-) -> Result<Vec<u8>, String> {
+    lookup: &Arc<Resolver>,
+) -> Result<Fetched, String> {
     let deadline = Instant::now() + timeout;
     let timed_out = || format!("timed out after {}s", timeout.as_secs_f32().ceil());
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        let response = get(&route(&current), deadline, tls).map_err(|e| match *e {
+        let response = get(&route(&current), deadline, tls, lookup).map_err(|e| match *e {
             ureq::Error::Status(code, _) => format!("HTTP {code}"),
             ureq::Error::Transport(t) if std::error::Error::source(&t).is_some_and(is_timeout) => {
                 timed_out()
@@ -332,7 +506,10 @@ fn download(
                     first_line(e.to_string())
                 }
             })?;
-        return Ok(bytes);
+        return Ok(Fetched {
+            body: bytes,
+            url: current,
+        });
     }
     Err(format!("more than {MAX_REDIRECTS} redirects"))
 }
@@ -396,11 +573,12 @@ mod tests {
     }
 
     /// A local HTTPS server for `localhost` under a test CA; `answer(n)`
-    /// says whether its `n`th connection (from 1) finishes the handshake and
-    /// answers `ok`, or is held open without a byte. Returns the URL, the
-    /// client settings that trust the CA, and the count of connections.
+    /// says whether its `n`th connection from the client (from 1) finishes
+    /// the handshake and answers `ok`, or is held open unanswered. Returns the
+    /// URL, the client settings that trust the CA and mark its connections,
+    /// and the count of those connections.
     fn tls_server(
-        answer: impl Fn(usize) -> bool + Send + 'static,
+        answer: impl Fn(usize) -> bool + Send + Sync + 'static,
     ) -> (String, Arc<rustls::ClientConfig>, Arc<AtomicUsize>) {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         let provider = || Arc::new(rustls::crypto::ring::default_provider());
@@ -425,47 +603,117 @@ mod tests {
                 include_bytes!("../tests/fixtures/tls/ca.der").to_vec(),
             ))
             .unwrap();
-        let client = Arc::new(
-            rustls::ClientConfig::builder_with_provider(provider())
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_root_certificates(roots)
-                .with_no_client_auth(),
-        );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!(
-            "https://localhost:{}/",
-            listener.local_addr().unwrap().port()
-        );
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("https://localhost:{port}/");
+        // Any local process may connect to the port, and a port watcher such
+        // as Portman.app does, a TLS probe included: only a ClientHello that
+        // offers this ALPN name is the client's.
+        let mark = format!("canvas-test-{port}").into_bytes();
+        let mut client = rustls::ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        client.alpn_protocols = vec![mark.clone()];
         let seen = Arc::new(AtomicUsize::new(0));
         let counter = seen.clone();
+        let answer = Arc::new(answer);
+        let mark = Arc::new(mark);
         std::thread::spawn(move || {
-            let mut held = Vec::new();
-            for tcp in listener.incoming().flatten() {
-                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                if !answer(n) {
-                    held.push(tcp);
-                    continue;
-                }
-                let conn = rustls::ServerConnection::new(server.clone()).unwrap();
-                let mut tls = rustls::StreamOwned::new(conn, tcp);
-                let mut request = Vec::new();
-                let mut byte = [0u8; 1];
-                while !request.ends_with(b"\r\n\r\n") && tls.read(&mut byte).unwrap_or(0) == 1 {
-                    request.push(byte[0]);
-                }
-                let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-                let _ = tls.flush();
+            for mut tcp in listener.incoming().flatten() {
+                let (server, counter, answer, mark) = (
+                    server.clone(),
+                    counter.clone(),
+                    answer.clone(),
+                    mark.clone(),
+                );
+                // A thread per connection, so another process's never stalls
+                // the client's.
+                std::thread::spawn(move || {
+                    let mut acceptor = rustls::server::Acceptor::default();
+                    let accepted = loop {
+                        if acceptor.read_tls(&mut tcp).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        match acceptor.accept() {
+                            Ok(Some(accepted)) => break accepted,
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
+                    };
+                    let ours = accepted
+                        .client_hello()
+                        .alpn()
+                        .is_some_and(|mut names| names.any(|name| name == mark.as_slice()));
+                    if !ours {
+                        return;
+                    }
+                    let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    if !answer(n) {
+                        // Held with no answer until the client drops it.
+                        let _ = std::io::copy(&mut tcp, &mut std::io::sink());
+                        return;
+                    }
+                    let Ok(conn) = accepted.into_connection(server) else {
+                        return;
+                    };
+                    let mut tls = rustls::StreamOwned::new(conn, tcp);
+                    let mut request = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !request.ends_with(b"\r\n\r\n") && tls.read(&mut byte).unwrap_or(0) == 1 {
+                        request.push(byte[0]);
+                    }
+                    let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                    let _ = tls.flush();
+                });
             }
         });
-        (url, client, seen)
+        (url, Arc::new(client), seen)
+    }
+
+    #[test]
+    fn the_test_server_counts_and_waits_on_only_the_clients_connections() {
+        // What a port watcher does: shake hands without the client's mark,
+        // and connect without sending a byte.
+        let (url, tls, seen) = tls_server(|_| true);
+        let port: u16 = url
+            .trim_start_matches("https://localhost:")
+            .trim_end_matches('/')
+            .parse()
+            .unwrap();
+        let mut unmarked = (*tls).clone();
+        unmarked.alpn_protocols.clear();
+        let mut probe =
+            rustls::ClientConnection::new(Arc::new(unmarked), "localhost".try_into().unwrap())
+                .unwrap();
+        let mut tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = probe.complete_io(&mut tcp);
+        let _silent = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        )
+        .map(|f| f.body);
+        assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn a_stalled_handshake_is_dropped_for_a_fresh_connection() {
         let (url, tls, seen) = tls_server(|n| n > 1);
         let started = Instant::now();
-        let body = download(&url, Duration::from_secs(4), |u| u.to_string(), &tls);
+        let body = download(
+            &url,
+            Duration::from_secs(4),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        )
+        .map(|f| f.body);
         assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
         // The first connection gets half the 4s to shake hands.
         let ms = started.elapsed().as_millis();
@@ -477,10 +725,140 @@ mod tests {
     fn a_handshake_that_never_finishes_is_a_timeout() {
         let (url, tls, seen) = tls_server(|_| false);
         let started = Instant::now();
-        let body = download(&url, Duration::from_millis(1500), |u| u.to_string(), &tls);
+        let body = download(
+            &url,
+            Duration::from_millis(1500),
+            |u| u.to_string(),
+            &tls,
+            &system_lookup(),
+        )
+        .map(|f| f.body);
         assert_eq!(body, Err("timed out after 2s".to_string()));
         let ms = started.elapsed().as_millis();
         assert!((1400..2000).contains(&ms), "took {ms}ms");
         assert_eq!(seen.load(Ordering::SeqCst), SETUP_ATTEMPTS as usize);
+    }
+
+    /// The system lookup after `delay`, counting its calls.
+    fn slow_lookup(delay: Duration) -> (Arc<Resolver>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let lookup = Resolver::new(move |netloc| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(delay);
+            netloc.to_socket_addrs().map(Iterator::collect)
+        });
+        (lookup, calls)
+    }
+
+    #[test]
+    fn requests_for_a_host_share_its_running_lookup() {
+        let (lookup, calls) = slow_lookup(Duration::from_millis(600));
+        // Three requests give up on the hung lookup; none starts another.
+        for _ in 0..3 {
+            let found = lookup.find("localhost:80", Instant::now() + Duration::from_millis(50));
+            assert_eq!(found, None);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // One that waits long enough gets that same lookup's addresses.
+        let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+        assert!(found.is_some_and(|f| f.is_ok_and(|addrs| !addrs.is_empty())));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Another host gets its own lookup.
+        assert_eq!(
+            lookup.find("127.0.0.1:80", Instant::now() + Duration::from_millis(50)),
+            None
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_returned_lookup_is_not_remembered() {
+        let (lookup, calls) = slow_lookup(Duration::ZERO);
+        for _ in 0..2 {
+            let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+            assert!(found.is_some());
+            // The lookup's thread forgets it just after handing it over.
+            let forgotten = Instant::now() + Duration::from_secs(2);
+            while lookup.running.lock().unwrap().contains_key("localhost:80") {
+                assert!(Instant::now() < forgotten, "the lookup was never forgotten");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_panicked_lookup_is_a_failure() {
+        let lookup = Resolver::new(|_| panic!("resolver bug"));
+        let found = lookup.find("localhost:80", Instant::now() + Duration::from_secs(2));
+        assert_eq!(
+            found,
+            Some(Err((
+                std::io::ErrorKind::Other,
+                "the lookup panicked".to_string()
+            )))
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_outlasts_the_deadline_is_a_timeout() {
+        let (url, tls, seen) = tls_server(|_| true);
+        let (lookup, _) = slow_lookup(Duration::from_secs(5));
+        let started = Instant::now();
+        let body = download(
+            &url,
+            Duration::from_secs(1),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        )
+        .map(|f| f.body);
+        assert_eq!(body, Err("timed out after 1s".to_string()));
+        let ms = started.elapsed().as_millis();
+        assert!((950..1500).contains(&ms), "took {ms}ms");
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_slow_lookup_leaves_the_handshake_its_own_window() {
+        let (url, tls, seen) = tls_server(|_| true);
+        // Longer than the first attempt's half of the 2s, were it counted.
+        let (lookup, calls) = slow_lookup(Duration::from_millis(1200));
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        )
+        .map(|f| f.body);
+        assert_eq!(body.as_deref(), Ok(&b"ok"[..]));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_lookup_reads_as_ureqs_own() {
+        let (url, tls, seen) = tls_server(|_| true);
+        let lookup = Resolver::new(|_| Err(std::io::Error::other("no such host")));
+        let body = download(
+            &url,
+            Duration::from_secs(2),
+            |u| u.to_string(),
+            &tls,
+            &lookup,
+        )
+        .map(|f| f.body);
+        let port = url
+            .trim_start_matches("https://localhost:")
+            .trim_end_matches('/');
+        assert_eq!(
+            body,
+            Err(format!(
+                "{url}: Dns Failed: resolve dns name 'localhost:{port}': no such host"
+            ))
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
     }
 }

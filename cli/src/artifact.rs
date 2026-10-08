@@ -17,6 +17,10 @@
 //! for that artifact as the person would by hand, printing `{"viewers": N}`
 //! and failing when N is 0; bare `pane` prints the pane a viewer last reported
 //! showing, failing when no open viewer has reported one.
+//!
+//! `reset <id>` unsticks a wedged page: canvasd drops its held `data` and
+//! `scriptErrors` and every open viewer rebuilds its pane at the entry page,
+//! printing `{"viewers": N}`; no viewer is a stderr note, not a failure.
 
 use canvas_core::unix_http::percent_encode;
 use canvas_core::{Refresh, MIN_REFRESH_SECS};
@@ -65,6 +69,9 @@ pub enum Command {
     Log {
         id: String,
     },
+    Reset {
+        id: String,
+    },
     Pane {
         id: String,
         action: serde_json::Value,
@@ -87,6 +94,10 @@ pub enum StateWhat {
 
 /// The stderr line when no viewer was connected to receive a pane change.
 pub const NO_VIEWER: &str = "no Canvas viewer is open to change the pane";
+
+/// The stderr note when a reset reached no viewer to rebuild the pane.
+pub const NO_VIEWER_RESET: &str =
+    "reset canvasd's held data and errors; no Canvas viewer is open to reload the pane";
 
 /// The stderr line when no open viewer has reported its pane.
 pub const NOT_REPORTED: &str = "no open Canvas viewer has reported an artifact pane";
@@ -157,6 +168,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
             id: id.to_string(),
             what: StateWhat::Key(key.to_string()),
         }),
+        ["reset", id] => Ok(Command::Reset { id: id.to_string() }),
         ["pane"] => Ok(Command::PaneShown),
         ["pane", id, flag @ ..] => Ok(Command::Pane {
             id: id.to_string(),
@@ -297,6 +309,23 @@ pub fn run(command: Command) -> Result<(), String> {
             &format!("/api/artifacts/{}/log", percent_encode(&id)),
             None,
         )?,
+        Command::Reset { id } => {
+            let value = client::artifact_call(
+                "POST",
+                &format!("/api/artifacts/{}/reset", percent_encode(&id)),
+                Some(&serde_json::json!({})),
+            )?;
+            // canvasd dropped the held data and errors either way, so no open
+            // viewer is a note, not a failure.
+            if value["viewers"].as_u64() == Some(0) {
+                eprintln!("{NO_VIEWER_RESET}");
+            }
+            canvas_core::log::info(
+                "artifact reset",
+                &[("id", &id), ("viewers", &value["viewers"])],
+            );
+            value
+        }
         Command::Pane { id, action } => {
             let value = client::artifact_call(
                 "POST",
@@ -504,5 +533,16 @@ mod tests {
             );
         }
         assert!(parse_args(&args(&["pane", "art-1"])).is_err());
+    }
+
+    #[test]
+    fn reset_takes_exactly_one_id() {
+        let Ok(Command::Reset { id }) = parse_args(&args(&["reset", "art-1"])) else {
+            panic!("reset did not parse");
+        };
+        assert_eq!(id, "art-1");
+        assert!(parse_args(&args(&["reset"])).is_err());
+        assert!(parse_args(&args(&["reset", "art-1", "art-2"])).is_err());
+        assert!(parse_args(&args(&["reset", "art-1", "--focus"])).is_err());
     }
 }

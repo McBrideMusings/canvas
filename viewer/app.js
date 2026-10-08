@@ -89,6 +89,10 @@
         svg.appendChild(svgEl("path", { d: "M7 11l5 5 5-5" }));
         svg.appendChild(svgEl("path", { d: "M4 20.5h16" }));
         break;
+      case "reset":
+        svg.appendChild(svgEl("path", { d: "M4 12a8 8 0 1 0 2.4-5.7" }));
+        svg.appendChild(svgEl("path", { d: "M4 3.5v4h4" }));
+        break;
       case "warning":
         svg.appendChild(svgEl("path", { d: "M12 3.5L2.5 20h19z" }));
         svg.appendChild(svgEl("path", { d: "M12 10v4.5" }));
@@ -1110,8 +1114,91 @@
     "footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, " +
     "section, table, tr, ul";
 
+  // Whether an element named `name` can host a declarative shadow root, as
+  // canvas-core's is_shadow_host decides: one of the DOM's listed names, or a
+  // valid custom element name not already used by SVG or MathML.
+  const SHADOW_HOSTS = new Set([
+    "article", "aside", "blockquote", "body", "div", "footer", "h1", "h2",
+    "h3", "h4", "h5", "h6", "header", "main", "nav", "p", "section", "span",
+  ]);
+  const RESERVED_CUSTOM_NAMES = new Set([
+    "annotation-xml", "color-profile", "font-face", "font-face-src",
+    "font-face-uri", "font-face-format", "font-face-name", "missing-glyph",
+  ]);
+  const CUSTOM_ELEMENT_NAME =
+    /^[a-z][-.0-9_a-z\u00B7\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u037D\u037F-\u1FFF\u200C-\u200D\u203F-\u2040\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD\u{10000}-\u{EFFFF}]*$/u;
+
+  function isShadowHost(name) {
+    return (
+      SHADOW_HOSTS.has(name) ||
+      (name.includes("-") && CUSTOM_ELEMENT_NAME.test(name) && !RESERVED_CUSTOM_NAMES.has(name))
+    );
+  }
+
+  // Puts each declarative shadow root's contents in place of its host's
+  // children, as the card frame renders them. DOMParser attaches none, so
+  // each stays an ordinary template: the first with shadowrootmode open or
+  // closed on a host is the one the frame attaches, and a template at the
+  // card's start, which DOMParser puts in <head>, attaches to the element
+  // around the card. Each <slot> in the root then holds the host's children
+  // assigned to it, as canvas-core's place_light does: an element child goes
+  // to the first slot whose name equals its slot attribute (absent is
+  // empty), a text child to the first slot with no name, and a child no slot
+  // takes is dropped. The slot stays, so it can itself be assigned to a slot
+  // of a host further in.
+  function unwrapShadowRoots(doc) {
+    const hosts = new Set();
+    for (;;) {
+      const template = Array.from(doc.querySelectorAll("template[shadowrootmode]")).find(
+        (t) => {
+          const mode = t.getAttribute("shadowrootmode").toLowerCase();
+          const host = t.parentElement;
+          return (
+            (mode === "open" || mode === "closed") &&
+            host &&
+            !hosts.has(host) &&
+            (host === doc.head || isShadowHost(host.localName))
+          );
+        }
+      );
+      if (!template) return;
+      const host = template.parentElement;
+      hosts.add(host);
+      const root = template.content;
+      template.remove();
+      const shown = host === doc.head ? doc.body : host;
+      // An SVG or MathML element named slot is no slot.
+      const htmlSlots = Array.from(root.querySelectorAll("slot")).filter(
+        (slot) => slot.namespaceURI === "http://www.w3.org/1999/xhtml"
+      );
+      const slots = new Map();
+      for (const slot of htmlSlots) {
+        const name = slot.getAttribute("name") ?? "";
+        if (!slots.has(name)) slots.set(name, []);
+      }
+      for (const child of Array.from(shown.childNodes)) {
+        const name =
+          child.nodeType === Node.ELEMENT_NODE
+            ? child.getAttribute("slot") ?? ""
+            : child.nodeType === Node.TEXT_NODE
+              ? ""
+              : null;
+        slots.get(name)?.push(child);
+      }
+      for (const slot of htmlSlots) {
+        const assigned = slots.get(slot.getAttribute("name") ?? "");
+        if (assigned?.length) {
+          slot.replaceChildren(...assigned);
+          assigned.length = 0;
+        }
+      }
+      shown.replaceChildren(root);
+    }
+  }
+
   function postText(card) {
     const doc = new DOMParser().parseFromString(card.html, "text/html");
+    unwrapShadowRoots(doc);
     for (const el of doc.querySelectorAll("style, script, template, noscript")) {
       el.remove();
     }
@@ -1181,20 +1268,31 @@
   }
 
   // What an export's warnings left out of the page, as "1 image and 2 CDN
-  // files", or "" when it left nothing out. A missing-image warning is an
-  // image or video the card names; a fetch-failed one a CDN script, stylesheet
-  // or font that stays a network link.
+  // files", or "" when it left nothing out. A missing-image or
+  // media-too-large warning is an image or video the card names; a
+  // fetch-failed one a CDN script, stylesheet or font that stays a network
+  // link. A computed-import one is a module that is in the page, so it is no
+  // gap: exportBroken names those.
   function exportGaps(warnings) {
     const count = (kind) => warnings.filter((w) => w.kind === kind).length;
-    const images = count("missing-image");
+    const images = count("missing-image") + count("media-too-large");
     const cdn = count("fetch-failed");
-    const other = warnings.length - images - cdn;
+    const other = warnings.length - images - cdn - count("computed-import");
     const parts = [];
     if (images) parts.push(`${images} ${images === 1 ? "image" : "images"}`);
     if (cdn) parts.push(`${cdn} CDN ${cdn === 1 ? "file" : "files"}`);
     if (other) parts.push(`${other} other ${other === 1 ? "item" : "items"}`);
     if (parts.length < 2) return parts.join("");
     return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  }
+
+  // "; 1 module's computed imports will fail" for an export whose
+  // computed-import warnings name modules that import from their own address,
+  // or "".
+  function exportBroken(warnings) {
+    const n = warnings.filter((w) => w.kind === "computed-import").length;
+    if (!n) return "";
+    return `; ${n} ${n === 1 ? "module's" : "modules'"} computed imports will fail`;
   }
 
   // The app's export_card fetches canvasd's export of the post, asks where to
@@ -1221,7 +1319,8 @@
       if (saved) {
         const missing = exportGaps(saved.warnings);
         const name = saved.path.split("/").pop();
-        toast(missing ? `Exported to ${name} without ${missing}` : `Exported to ${name}`);
+        const exported = missing ? `Exported to ${name} without ${missing}` : `Exported to ${name}`;
+        toast(exported + exportBroken(saved.warnings));
       }
       return;
     }
@@ -3235,6 +3334,20 @@
     if (page === "artifacts") renderArtifacts();
   }
 
+  // `canvas artifact reset` or the menu's Reset: a page wedged by a value or
+  // a state it reloads into starts over. The pane's frame is rebuilt at the
+  // entry page with no remembered address, unacknowledged change or held
+  // data to re-post; the chosen size and full window stay.
+  function resetArtifact(id) {
+    const artifact = artifacts.get(id);
+    if (!artifact) return;
+    delete artifact.data;
+    artifactChanges.delete(id);
+    artifactLocations.delete(id);
+    if (artifactFrameId === id) dropArtifactFrame();
+    if (page === "artifacts") renderArtifacts();
+  }
+
   function removeArtifact(id) {
     artifacts.delete(id);
     artifactChanges.delete(id);
@@ -3279,6 +3392,18 @@
       buildMenuItem("copy", `Copy ${what} path`, () =>
         copyText(artifact.path, `Copied ${what} path`, `Couldn't copy ${what} path`)
       )
+    );
+    // The same route as `canvas artifact reset`: canvasd drops the held data
+    // and errors, and its artifact-reset event rebuilds the pane here.
+    menu.appendChild(
+      buildMenuItem("reset", "Reset artifact", () => {
+        closeMenu();
+        fetch(`/api/artifacts/${encodeURIComponent(artifact.id)}/reset`, { method: "POST" })
+          .then((res) => {
+            if (!res.ok) throw new Error(String(res.status));
+          })
+          .catch(() => toast("Couldn't reset the artifact"));
+      })
     );
     const divider = document.createElement("div");
     divider.className = "menu-divider";
@@ -3657,6 +3782,8 @@
 
     // `canvas focus art-…`: switch to the Artifacts page and open it.
     handlers["artifact-focus"] = ({ id }) => focusArtifact(id);
+
+    handlers["artifact-reset"] = ({ id }) => resetArtifact(id);
 
     handlers["artifact-pane"] = (request) => paneCommand(request);
 

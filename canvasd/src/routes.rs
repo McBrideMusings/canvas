@@ -219,8 +219,8 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
         crate::export::export_card(
             &card,
             data.as_ref(),
-            |p| std::fs::read(p),
-            crate::cdn::fetch,
+            crate::export::read_media,
+            crate::cdn::Network,
         )
     })
     .await;
@@ -676,6 +676,9 @@ pub async fn events(
             .data(serde_json::json!({ "id": id, "value": value }).to_string()))),
         Ok(CanvasEvent::ArtifactFocus(id)) => Some(Ok(SseEvent::default()
             .event("artifact-focus")
+            .data(serde_json::json!({ "id": id }).to_string()))),
+        Ok(CanvasEvent::ArtifactReset(id)) => Some(Ok(SseEvent::default()
+            .event("artifact-reset")
             .data(serde_json::json!({ "id": id }).to_string()))),
         Ok(CanvasEvent::ArtifactSnapshot { id, request }) => Some(Ok(SseEvent::default()
             .event("artifact-snapshot")

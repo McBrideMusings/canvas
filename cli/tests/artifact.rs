@@ -423,6 +423,48 @@ fn focus_on_an_artifact_fails_with_no_viewer_or_an_unknown_id() {
     );
 }
 
+#[test]
+fn reset_reaches_the_viewer_and_drops_held_data() {
+    let daemon = start_daemon(&temp_dir("reset"));
+    let id = json(&run(&daemon, &["artifact", "new"]))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let value = daemon.data_dir.join("value.json");
+    std::fs::write(&value, r#"{"n":5}"#).unwrap();
+    assert!(run(&daemon, &["data", &id, value.to_str().unwrap()])
+        .status
+        .success());
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "show", &id]))["data"],
+        serde_json::json!({"n": 5})
+    );
+
+    let none = run(&daemon, &["artifact", "reset", &id]);
+    assert_eq!(json(&none), serde_json::json!({"viewers": 0}));
+    assert_eq!(
+        String::from_utf8_lossy(&none.stderr).trim(),
+        "reset canvasd's held data and errors; no Canvas viewer is open to reload the pane"
+    );
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "show", &id])).get("data"),
+        None
+    );
+
+    let mut viewer = connect_viewer(&daemon);
+    let output = run(&daemon, &["artifact", "reset", &id]);
+    assert_eq!(json(&output), serde_json::json!({"viewers": 1}));
+    assert!(output.stderr.is_empty());
+    let seen = read_until(&mut viewer, "event: artifact-reset");
+    assert!(seen.contains(&format!("{{\"id\":\"{id}\"}}")), "{seen}");
+
+    let unknown = run(&daemon, &["artifact", "reset", "art-0000000000"]);
+    assert_eq!(
+        stderr(&unknown),
+        "canvasd returned HTTP 404 (no artifact with that id)"
+    );
+}
+
 fn stderr(output: &std::process::Output) -> String {
     assert_eq!(output.status.code(), Some(1), "expected failure");
     String::from_utf8_lossy(&output.stderr).trim().to_string()

@@ -128,8 +128,16 @@ pub struct ExportWarning {
 pub enum ExportWarningKind {
     /// An image or video file the card names is gone or unreadable.
     MissingImage,
+    /// An image or video file left out because inlining it would take the
+    /// page's media past the export's cap.
+    MediaTooLarge,
     /// A CDN asset that couldn't be downloaded.
     FetchFailed,
+    /// A CDN module inlined as a `data:` URI that computes an import from its
+    /// own address (`import(name)`, `import.meta.url`,
+    /// `import.meta.resolve`), which no longer
+    /// leads anywhere, so that import fails when the page runs.
+    ComputedImport,
     /// `export --all`: the card left canvasd between the listing and its
     /// export (evicted or deleted), so the zip has no page for it.
     CardGone,
@@ -147,6 +155,12 @@ pub const MAX_ASSET_BYTES: usize = 512 * 1024;
 /// a download the budget can't cover is skipped with a warning. The CLI waits
 /// this long plus time to read and encode the card's images.
 pub const EXPORT_DOWNLOAD_SECS: u64 = 20;
+
+/// Total bytes of image and video files one exported page inlines, counting a
+/// file once per place it lands. Each process carrying the page holds about
+/// four times its media in memory, so a file that would pass this stays out
+/// of the page and warns.
+pub const MAX_MEDIA_BYTES: usize = 32 * 1024 * 1024;
 
 /// The extensions `/api/cards/:id/images/:n` serves and an export inlines;
 /// no other file is read for a card.

@@ -69,6 +69,10 @@ beside the terminal all day.
   it) runs each `eval/*.js` in that folder in the main window, so a script can
   drive the viewer without taking focus (`admin verify-app eval <js|->`), and a
   `save-path` file there answers the save dialog (empty for cancelled).
+  `verify-app.sh` runs each checkout's throwaway daemon and dev app in its own
+  `/tmp/cv-<8 hex hashed from the checkout's path>` (`CANVAS_VERIFY_DIR`
+  overrides it), so two checkouts verify at once; `eval "$(admin verify-app
+  env)"` exports that folder's `CANVAS_DATA_DIR` and `CANVAS_SOCKET`.
   `CANVAS_DEBUG_WINDOW=x,y` moves the main window there at start (onto a Retina
   screen). `scripts/clip-demo.sh` is the looping demo for a recorded clip: a
   throwaway daemon and app, four made-up cards, period 5.6s, starting at t0 once
@@ -180,35 +184,78 @@ beside the terminal all day.
   `<card_id>.html` by default, and prints `{"path", "cards": 1, "warnings"}`.
   Each `/api/cards/:id/images/:n` src becomes a base64 `data:` URI read from
   the card's stored path (a missing file is a `missing-image` warning and an
-  "image missing" placeholder), each `#canvas-open-<n>` anchor becomes a real
+  "image missing" placeholder; a file that would take the page's media past
+  `MAX_MEDIA_BYTES`, 32 MB in all, is refused from its size before any byte
+  is read (`export::read_media`) and is a `media-too-large` warning naming
+  the file's size and the cap ("a 40.0 MB file is over the 32 MB…", or
+  "would take the page past" when it fits alone) with an "image left out"
+  placeholder, while later files that fit still go in; a video or source
+  left out either way loses its src), each `#canvas-open-<n>` anchor becomes a real
   `target="_blank"` link (http/https) or plain text (a local path), and a shim
   delivers the card's latest `canvas data` value as `canvas-data` and swallows
   `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
   and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
   unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
-  cap; a connection whose TCP connect or TLS handshake outlasts half the time
+  cap; each request looks its host up once within that limit, before any connection's
+  setup time starts, waiting on that host's lookup when one is already running, so a
+  hung resolver holds one thread per host; a connection whose TCP connect or TLS handshake outlasts half the time
   left is dropped for a fresh one, at most three, logging `export fetch setup
-  stalled`) and inlined — scripts and styles as blocks, fonts as `data:` URIs, an
+  stalled`; a module's specifiers and a stylesheet's `@import`s and `url()`s resolve
+  from the URL its download landed on after redirects, `cdn::Fetched`) and inlined —
+  classic scripts and styles as blocks, fonts as `data:` URIs,
+  a `<script type="module" src>` and every module it reaches on those hosts as
+  `data:` URIs in one `<script type="importmap">` in the head (each module's
+  specifiers read by oxc, `canvasd/src/esm.rs`, each one resolved from the module's
+  URL through the card's own import maps, scopes included (`canvasd/src/import_map.rs`,
+  the standard's resolution) and, once every card map is read, written as the
+  absolute URL it leads to, or, where the page's map would send that URL
+  elsewhere, as the reserved name `canvas-export:<url>` the page's map holds
+  exactly (`PageMap::specifier`); one that leads to nothing the card could load (an
+  address relative to the page, which the card CSP refuses, a blocked entry, a bare
+  name with no entry) is written `canvas-export:blocked`, mapped to null; the
+  element becomes `import "<url or name>";`; the card's own import maps merge into that one, theirs winning,
+  each of their addresses naming a fetched module rewritten to its `data:` URI;
+  every module those maps name, and every one the card's inline `<script
+  type="module">` imports, is fetched too, a name the inline module used getting
+  its own entry; a module that can't be fetched
+  or parsed staying on the network with a `fetch-failed` warning; a fetched
+  module that computes an import from its own address — `import()` of anything
+  but a plain string, `import.meta.url`, `import.meta.resolve`, or `import.meta`
+  used any way but reading another named property — is still
+  inlined, with one `computed-import` warning naming it and the first place,
+  since that import fails from a `data:` URI; the viewer's toast adds "1
+  module's computed imports will fail"), an
   `@import`'s `layer`, `supports()` and media conditions as `@layer`,
   `@supports` and `@media` blocks; the CSS scan skips strings, comments and
-  escapes as the browser does. A `<style>` inside SVG or MathML holds markup,
-  not raw text: its CSS is every text run and CDATA section joined, comments
+  escapes as the browser does. An imported sheet is first closed as its own end
+  of file closes it (`closed_at_end`: open strings, comments, `url(`, brackets
+  and blocks, an at-rule's `;`; a selector with no block dropped), so it can't
+  run into the text after it. A `<style>` inside SVG or MathML holds markup,
+  not raw text: as Canvas.app's WebKit reads it, its CSS is every text run and
+  CDATA section inside it joined, child elements' included, up to the tag that
+  closes it (`</style>`, an ancestor's end tag, a breakout tag such as `<p>`;
+  `Tags::is_open` says), comments
   (bogus ones too) dropped, every HTML character reference (named or numeric,
   `htmlize` via `canvas_core::html::decode_entities`) decoded once per text run
   outside CDATA, and the scan reads it whole (`Cdn::markup_css`), so a reference
-  split by a comment or a CDATA boundary is still one. The pieces before the
+  split by a comment, a child element or a CDATA boundary is still one. The pieces before the
   first replacement and after the last stay as written; those between become one
-  run in the form of the first of them, text written with entities or CDATA with
-  `]]>` split; a style where nothing was inlined keeps its text exactly as
-  written. A failure, or an `@import` nested past
+  run in the form of the first of them, text written with entities, CDATA with
+  `]]>` split or a child's raw text, followed by the child elements' tags, emptied; a style where nothing was inlined keeps its text exactly as
+  written. Inside such a style's `<foreignObject>` an HTML script runs and a
+  stylesheet link applies, but their text is the style's CSS, so only attributes
+  change there: a CDN `<script src>` or stylesheet `href` becomes a `data:` URI
+  (a module's an `import` of its import-map key), a card file a `data:` URI or,
+  when missing, no `src` at all, anchors as anywhere else. A failure, or an `@import` nested past
   `MAX_IMPORT_DEPTH`, keeps the link and adds a `fetch-failed` warning; so does an
   `@import` with conditions whose sheet still holds an `@import` that stays a link,
   since the browser ignores an `@import` inside a block, and every `@import` inlined
   as rules ahead of a later one in its sheet that writes a link, since the browser
-  ignores an `@import` after rules. `export_card` drops a
+  ignores an `@import` after rules; for the same reason an `@import` after its
+  sheet's own rules stays as written, never fetched. `export_card` drops a
   `fetch-failed` warning whose URL's content went into the page through another
   reference (`Cdn`'s list of inlined URLs). Each download
-  logs `export fetch` or `export fetch failed`. A debug build fetches through
+  logs `export fetch` (with `from`, the URL it landed on) or `export fetch failed`. A debug build fetches through
   `CANVAS_CDN_ORIGIN` when it is set (tests' stand-in CDN); a release build
   ignores it. None of `buildIframeDoc`'s theming, sizing or sandbox is
   carried; `prefers-color-scheme` rules stay, so the reader's system picks.
@@ -451,6 +498,15 @@ beside the terminal all day.
   when no open viewer reports one. A chosen size is kept as asked and clamped
   to the window only on screen. Escape reaches the viewer only while focus is
   outside the page's iframe; entering full window focuses the exit button.
+  The menu's "Reset artifact" and `canvas artifact reset <id>` (`POST
+  /api/artifacts/:id/reset`, 404 for an unknown id) take one path: canvasd
+  drops the artifact's held `data` and `scriptErrors`, logs `artifact reset`
+  and publishes the viewer-only `artifact-reset` event, and every viewer
+  rebuilds that pane's frame at the entry page, forgetting its remembered
+  address and unacknowledged change stamp. Files, the chosen size and full
+  window stay; a refresh's next run brings `data` back. It prints `{"viewers":
+  N}`; zero viewers is a stderr note, not a failure, since the held state is
+  gone either way.
 - Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
   key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
   `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and
@@ -516,20 +572,32 @@ beside the terminal all day.
 - canvasd refuses a post or update (400, logged `card refused`) whose HTML would
   freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag
   closing a table, section or row while the cell mode's cell is one the
-  512-element depth cap already closed), and drops such a card from
+  512-element depth cap already closed, or a table part's start tag, or its
+  end tag in table scope, while "in select in table" holds a select the cap
+  already closed, or a page that makes WebKit reopen more closed formatting
+  elements before text or a start tag than 100,000 plus one per 3 bytes read,
+  a tree larger than the page's own markup could build), and drops such a card from
   `stream.jsonl` on reload (`card dropped on reload: it freezes WebKit`). A
   widget is framed like a card, so `canvas artifact new|put --widget` refuses
   one the same way (`widget refused: …`) and `artifacts.json` loads it as no
-  widget (`widget dropped on load`). The reason
-  (`webkit_freeze_reason`) names the end tag and its byte offset, never the
-  tag's attributes.
+  widget (`widget dropped on load`). An artifact's HTML page is a whole
+  document with no wrapper `<div>`, so its cap holds one element more
+  (`webkit_freeze_page_reason`, which reads the file's bytes as WebKit decodes
+  them, each invalid UTF-8 sequence one U+FFFD, and names the file's own byte
+  offset); canvasd answers such a page with a 422 whose
+  plain text, shown in the pane, says why (`artifact page refused`), and leaves
+  the file as it is. The reason
+  (`webkit_freeze_reason`) names the tag and its byte offset, never the
+  tag's attributes, or "the end of the page" when the text after the last tag
+  is what reopens them.
 - An artifact's page is never themed, width-capped or sized to its content by
   the viewer, and runs in `<iframe sandbox="allow-scripts">` without
   `allow-same-origin`. canvasd serves its files only from inside its folder
   (no `..`, no symlink out) and always with the artifact CSP; never serve them
   without it. The only change canvasd makes to a served page is to an HTML
   file: the error relay first inside `<head>` and `crossorigin` on each
-  `<script src>` lacking one.
+  `<script src>` lacking one, or the refusal in place of a page that would
+  freeze WebKit.
 - An artifact's page writes to disk only as state: one JSON file per valid key in
   `canvas-data/` (see State above). Never widen that to a path the page names,
   and never follow a symlink for `canvas-data` or a key file.

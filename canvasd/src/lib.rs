@@ -2,7 +2,9 @@ pub mod artifact_routes;
 pub mod artifact_state;
 pub mod artifacts;
 pub mod cdn;
+pub mod esm;
 pub mod export;
+pub mod import_map;
 pub mod profiles;
 pub mod provenance;
 pub mod refresh;
@@ -115,6 +117,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/artifacts/:id/focus",
             post(artifact_routes::focus_artifact),
+        )
+        .route(
+            "/api/artifacts/:id/reset",
+            post(artifact_routes::reset_artifact),
         )
         .route(
             "/api/artifacts/:id/snapshot",
