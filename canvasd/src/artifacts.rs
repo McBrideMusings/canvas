@@ -701,6 +701,10 @@ fn copy_dir(
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let src = entry.path();
+        // A put never carries state in, or overwrites the artifact's own.
+        if relative.as_os_str().is_empty() && entry.file_name() == crate::artifact_state::DIR {
+            continue;
+        }
         let dest = to.join(entry.file_name());
         let rel = relative.join(entry.file_name());
         let link = entry.file_type()?.is_symlink();
@@ -729,7 +733,7 @@ fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::copy(src, dest).map(|_| ())
 }
 
-/// A hash of every entry under `folder`: its relative path, size, modified
+/// A hash of every entry under `folder` except its `canvas-data/` state: its relative path, size, modified
 /// time and inode, walked without following symlinked folders. Any write,
 /// rename, add or removal changes it; reading a file does not. A linked HTML
 /// file hashes as its own one entry, and a missing root hashes differently
@@ -760,6 +764,10 @@ pub fn fingerprint(folder: &Path) -> u64 {
         };
         for entry in read.filter_map(Result::ok) {
             let path = entry.path();
+            // A page's saved state is not part of the page.
+            if crate::artifact_state::is_data_dir_name(&entry.file_name()) {
+                continue;
+            }
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };

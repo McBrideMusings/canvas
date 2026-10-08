@@ -149,7 +149,14 @@ inside a `<video>`, in HTML or in Markdown's raw-HTML passthrough — plays inli
 the same way (WebM/VP9 and MP4/H.264 play; `.m4v` and `.mov` are served too).
 Canvas adds no attributes to your tag; it does not open a video in the lightbox,
 since the player has its own controls and fullscreen. Only these forms are
-picked up: a bare path in the text stays plain text. An absolute local path that
+picked up: a bare path in the text stays plain text. A report written for the
+terminal, with bare paths, is not ready to post: rewrite each image path as
+`![](/abs/shot.png)` and each file you want clickable as `[name](/abs/file)`
+first. `canvas post` returns a hint for each absolute or `~/` path in the text
+(inline code included, `<pre>` and link text not) that names an existing `png`,
+`jpg`, `jpeg`, `gif`, `webp`, `apng`, `svg`, `avif`, `mp4`, `webm` or `mov`
+file, giving the `![](…)` that shows it (`<video src="…" controls></video>`
+for a video); a `--format text` post is checked on its raw input. An absolute local path that
 doesn't exist is left unchanged (a broken image, video or dead link) and `canvas
 post` warns about it on stderr — the post still lands.
 
@@ -310,6 +317,61 @@ canvas artifact list | show <id> | delete <id>
   `canvas artifact log <id>` prints which session and agent created, put,
   relinked or deleted it, and when a saved file changed it.
 
+### Saving a page's state
+
+An artifact page cannot use storage or `fetch`, so it keeps answers, scores
+and progress by asking its parent, which hands them to Canvas. The same two
+messages work for a managed and a linked artifact, and the page never learns
+where the values live.
+
+```js
+// Save one value (any JSON; the viewer answers with an ack).
+parent.postMessage({ type: 'canvas-state-set', key: 'quiz-3', value: { picked: 'b' } }, '*');
+// Ask for everything saved; ask once, when the page loads.
+parent.postMessage({ type: 'canvas-state-get' }, '*');
+
+addEventListener('message', (e) => {
+  if (e.source !== parent) return;
+  if (e.data.type === 'canvas-state') {
+    // e.data.values: { 'quiz-3': { picked: 'b' }, ... }, {} when nothing is saved.
+    // e.data.ok === false (with e.data.error) means the read failed: do not
+    // treat that as an empty state and overwrite it.
+  } else if (e.data.type === 'canvas-state-ack') {
+    // e.data: { key, ok: true } or { key, ok: false, error: 'why' }
+  }
+});
+```
+
+- `canvas-state` answers a `canvas-state-get` and nothing else. Canvas does not
+  send it unasked, so a page that wants its saved values sends the get when
+  it loads (and again after any change it wants to re-read).
+- A key is a name, `^[a-z0-9][a-z0-9_-]{0,63}$`, not a path. Anything else gets
+  an error ack and nothing is written. One key is one file,
+  `<key>.json` in a `canvas-data/` folder.
+- A value is any JSON, at most 256 KB per key and 5 MB per artifact. Over
+  either cap the ack says so and nothing is written. A write replaces the
+  whole key, atomically.
+- Which artifact a message belongs to comes from which pane frame sent it,
+  never from the message. Only the artifact open in the pane can save.
+- Where it lands: a linked folder keeps `canvas-data/` inside the linked
+  folder; a linked single `.html` file keeps it beside the file; a managed
+  artifact keeps it inside its own folder (`<data dir>/artifacts/<id>/canvas-data/`).
+  Canvas refuses to write when `canvas-data` or a key file is a symlink, or
+  when `canvas-data` does not resolve to a folder directly inside the
+  artifact's folder, so a page can never write anywhere else in a linked repo.
+  Add `canvas-data/` to that repo's `.gitignore` unless the values belong in git.
+- A save never reloads the page and never fires `canvas-artifact-changed`: the
+  file watcher and the change stamp skip `canvas-data/`.
+- `put` leaves the state alone, and skips a `canvas-data/` folder in what it
+  copies. Deleting a managed artifact deletes its state; deleting a linked
+  one leaves the files. Only `canvas artifact state <id> --clear` empties it.
+- Agent side: `canvas artifact state <id>` prints every key as one JSON
+  object, `canvas artifact state <id> <key>` prints one value (exit 1 when the
+  key holds nothing), and `canvas artifact state <id> --clear` deletes every
+  key and prints `{"cleared": N}`. For a linked artifact the files can also be
+  read directly. The routes behind them are `GET|DELETE
+  /api/artifacts/:id/state` and `GET|PUT /api/artifacts/:id/state/:key`.
+
 ### Asking a question in a card and waiting for the answer
 
 A card's own script can send one value back to the session that posted it —
@@ -452,9 +514,12 @@ canvasd pull them:
 `CLAUDE_CODE_SESSION_ID` isn't set (it only runs inside a Claude Code
 session), or the input is empty, it prints one line to stderr and exits
 non-zero. On success it prints one JSON line to stdout —
-`{"card_id": "...", "images": [...], "targets": [...]}` — listing the local
-images and clickable targets it found. Check the exit code and read the
-message rather than assuming the post landed.
+`{"card_id": "...", "images": [...], "targets": [...], "hints": [...]}` —
+listing the local images and clickable targets it found, and a hint for each
+media file the post names only as plain text (each hint also goes to stderr).
+Check the exit code and read the message rather than assuming the post
+landed, and read `hints` after every post: when it isn't empty, fix the source
+and repost it with `canvas post --update <card_id>`.
 
 ## Adjusting guidance
 

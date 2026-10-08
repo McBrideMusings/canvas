@@ -640,3 +640,60 @@ fn link_and_relink_refuse_what_they_cannot_serve() {
         Some(2)
     );
 }
+
+fn put_state(daemon: &Daemon, id: &str, key: &str, body: &str) -> u16 {
+    canvas_core::unix_http::request(
+        &daemon.socket,
+        "PUT",
+        &format!("/api/artifacts/{id}/state/{key}"),
+        &[("content-type", "application/json")],
+        body.as_bytes(),
+        Some(Duration::from_secs(5)),
+    )
+    .expect("canvasd answered")
+    .status
+}
+
+#[test]
+fn state_prints_every_key_one_key_and_clears() {
+    let daemon = start_daemon(&temp_dir("state"));
+    let created = json(&run(&daemon, &["artifact", "new"]));
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "state", &id])),
+        serde_json::json!({})
+    );
+    assert_eq!(put_state(&daemon, &id, "score", r#"{"n":3}"#), 204);
+    assert_eq!(put_state(&daemon, &id, "name", r#""ada""#), 204);
+
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "state", &id])),
+        serde_json::json!({"name": "ada", "score": {"n": 3}})
+    );
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "state", &id, "score"])),
+        serde_json::json!({"n": 3})
+    );
+    let missing = run(&daemon, &["artifact", "state", &id, "none"]);
+    assert_eq!(
+        stderr(&missing),
+        "canvasd returned HTTP 404 (no value under that key)"
+    );
+    let bad = run(&daemon, &["artifact", "state", &id, "Bad.Key"]);
+    assert!(stderr(&bad).contains("HTTP 400"), "{}", stderr(&bad));
+
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "state", &id, "--clear"])),
+        serde_json::json!({"cleared": 2})
+    );
+    assert_eq!(
+        json(&run(&daemon, &["artifact", "state", &id])),
+        serde_json::json!({})
+    );
+    let unknown = run(&daemon, &["artifact", "state", "art-0000000000"]);
+    assert_eq!(
+        stderr(&unknown),
+        "canvasd returned HTTP 404 (no artifact with that id)"
+    );
+    assert_eq!(run(&daemon, &["artifact", "state"]).status.code(), Some(2));
+}

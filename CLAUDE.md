@@ -169,8 +169,13 @@ beside the terminal all day.
   already know it (e.g. after a daemon restart) — and unlike a hook it fails
   loudly — one line on stderr, non-zero exit — on any error, including when
   `CLAUDE_CODE_SESSION_ID` isn't set. On success it prints one JSON line to
-  stdout: `{"card_id": "...", "images": [...], "targets": [...]}`, plus
-  `"viewers": N` with `--focus`. A local
+  stdout: `{"card_id": "...", "images": [...], "targets": [...], "hints":
+  [...]}`, plus `"viewers": N` with `--focus`. `hints` (`scan.rs`) holds one
+  line per existing media file (an absolute or `~/` path ending in png, jpg,
+  jpeg, gif, webp, apng, svg, avif, mp4, webm or mov) the post names only as
+  text, outside `<pre>`, links and raw-text elements; a `--format text` post
+  is checked on its raw input instead. Each hint also goes to stderr and is
+  logged as `post hint`. A local
   `<video src>` or `<source src>` joins `images` and is served by the same
   `/api/cards/:id/images/:n` route (which honours `Range`, since a video needs
   it); the viewer's lightbox skips those entries and the card CSP carries
@@ -419,6 +424,28 @@ beside the terminal all day.
   `open` on it (`routes::open_target`; a debug build runs `CANVAS_OPEN_BIN`
   instead when set), logs `artifact link opened`, and keeps the newest 50 in
   memory (dropped on delete); `show` lists them as `openedLinks`.
+  State (`canvasd/src/artifact_state.rs`): a page saves values with
+  `{type:'canvas-state-set', key, value}` and reads them with
+  `{type:'canvas-state-get'}`; the viewer relays only the pane's own frame's
+  messages, under the artifact that frame was built for, to `PUT
+  /api/artifacts/:id/state/:key` (body: the JSON value) and `GET
+  /api/artifacts/:id/state`, and posts back `{type:'canvas-state', values}` (only
+  in answer to a get) or `{type:'canvas-state-ack', key, ok, error?}` (the
+  daemon's refusal text). A key matches `^[a-z0-9][a-z0-9_-]{0,63}$` and is the file
+  `<key>.json` in `canvas-data/`: inside the linked folder, beside a linked
+  `.html` file, or inside an owned artifact's own folder. A value is JSON of
+  at most 256 KB, an artifact's values 5 MB together (413 past either, nothing
+  written); a write goes through a temp file and a rename, one at a time. A
+  symlinked `canvas-data` or key file, or a `canvas-data` that doesn't resolve
+  directly under the artifact's folder, is a 403, since a linked folder is
+  often a git repo. The watcher and `fingerprint` skip `canvas-data/`, so a
+  write reloads nothing; `put` skips a source's top-level `canvas-data/` and
+  never removes the destination's. Deleting an owned artifact removes its
+  state with its folder; a linked artifact's files stay. `canvas artifact
+  state <id> [<key>|--clear]` (`GET /api/artifacts/:id/state[/:key]`, `DELETE
+  .../state`) prints every key as one object, one value (404 when empty), or
+  `{"cleared": N}`. canvasd logs `artifact state set`, `artifact state refused`
+  and `artifact state cleared`.
   Widgets and refresh: `canvas artifact new|put --widget <file> --refresh '<cmd>'
   [--every <secs>]` (5s minimum, default 30s; a flag left off keeps what the
   record has) stores `widgetHtml` and `refresh: {command, everySecs, cwd, pid}`
@@ -579,6 +606,9 @@ beside the terminal all day.
   file: the error relay first inside `<head>` and `crossorigin` on each
   `<script src>` lacking one, or the refusal in place of a page that would
   freeze WebKit.
+- An artifact's page writes to disk only as state: one JSON file per valid key in
+  `canvas-data/` (see State above). Never widen that to a path the page names,
+  and never follow a symlink for `canvas-data` or a key file.
 - canvasd has no TCP listener, so nothing reaches it except a process that can
   open its 0600 socket, and its routes carry no Host or Origin checks. Never add
   a TCP or other network listener to it; a client that needs it goes through the

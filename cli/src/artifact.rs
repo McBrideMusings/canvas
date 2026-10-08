@@ -10,6 +10,9 @@
 //! this shell's agent lives, whose JSON output reaches the widget and page as
 //! `canvas data` does.
 //!
+//! `state <id> [<key>|--clear]` prints what the page saved with
+//! `canvas-state-set` as one JSON object, or one key's value, or deletes it all.
+//!
 //! `pane <id> --size WxH|--reset|--full|--exit` changes the open viewers' pane
 //! for that artifact as the person would by hand, printing `{"viewers": N}`
 //! and failing when N is 0; bare `pane` prints the pane a viewer last reported
@@ -74,6 +77,19 @@ pub enum Command {
         action: serde_json::Value,
     },
     PaneShown,
+    /// `state <id> [<key>|--clear]`: the values a page saved with
+    /// `canvas-state-set`.
+    State {
+        id: String,
+        what: StateWhat,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StateWhat {
+    All,
+    Key(String),
+    Clear,
 }
 
 /// The stderr line when no viewer was connected to receive a pane change.
@@ -140,6 +156,18 @@ pub fn parse_args(args: &[String]) -> Result<Command, UsageError> {
         ["show", id] => Ok(Command::Show { id: id.to_string() }),
         ["delete", id] => Ok(Command::Delete { id: id.to_string() }),
         ["log", id] => Ok(Command::Log { id: id.to_string() }),
+        ["state", id] => Ok(Command::State {
+            id: id.to_string(),
+            what: StateWhat::All,
+        }),
+        ["state", id, "--clear"] => Ok(Command::State {
+            id: id.to_string(),
+            what: StateWhat::Clear,
+        }),
+        ["state", id, key] if !key.starts_with('-') => Ok(Command::State {
+            id: id.to_string(),
+            what: StateWhat::Key(key.to_string()),
+        }),
         ["reset", id] => Ok(Command::Reset { id: id.to_string() }),
         ["pane"] => Ok(Command::PaneShown),
         ["pane", id, flag @ ..] => Ok(Command::Pane {
@@ -309,6 +337,16 @@ pub fn run(command: Command) -> Result<(), String> {
             }
             value
         }
+        Command::State { id, what } => {
+            let base = format!("/api/artifacts/{}/state", percent_encode(&id));
+            match what {
+                StateWhat::All => client::artifact_call("GET", &base, None)?,
+                StateWhat::Key(key) => {
+                    client::artifact_call("GET", &format!("{base}/{}", percent_encode(&key)), None)?
+                }
+                StateWhat::Clear => client::artifact_call("DELETE", &base, None)?,
+            }
+        }
         Command::PaneShown => {
             let value = client::artifact_call("GET", "/api/artifact-pane", None)?;
             if value["pane"].is_null() {
@@ -464,6 +502,26 @@ mod tests {
             extras_json(extras).unwrap_err(),
             "--every must be at least 5 seconds"
         );
+    }
+
+    #[test]
+    fn state_parses_all_one_key_and_clear() {
+        let what = |words: &[&str]| match parse_args(&args(words)) {
+            Ok(Command::State { id, what }) => {
+                assert_eq!(id, "art-1");
+                what
+            }
+            _ => panic!("{words:?} did not parse as state"),
+        };
+        assert_eq!(what(&["state", "art-1"]), StateWhat::All);
+        assert_eq!(
+            what(&["state", "art-1", "score"]),
+            StateWhat::Key("score".into())
+        );
+        assert_eq!(what(&["state", "art-1", "--clear"]), StateWhat::Clear);
+        assert!(parse_args(&args(&["state"])).is_err());
+        assert!(parse_args(&args(&["state", "art-1", "--bogus"])).is_err());
+        assert!(parse_args(&args(&["state", "art-1", "a", "b"])).is_err());
     }
 
     #[test]

@@ -2338,6 +2338,47 @@
       return;
     }
 
+    if (data.type === "canvas-state-set" || data.type === "canvas-state-get") {
+      // A page saving or asking for its own state. Only the pane's own
+      // frame counts, and the artifact is the one that frame was built for,
+      // never what the message names; canvasd decides where the values live
+      // and whether the key and value are acceptable. The answer goes back
+      // to that frame only if it is still the pane's frame.
+      if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
+      const frame = artifactFrame;
+      const base = `/api/artifacts/${encodeURIComponent(artifactFrameId)}/state`;
+      const reply = (message) => {
+        if (frame.contentWindow) frame.contentWindow.postMessage(message, "*");
+      };
+      if (data.type === "canvas-state-get") {
+        fetch(base)
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((values) => reply({ type: "canvas-state", values }))
+          .catch((e) =>
+            reply({ type: "canvas-state", values: {}, ok: false, error: String(e.message || e) })
+          );
+        return;
+      }
+      const key = typeof data.key === "string" ? data.key : "";
+      const body = data.value === undefined ? undefined : JSON.stringify(data.value);
+      if (body === undefined) {
+        reply({ type: "canvas-state-ack", key, ok: false, error: "the value is not JSON" });
+        return;
+      }
+      fetch(`${base}/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body,
+      })
+        .then(async (r) =>
+          r.ok
+            ? reply({ type: "canvas-state-ack", key, ok: true })
+            : reply({ type: "canvas-state-ack", key, ok: false, error: (await r.text()).trim() })
+        )
+        .catch((e) => reply({ type: "canvas-state-ack", key, ok: false, error: String(e) }));
+      return;
+    }
+
     if (data.type === "canvas-artifact-open") {
       // A click on an http(s) link inside the artifact pane. Only the pane's
       // own frame counts, the artifact is the one that frame was built for,
