@@ -385,14 +385,16 @@
     }
     // A layer's draft after a load: its unsaved text from memory (or, the
     // first time the page loads the layer, from storage) when that differs
-    // from the file, else the file's text.
+    // from the file, else the file's text. A draft held while its file is
+    // missing still differs from its base, so it survives the file's return.
     function restoreDraft(layer, saved) {
       const stored = layer.restored || saved === null ? null : drafts.get(draftKey(layer));
       if (saved !== null) layer.restored = true;
+      const held = layer.saved === null && layer.base != null && layer.draft !== layer.base;
       if (stored !== null) {
         layer.draft = stored.draft;
         layer.base = stored.base;
-      } else if (!dirty(layer)) layer.draft = saved === null ? "" : saved;
+      } else if (!dirty(layer) && !held) layer.draft = saved === null ? "" : saved;
       layer.saved = saved;
       storeDraft(layer);
     }
