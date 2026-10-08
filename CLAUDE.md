@@ -160,9 +160,15 @@ beside the terminal all day.
   Settings' Instructions and Post reminders tabs (`layer-page.js`, one page
   per kind, built on canvasd's instruction routes) are three columns: the
   Include switch and an Edit list (Yours, then each seen project with its
-  line count or "no file"); an editor for the selected layer with line
+  line count or "no file", plus "· unsaved" in the warn colour while it holds
+  a draft); an editor for the selected layer with line
   numbers, Markdown colouring (instructions), counts, and an explicit Save
-  with a Saved/Unsaved state (a project with no file shows a Create button
+  with a Saved/Unsaved state (each unsaved draft is kept in the Settings
+  page's localStorage, `canvas.layer-drafts`, keyed `<kind>:yours` or
+  `<kind>:<root>`, so a reload or relaunch restores it as Unsaved; saving or
+  editing it back to the file's text removes it, and a project whose file is
+  missing keeps its stored draft until the file returns; `LayerPage.page(kind).unsaved()`
+  lists the layers holding one; a project with no file shows a Create button
   that writes a one-line `.canvas/` file, since a blank write deletes it); and
   "What a <project> session reads", the compose route's text for the project
   last picked, rebuilt at most every 100ms from the unsaved text, each layer

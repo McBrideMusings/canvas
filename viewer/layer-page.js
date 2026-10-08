@@ -30,6 +30,35 @@
   // can't reach the socket), as opposed to one it refused.
   class DownError extends Error {}
 
+  // Unsaved drafts outlive a reload or relaunch of the Settings window: each
+  // is kept in localStorage under "<kind>:yours" or "<kind>:<project root>"
+  // until it is saved or edited back to the file's text.
+  const DRAFTS_KEY = "canvas.layer-drafts";
+  const drafts = {
+    all() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}");
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch {
+        return {};
+      }
+    },
+    get(key) {
+      const text = drafts.all()[key];
+      return typeof text === "string" ? text : null;
+    },
+    set(key, text) {
+      const all = drafts.all();
+      if (text === null) delete all[key];
+      else all[key] = text;
+      try {
+        localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+      } catch {
+        // Storage refused: the draft lives in memory only, as before.
+      }
+    },
+  };
+
   async function call(method, url, body) {
     let response;
     try {
@@ -339,6 +368,24 @@
     const projectOf = (rootPath) => st.projects.find((p) => p.root === rootPath) || null;
     const current = () => (st.target === "yours" ? st.person : projectOf(st.target));
     const dirty = (layer) => layer && layer.saved !== null && layer.draft !== layer.saved;
+    const draftKey = (layer) => `${kind}:${layer === st.person ? "yours" : layer.root}`;
+    // Keeps the stored draft in step with the layer: stored while unsaved,
+    // gone once it matches the file. A project with no file leaves storage
+    // alone, so a file missing for one load doesn't cost its draft.
+    function storeDraft(layer) {
+      if (layer.saved !== null) drafts.set(draftKey(layer), dirty(layer) ? layer.draft : null);
+    }
+    // A layer's draft after a load: its unsaved text from memory (or, the
+    // first time the page loads the layer, from storage) when that differs
+    // from the file, else the file's text.
+    function restoreDraft(layer, saved) {
+      const stored = layer.restored || saved === null ? null : drafts.get(draftKey(layer));
+      if (saved !== null) layer.restored = true;
+      if (stored !== null) layer.draft = stored;
+      else if (!dirty(layer)) layer.draft = saved === null ? "" : saved;
+      layer.saved = saved;
+      storeDraft(layer);
+    }
     // Why the edited layer's text doesn't parse (`line N: …`, the PUT's 400
     // wording); null when it parses, or when the last compose read other text.
     function draftError() {
@@ -374,8 +421,7 @@
         const person = layers.layers.find((l) => l.source === "person");
         const personText = person ? person.text : "";
         // Keep a draft across a reload; refresh what's saved underneath it.
-        if (!st.loaded || !dirty(st.person)) st.person.draft = personText;
-        st.person.saved = personText;
+        restoreDraft(st.person, personText);
         st.include = layers.include;
         const texts = await Promise.all(
           projects.map((p) =>
@@ -392,10 +438,8 @@
         // still waiting on canvasd lands on the project the page shows.
         st.projects = projects.map((p, i) => {
           const layer = projectOf(p.root) || { root: p.root, saved: null, draft: "" };
-          const saved = texts[i];
-          if (!dirty(layer)) layer.draft = saved === null ? "" : saved;
           layer.name = p.name;
-          layer.saved = saved;
+          restoreDraft(layer, texts[i]);
           return layer;
         });
         if (st.target !== "yours" && !projectOf(st.target)) st.target = "yours";
@@ -470,8 +514,9 @@
       if (includeError) includeNoteEl.textContent = includeError;
       includeNoteEl.classList.toggle("lp-error", !!includeError);
       targetsEl.innerHTML = "";
-      const row = (key, dotClass, showDot, name, meta, path) => {
+      const row = (key, dotClass, showDot, name, meta, path, unsaved) => {
         const btn = h("button", "lp-row");
+        btn.classList.toggle("is-unsaved", unsaved);
         btn.type = "button";
         btn.dataset.target = key;
         btn.setAttribute("aria-current", String(st.target === key));
@@ -488,15 +533,18 @@
       const meta = (layer) => {
         if (layer.saved === null) return "no file";
         const n = lineCount(layer.draft);
-        return n === 0 ? "empty" : plural(n, "line");
+        const count = n === 0 ? "empty" : plural(n, "line");
+        return dirty(layer) ? `${count} · unsaved` : count;
       };
-      targetsEl.append(row("yours", "dot-yours", true, "Yours", meta(st.person), "every session, every repo"));
+      targetsEl.append(
+        row("yours", "dot-yours", true, "Yours", meta(st.person), "every session, every repo", dirty(st.person))
+      );
       targetsEl.append(h("div", "lp-sub", "Projects"));
       if (!st.projects.length) {
         targetsEl.append(h("div", "lp-none", st.loaded ? "No project has posted to Canvas yet." : "—"));
       }
       for (const p of st.projects) {
-        targetsEl.append(row(p.root, "dot-project", p.root === st.project, p.name, meta(p), p.root));
+        targetsEl.append(row(p.root, "dot-project", p.root === st.project, p.name, meta(p), p.root, dirty(p)));
       }
     }
 
@@ -687,6 +735,7 @@
 
       ta.addEventListener("input", () => {
         layer.draft = ta.value;
+        storeDraft(layer);
         st.saveError = "";
         paint();
         renderNav();
@@ -722,6 +771,9 @@
         const blank = !text.trim();
         layer.saved = blank ? (isYours ? "" : null) : text;
         if (blank && layer.draft === text) layer.draft = "";
+        // A blank save deleted the file on purpose, draft and all.
+        if (layer.saved === null) drafts.set(draftKey(layer), null);
+        else storeDraft(layer);
       } catch (e) {
         if (e instanceof DownError) markDown();
         else st.saveError = `Not saved: ${e.message}`;
@@ -743,6 +795,7 @@
         await call("PUT", `/api/instructions/${kind}/project`, { root: layer.root, text });
         layer.saved = text;
         layer.draft = text;
+        storeDraft(layer);
       } catch (e) {
         if (e instanceof DownError) markDown();
         else st.saveError = `Not created: ${e.message}`;
@@ -871,6 +924,9 @@
       },
       // For `admin verify-app eval`: what column 3 shows, as text.
       composedText: () => (st.composed ? st.composed.text : null),
+      // Each layer holding an unsaved draft: "yours" or a project root.
+      unsaved: () =>
+        [st.person, ...st.projects].filter(dirty).map((l) => (l === st.person ? "yours" : l.root)),
     };
   }
 

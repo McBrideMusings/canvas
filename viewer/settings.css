@@ -740,6 +740,10 @@ body {
   white-space: nowrap;
 }
 
+.lp-row.is-unsaved .lp-row-meta {
+  color: var(--warn);
+}
+
 .lp-row-path {
   grid-column: 2 / 4;
   overflow: hidden;
