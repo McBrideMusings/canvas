@@ -181,6 +181,18 @@ fn projects_is_an_empty_list_until_canvasd_records_one() {
 }
 
 #[test]
+fn projects_fails_naming_a_projects_file_that_does_not_parse() {
+    let d = dirs("projects-corrupt");
+    std::fs::write(d.data.join("projects.json"), "[{\"root\":").unwrap();
+    let out = canvas(&d, &["instructions", "projects"], b"");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8(out.stderr)
+        .unwrap()
+        .contains("projects.json: "));
+}
+
+#[test]
 fn profile_and_guidance_are_gone() {
     let d = dirs("gone");
     for args in [&["profile", "list"][..], &["guidance"][..]] {

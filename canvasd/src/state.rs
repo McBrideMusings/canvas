@@ -127,6 +127,14 @@ pub enum SnapshotReply {
     Failed(String),
 }
 
+/// The recorded projects, and whether `projects.json` failed to read at
+/// load and hasn't read since, which holds back every rewrite of it.
+#[derive(Default)]
+pub(crate) struct Projects {
+    list: Vec<canvas_core::instructions::SeenProject>,
+    unreadable: bool,
+}
+
 #[derive(Default)]
 pub struct Inner {
     pub sessions: HashMap<String, Session>,
@@ -166,7 +174,7 @@ pub struct AppState {
     pub(crate) viewer_pane: Arc<std::sync::Mutex<Option<PaneReport>>>,
     /// The git roots sessions have posted from, newest first, as
     /// `projects.json` holds them; see [`AppState::record_project`].
-    pub(crate) projects: Arc<std::sync::Mutex<Vec<canvas_core::instructions::SeenProject>>>,
+    pub(crate) projects: Arc<std::sync::Mutex<Projects>>,
     /// Held across every instruction-layer write, so two requests never share
     /// `write_atomic`'s temp file name.
     pub(crate) layer_writes: Arc<tokio::sync::Mutex<()>>,
@@ -210,7 +218,16 @@ impl AppState {
     pub async fn open(dir: &std::path::Path) -> Self {
         let (store, inner) = Store::open(dir);
         let artifacts = crate::artifacts::Artifacts::load(dir).await;
-        let projects = canvas_core::instructions::seen_projects(dir);
+        let projects = match canvas_core::instructions::seen_projects(dir) {
+            Ok(list) => Projects {
+                list,
+                unreadable: false,
+            },
+            Err(_) => Projects {
+                list: Vec::new(),
+                unreadable: true,
+            },
+        };
         let (tx, _rx) = broadcast::channel(1024);
         AppState {
             inner: Arc::new(RwLock::new(inner)),
@@ -239,12 +256,16 @@ impl AppState {
         self.projects
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .list
             .clone()
     }
 
     /// Records `cwd`'s git root as seen now, moving it to the front, and
     /// rewrites `projects.json` (kept only in memory without a data dir). A
-    /// `cwd` outside git records nothing.
+    /// `cwd` outside git records nothing. While `projects.json` can't be read,
+    /// the root is kept in memory and the file is left as it is, so its
+    /// earlier projects are never overwritten; once it reads again, the roots
+    /// recorded meanwhile go in front of its own and it is rewritten.
     pub fn record_project(&self, cwd: &str) {
         let Some(root) = canvas_core::instructions::git_root(std::path::Path::new(cwd)) else {
             return;
@@ -254,8 +275,8 @@ impl AppState {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| root.display().to_string());
         let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
-        projects.retain(|p| p.root != root);
-        projects.insert(
+        projects.list.retain(|p| p.root != root);
+        projects.list.insert(
             0,
             canvas_core::instructions::SeenProject {
                 root: root.clone(),
@@ -266,8 +287,27 @@ impl AppState {
         let Some(dir) = &self.data_dir else {
             return;
         };
+        if projects.unreadable {
+            match canvas_core::instructions::seen_projects(dir) {
+                Ok(stored) => {
+                    let older: Vec<_> = stored
+                        .into_iter()
+                        .filter(|p| !projects.list.iter().any(|r| r.root == p.root))
+                        .collect();
+                    projects.list.extend(older);
+                    projects.unreadable = false;
+                }
+                Err(e) => {
+                    canvas_core::log::error(
+                        "project record refused",
+                        &[("root", &root.display()), ("error", &e)],
+                    );
+                    return;
+                }
+            }
+        }
         let path = dir.join(canvas_core::instructions::PROJECTS_FILE);
-        let written = serde_json::to_vec_pretty(&*projects)
+        let written = serde_json::to_vec_pretty(&projects.list)
             .map_err(|e| e.to_string())
             .and_then(|json| {
                 canvas_core::instructions::write_atomic(&path, &json).map_err(|e| e.to_string())

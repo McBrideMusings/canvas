@@ -109,10 +109,10 @@ pub fn run(command: Command) -> Result<(), String> {
             Ok(())
         }
         Command::Projects => {
-            let projects = data_dir
-                .as_deref()
-                .map(instructions::seen_projects)
-                .unwrap_or_default();
+            let projects = match data_dir.as_deref() {
+                Some(dir) => instructions::seen_projects(dir)?,
+                None => Vec::new(),
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&projects).map_err(|e| e.to_string())?

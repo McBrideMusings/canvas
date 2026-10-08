@@ -93,7 +93,40 @@ async fn a_post_records_its_git_root_and_it_outlives_the_stream_and_a_restart() 
     let app = build_router(AppState::open(&d.data).await);
     let projects = json_of(&app, "GET", "/api/projects", None).await;
     assert_eq!(projects[0]["root"], json!(d.repo));
-    assert_eq!(instructions::seen_projects(&d.data)[0].root, d.repo);
+    assert_eq!(
+        instructions::seen_projects(&d.data).unwrap()[0].root,
+        d.repo
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_projects_file_is_never_overwritten_until_it_reads_again() {
+    let d = dirs();
+    let file = d.data.join(instructions::PROJECTS_FILE);
+    let earlier = d.base.join("earlier");
+    std::fs::create_dir_all(earlier.join(".git")).unwrap();
+    let stored = json!([{"root": earlier, "name": "earlier", "lastSeen": "2026-10-01T00:00:00Z"}]);
+    let corrupt = format!("{stored}\n<<<<<<< conflict");
+    std::fs::write(&file, &corrupt).unwrap();
+    assert!(instructions::seen_projects(&d.data)
+        .unwrap_err()
+        .contains("projects.json"));
+
+    let app = build_router(AppState::open(&d.data).await);
+    post_from(&app, "s1", &d.repo).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), corrupt);
+    let projects = json_of(&app, "GET", "/api/projects", None).await;
+    assert_eq!(projects[0]["root"], json!(d.repo));
+
+    // Repaired by hand: the next record keeps both.
+    std::fs::write(&file, stored.to_string()).unwrap();
+    post_from(&app, "s2", &d.repo).await;
+    let roots: Vec<_> = instructions::seen_projects(&d.data)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.root)
+        .collect();
+    assert_eq!(roots, vec![d.repo.clone(), earlier]);
 }
 
 #[tokio::test]

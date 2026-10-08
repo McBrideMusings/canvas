@@ -39,7 +39,11 @@ beside the terminal all day.
   `projects.json` in `CANVAS_DATA_DIR` (`{root, name, lastSeen}`, newest
   first): canvasd records the git root of a session's working directory when
   that session first posts (`AppState::record_project`, logged `project
-  recorded`), outside the 24h stream retention. canvasd's routes
+  recorded`), outside the 24h stream retention. A `projects.json` that
+  can't be read or parsed is an error (logged `projects list unreadable`;
+  `canvas instructions projects` exits 1 naming it): canvasd keeps recording
+  roots in memory and never rewrites the file (`project record refused`)
+  until it reads again, then puts those roots in front of its own. canvasd's routes
   (`canvasd/src/instruction_routes.rs`, `:kind` is `instructions` or
   `reminders`): `GET /api/instructions/:kind?root=` (the layers and the
   Include flag), `POST /api/instructions/:kind/compose` `{root, person,

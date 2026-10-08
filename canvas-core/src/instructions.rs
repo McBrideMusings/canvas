@@ -192,12 +192,22 @@ pub fn set_include(data_dir: &Path, kind: Kind, value: bool) -> Result<Include, 
 }
 
 /// The projects canvasd has recorded, newest first as stored; empty when
-/// none have been.
-pub fn seen_projects(data_dir: &Path) -> Vec<SeenProject> {
-    std::fs::read_to_string(data_dir.join(PROJECTS_FILE))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+/// none have been. A `projects.json` that can't be read or parsed is an
+/// error naming the file and why, logged here.
+pub fn seen_projects(data_dir: &Path) -> Result<Vec<SeenProject>, String> {
+    let path = data_dir.join(PROJECTS_FILE);
+    let read = match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    };
+    read.map_err(|why| {
+        crate::log::warn(
+            "projects list unreadable",
+            &[("path", &path.display()), ("error", &why)],
+        );
+        format!("{}: {why}", path.display())
+    })
 }
 
 /// Writes `bytes` to a temp file beside `path`, then renames it into place.
