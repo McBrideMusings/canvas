@@ -11,15 +11,15 @@ One main agent conversation on this Mac, from its first post to SessionEnd, star
 _Avoid_: conversation
 
 **Agent**:
-The coding tool that started a session. Claude Code is the only one today; the daemon records it on the session when the session is registered and never changes it afterward.
+The coding tool that started a session: Claude Code or Codex. canvasd records it from the session's first post and never changes it afterward.
 _Avoid_: source, client
 
 **Archived session**:
-A session whose chip and cards the viewer leaves out, because it ended while Archive sessions when they end is on, or because someone chose Archive this session. The Sessions drawer lists it under Archived with Show and Delete. Archiving is per viewer and changes nothing in canvasd.
+A session whose chip and cards the viewer leaves out. A session archived because it ended, while Archive sessions when they end is on, keeps its cards, and Show brings them back. Archive in the Sessions drawer also deletes the session's cards from canvasd. The drawer lists archived sessions under Archived, each with Show and Delete.
 _Avoid_: hidden, closed
 
 **Sessions drawer**:
-The panel that slides in from the right edge and lists every session under Active and Archived. Active rows can have their posts cleared or be archived; archived rows can be shown again or deleted, one at a time or all at once.
+The column that docks beside the Timeline, narrowing it, and lists every session under Active and Archived. An active row has an eye toggle (show or hide its cards) and Archive. An archived row has Show and Delete.
 _Avoid_: sidebar, session list
 
 **Card**:
@@ -30,8 +30,16 @@ _Avoid_: turn card, post (for the rendered card)
 HTML, Markdown or plain text an agent sends with `canvas post`. Each post becomes one card.
 _Avoid_: explicit post, surface
 
+**Card reply**:
+The one value a card's own script sends back to the agent: it posts `canvas-reply` to the viewer, which hands it to canvasd under that card. The latest reply wins, up to 4 KB, held in memory only. The agent reads it with `canvas wait` (blocks) or `canvas replies` (checks once).
+_Avoid_: response, callback
+
+**Card data**:
+One JSON value an agent pushes into a running card or artifact with `canvas data`. canvasd keeps the latest, up to 256 KB, in memory only, and the viewer hands it to the page without rebuilding it. An artifact's refresh command produces it on a timer.
+_Avoid_: payload, stream, live update
+
 **Chip**:
-One session's button in the row under the title bar: its agent icon on a tile in the session colour, its name, its repo and its card count. Clicking it shows only that session's cards.
+One session's button in the row under the title bar: its agent icon on a tile in the session colour, its name, its repo and its card count. Clicking a chip adds its session to the visible set, or removes it. With nothing chosen, every session shows; the drawer's eye toggles change the same set.
 _Avoid_: tab, pill, sidebar row
 
 **Session colour**:
