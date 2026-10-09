@@ -692,3 +692,7 @@ beside the terminal all day.
 
 `admin.toml` is the source of truth; run tasks with `admin <cmd>` (`admin check`
 lists them). Issues are tracked in beads (`bd ready`).
+
+The README's `docs/screenshots/stream.png` comes from `scripts/readme-shots.sh`.
+After a change to `viewer/` that alters how the stream looks, rerun it, look at
+the result, and commit the new image with the change.
