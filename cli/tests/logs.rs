@@ -140,6 +140,68 @@ fn a_hook_with_canvasd_stopped_exits_0_and_logs_it_was_unreachable() {
 }
 
 #[test]
+fn a_prompt_hook_with_a_missing_transcript_logs_the_session_and_path() {
+    let dir = test_dir("missing-transcript");
+    let missing = dir.join("gone.jsonl");
+    let input = serde_json::json!({
+        "session_id": "logs-test",
+        "cwd": dir,
+        "transcript_path": missing,
+    });
+    let output = run(&dir, &["hook", "prompt"], input.to_string().as_bytes());
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+
+    let log = read_log(&dir, "cli.log");
+    let line = log
+        .lines()
+        .find(|l| l.contains(" cli WARN hook failed event=prompt "))
+        .unwrap_or_else(|| panic!("no hook failed line in:\n{log}"));
+    assert!(line.contains(" session=logs-test"), "{line}");
+    let path = missing.display().to_string();
+    assert!(line.contains(&format!(" transcript={path}")), "{line}");
+    assert!(line.contains(&format!("error=\"read {path}: ")), "{line}");
+}
+
+#[test]
+fn a_printed_reminder_logs_its_triggers_and_last_text_length() {
+    let dir = test_dir("printed");
+    let transcript = dir.join("transcript.jsonl");
+    let lines = [
+        serde_json::json!({"type":"user","message":{"content":"look"}}),
+        serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Read","input":{"file_path":"/x/shot.png"}}]}}),
+        serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"text","text":"Looks fine."}]}}),
+    ];
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    std::fs::write(&transcript, text.join("\n")).unwrap();
+    let input = serde_json::json!({
+        "session_id": "logs-test",
+        "cwd": dir,
+        "transcript_path": transcript,
+    });
+    let output = run(&dir, &["hook", "prompt"], input.to_string().as_bytes());
+    assert!(output.status.success(), "{output:?}");
+    assert!(!output.stdout.is_empty(), "{output:?}");
+
+    let log = read_log(&dir, "cli.log");
+    let line = log
+        .lines()
+        .find(|l| l.contains(" cli INFO hook event=prompt "))
+        .unwrap_or_else(|| panic!("no hook line in:\n{log}"));
+    assert!(line.contains(" outcome=printed"), "{line}");
+    assert!(line.contains(" session=logs-test"), "{line}");
+    assert!(
+        line.contains(&format!(" transcript={}", transcript.display())),
+        "{line}"
+    );
+    assert!(line.contains(" triggers=image"), "{line}");
+    assert!(line.contains(" posted=false"), "{line}");
+    assert!(line.contains(" last_text_chars=11"), "{line}");
+}
+
+#[test]
 fn logs_path_prints_an_absolute_folder_that_exists() {
     let dir = test_dir("path");
     let output = run(&dir, &["logs", "--path"], b"");

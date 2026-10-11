@@ -613,7 +613,10 @@ beside the terminal all day.
   failures; `canvas_core::unix_http::call` logs each request it sends (status;
   `canvasd timed out` when canvasd took the connection and stalled past the
   timeout; `canvasd unreachable` with the reason the connect failed): every CLI
-  call to canvasd and the app's export fetch; the CLI also logs each hook's outcome; the app logs bridge
+  call to canvasd and the app's export fetch; the CLI also logs each hook's outcome
+  with its `session` (the prompt hook adds `transcript`, the `triggers` that
+  fired by directive name, `posted` and `last_text_chars`, and a transcript it
+  can't read names the path in `error`); the app logs bridge
   failures, event-stream changes, daemon install and integration sync. Every write
   failure is swallowed. New features log through it.
 - `canvas integrations list [--json]|install <agent> [repo]` (`cli/src/integrations/`)

@@ -75,24 +75,34 @@ fn main() {
                 Some(other) => other,
             };
             match adapter.map(|a| canvas::hook::run(event, a)) {
-                Some(Ok(output)) => {
-                    let outcome = if output.is_some() {
-                        "printed"
-                    } else {
-                        "silent"
-                    };
-                    canvas_core::log::info(
-                        "hook",
-                        &[("event", event), ("agent", &agent), ("outcome", &outcome)],
-                    );
-                    if let Some(text) = output {
-                        print!("{text}");
+                Some(run) => {
+                    let mut fields: Vec<(&str, &dyn std::fmt::Display)> =
+                        vec![("event", &event), ("agent", &agent)];
+                    let extra = run
+                        .fields
+                        .iter()
+                        .map(|(k, v)| (*k, v as &dyn std::fmt::Display));
+                    match run.output {
+                        Ok(output) => {
+                            let outcome = if output.is_some() {
+                                "printed"
+                            } else {
+                                "silent"
+                            };
+                            fields.push(("outcome", &outcome));
+                            fields.extend(extra);
+                            canvas_core::log::info("hook", &fields);
+                            if let Some(text) = output {
+                                print!("{text}");
+                            }
+                        }
+                        Err(e) => {
+                            fields.push(("error", &e));
+                            fields.extend(extra);
+                            canvas_core::log::warn("hook failed", &fields);
+                        }
                     }
                 }
-                Some(Err(e)) => canvas_core::log::warn(
-                    "hook failed",
-                    &[("event", event), ("agent", &agent), ("error", &e)],
-                ),
                 None => canvas_core::log::warn(
                     "hook skipped: unknown agent",
                     &[("event", event), ("agent", &agent)],

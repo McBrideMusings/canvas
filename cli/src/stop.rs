@@ -15,13 +15,26 @@ use canvas_core::reminders::Reminders;
 
 const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
-/// Returns the reminder when the last finished turn in `transcript` (in
-/// `adapter`'s format) has a trigger `cfg` enables and no `canvas post`;
-/// `None` otherwise.
-pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> Option<String> {
-    if !cfg.enabled {
-        return None;
-    }
+/// What the hook found in the last finished turn: the reminder to print, and
+/// what the log line needs to show why.
+#[derive(Debug, Default)]
+pub struct Check {
+    /// The reminder, when a trigger fired and no `canvas post` ran.
+    pub reminder: Option<String>,
+    /// The directive name of each trigger that fired (`image`, `file`,
+    /// `report`, `verify`, `links`, `long-block`), in that order; a turn
+    /// that posted stops after `image` and `file`.
+    pub fired: Vec<&'static str>,
+    /// A `canvas post` ran during the turn.
+    pub posted: bool,
+    /// Characters in the turn's last text, which the text triggers read.
+    pub last_text_chars: usize,
+}
+
+/// Checks the last finished turn in `transcript` (in `adapter`'s format)
+/// against the triggers `cfg` enables. The reminder is set when one fired and
+/// no `canvas post` ran.
+pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> Check {
     let Turn {
         posted,
         read_paths,
@@ -29,6 +42,14 @@ pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> 
         last_text,
     } = adapter.last_turn(transcript);
 
+    let mut check = Check {
+        posted,
+        last_text_chars: last_text.chars().count(),
+        ..Check::default()
+    };
+    if !cfg.enabled {
+        return check;
+    }
     let mut triggers: Vec<&str> = Vec::new();
     if cfg.image
         && read_paths.iter().any(|p| {
@@ -36,6 +57,7 @@ pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> 
             IMAGE_EXTENSIONS.iter().any(|e| p.ends_with(e))
         })
     {
+        check.fired.push("image");
         triggers.push("looked at a screenshot or image");
     }
     if cfg.file
@@ -43,23 +65,28 @@ pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> 
             .iter()
             .any(|p| !cfg.scratch.iter().any(|s| p.starts_with(s.as_str())))
     {
+        check.fired.push("file");
         triggers.push("created or changed a file");
     }
     if posted {
-        return None;
+        return check;
     }
 
     if cfg.report && last_text.contains("Look for:") {
+        check.fired.push("report");
         triggers.push("ended with a closing report");
     }
     if cfg.verify && asks_for_verification(&last_text, &cfg.phrases) {
+        check.fired.push("verify");
         triggers.push("asked the user to verify or try something");
     }
     if cfg.links.is_some_and(|n| link_count(&last_text) >= n) {
+        check.fired.push("links");
         triggers.push("listed several links or paths");
     }
     let long_block = cfg.long_block.filter(|&n| has_long_block(&last_text, n));
     if let Some(n) = long_block {
+        check.fired.push("long-block");
         triggers.push(match n {
             15 => "wrote a code block or table over 15 lines in chat",
             _ => "wrote a long code block or table in chat",
@@ -67,14 +94,13 @@ pub fn reason(adapter: &dyn AgentAdapter, transcript: &str, cfg: &Reminders) -> 
     }
     triggers.sort_unstable();
     triggers.dedup();
-    if triggers.is_empty() {
-        return None;
+    if !triggers.is_empty() {
+        check.reminder = Some(format!(
+            "Last turn {}; no `canvas post` ran. If it belongs on Canvas, post it before answering.",
+            triggers.join("; ")
+        ));
     }
-
-    Some(format!(
-        "Last turn {}; no `canvas post` ran. If it belongs on Canvas, post it before answering.",
-        triggers.join("; ")
-    ))
+    check
 }
 
 /// Words that may precede the command name in a segment.
@@ -268,7 +294,7 @@ mod tests {
     use serde_json::Value;
 
     fn reason(transcript: &str, cfg: &Reminders) -> Option<String> {
-        super::reason(&ClaudeCode, transcript, cfg)
+        super::reason(&ClaudeCode, transcript, cfg).reminder
     }
 
     /// The volume triggers on, so each is exercised; the built-in default has
@@ -390,6 +416,38 @@ mod tests {
             say("done"),
         ]);
         assert_eq!(reason(&t, &cfg()), None);
+    }
+
+    #[test]
+    fn the_check_names_each_trigger_that_fired() {
+        let links = "see https://a.test/1, https://a.test/2 and [3](/a/3.md)";
+        let unposted = transcript(&[
+            user("fix it"),
+            tool("Read", serde_json::json!({"file_path":"/repo/shot.png"})),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            say(links),
+        ]);
+        let check = super::reason(&ClaudeCode, &unposted, &cfg());
+        assert_eq!(check.fired, ["image", "file", "links"]);
+        assert!(!check.posted);
+        assert_eq!(check.last_text_chars, links.chars().count());
+        assert!(check.reminder.is_some());
+
+        let posted = transcript(&[
+            user("fix it"),
+            tool("Edit", serde_json::json!({"file_path":"/repo/a.js"})),
+            tool("Bash", serde_json::json!({"command":"canvas post f.html"})),
+            say(links),
+        ]);
+        let check = super::reason(&ClaudeCode, &posted, &cfg());
+        assert_eq!(check.fired, ["file"]);
+        assert!(check.posted);
+        assert_eq!(check.reminder, None);
+
+        let off = canvas_core::reminders::parse("off\n").unwrap();
+        let check = super::reason(&ClaudeCode, &unposted, &off);
+        assert!(check.fired.is_empty() && check.reminder.is_none());
+        assert_eq!(check.last_text_chars, links.chars().count());
     }
 
     #[test]
