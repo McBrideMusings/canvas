@@ -11,6 +11,7 @@
 //!   one whole body, so it can't carry a stream.
 
 use std::io::BufRead;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::http::{Request, Response};
@@ -35,6 +36,36 @@ const PASSED_HEADERS: &[&str] = &[
 
 // Request headers the webview sends that canvasd reads.
 const FORWARDED_HEADERS: &[&str] = &["content-type", "range"];
+
+/// Why the last attempt to reach canvasd failed, so a daemon that stays down
+/// logs one line per change of reason rather than one per request.
+struct FailureLog(Mutex<Option<String>>);
+
+impl FailureLog {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    /// Records a failure; true when its reason differs from the last one.
+    fn failed(&self, reason: &str) -> bool {
+        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if last.as_deref() == Some(reason) {
+            return false;
+        }
+        *last = Some(reason.to_string());
+        true
+    }
+
+    /// Records a success; true when it ends a run of failures.
+    fn recovered(&self) -> bool {
+        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        last.take().is_some()
+    }
+}
+
+// Every proxied request shares one, since the waiting page and the viewer's
+// calls each fail the same way while canvasd is down.
+static PROXY_FAILURES: FailureLog = FailureLog::new();
 
 fn reply(status: u16, content_type: &str, body: Vec<u8>) -> Response<Vec<u8>> {
     reply_with(status, content_type, &[], body)
@@ -92,20 +123,32 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         request.body(),
         Some(REQUEST_TIMEOUT),
     ) {
-        Ok(response) => reply_with(
-            response.status,
-            response
-                .content_type
-                .as_deref()
-                .unwrap_or("application/octet-stream"),
-            &response.headers,
-            response.body,
-        ),
+        Ok(response) => {
+            if PROXY_FAILURES.recovered() {
+                canvas_core::log::info(
+                    "bridge reaching canvasd again",
+                    &[("method", &method), ("path", &path)],
+                );
+            }
+            reply_with(
+                response.status,
+                response
+                    .content_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream"),
+                &response.headers,
+                response.body,
+            )
+        }
         Err(e) => {
-            canvas_core::log::warn(
-                "bridge request failed",
-                &[("method", &method), ("path", &path), ("error", &e)],
-            );
+            // The first request to fail for a new reason is logged; the rest
+            // (the waiting page reloads once a second) are not.
+            if PROXY_FAILURES.failed(&e.to_string()) {
+                canvas_core::log::warn(
+                    "bridge request failed",
+                    &[("method", &method), ("path", &path), ("error", &e)],
+                );
+            }
             reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec())
         }
     }
@@ -125,7 +168,7 @@ fn forwarded_headers(headers: &tauri::http::HeaderMap) -> Vec<(&'static str, &st
 pub fn forward_events(app: AppHandle) {
     // Only a change in why the stream can't open is logged, so a daemon that
     // stays down writes one line rather than one a second.
-    let mut last_failure: Option<String> = None;
+    let failures = FailureLog::new();
     loop {
         let stream = match canvas_core::paths::socket_path() {
             None => Err("no HOME to place the socket".to_string()),
@@ -137,7 +180,7 @@ pub fn forward_events(app: AppHandle) {
         };
         match stream {
             Ok(stream) => {
-                last_failure = None;
+                failures.recovered();
                 canvas_core::log::info("event stream open", &[]);
                 let _ = app.emit("canvas-stream", "open");
                 read_events(&app, stream.body);
@@ -145,10 +188,9 @@ pub fn forward_events(app: AppHandle) {
                 canvas_core::log::warn("event stream closed", &[]);
             }
             Err(e) => {
-                if last_failure.as_deref() != Some(e.as_str()) {
+                if failures.failed(&e) {
                     canvas_core::log::warn("event stream unavailable", &[("error", &e)]);
                 }
-                last_failure = Some(e);
             }
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -206,5 +248,25 @@ mod tests {
         assert_eq!(response.headers()["content-range"], "bytes 0-99/1000");
         assert_eq!(response.headers()["accept-ranges"], "bytes");
         assert!(response.headers().get("x-other").is_none());
+    }
+
+    #[test]
+    fn a_failure_is_reported_once_per_change_of_reason() {
+        let failures = FailureLog::new();
+        let refused = "Connection refused (os error 61)";
+        let reported: Vec<bool> = [
+            refused,
+            refused,
+            refused,
+            "No such file or directory (os error 2)",
+        ]
+        .iter()
+        .map(|reason| failures.failed(reason))
+        .collect();
+        assert_eq!(reported, vec![true, false, false, true]);
+
+        assert!(failures.recovered());
+        assert!(!failures.recovered());
+        assert!(failures.failed(refused));
     }
 }
