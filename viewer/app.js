@@ -2987,7 +2987,10 @@
     }
     writeStored(PAGE_KEY, next);
     if (next === "artifacts") renderArtifacts();
-    else scheduleWatchReport();
+    else {
+      paintCardTimes();
+      scheduleWatchReport();
+    }
   }
 
   pageSwitchEl.addEventListener("click", (e) => {
@@ -3198,8 +3201,21 @@
       .catch(() => toast("Couldn't stop the refresh"));
   });
 
+  // A card header's age ("3m ago", "posted 40m ago · updated 3m ago") counts
+  // on while the Timeline shows; a text that hasn't changed isn't rewritten.
+  function paintCardTimes() {
+    for (const el of cardsEl.querySelectorAll(".card[data-card-id]")) {
+      const card = cards.get(el.dataset.cardId);
+      const timeEl = el.querySelector(".card-header .time");
+      if (!card || !timeEl) continue;
+      const label = cardTimeLabel(card);
+      if (timeEl.textContent !== label.text) timeEl.textContent = label.text;
+    }
+  }
+
   // The lines' ages count on while they show.
   setInterval(() => {
+    if (page === "timeline" && !document.hidden) paintCardTimes();
     if (page !== "artifacts") return;
     if (!artifactRefreshErrorEl.hidden) paintRefreshError();
     if (!artifactRefreshEl.hidden) paintRefreshLine();
