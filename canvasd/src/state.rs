@@ -35,9 +35,10 @@ pub enum CanvasEvent {
         request: String,
     },
     /// Asks every open viewer to switch to this theme (`canvas theme`), as a
-    /// click on the title-bar button would. Sent to viewers only: never
-    /// written to the persisted stream.
-    ThemeSet(Theme),
+    /// click on the title-bar button would, or with `System` to clear the
+    /// stored choice. Sent to viewers only: never written to the persisted
+    /// stream.
+    ThemeSet(ThemeChoice),
     /// An artifact was created or its files changed. Sent to viewers only:
     /// artifacts persist in `artifacts.json`, not the stream.
     ArtifactUpserted(Box<canvas_core::ArtifactView>),
@@ -118,6 +119,44 @@ impl Theme {
     }
 }
 
+/// What `canvas theme <choice>` asks a viewer for: a stored palette, or
+/// `system`, which clears the stored choice so the window follows macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    Light,
+    Dark,
+    System,
+}
+
+impl ThemeChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeChoice::Light => "light",
+            ThemeChoice::Dark => "dark",
+            ThemeChoice::System => "system",
+        }
+    }
+}
+
+/// Where the theme a viewer shows comes from: a choice stored in its
+/// localStorage, or the system setting with nothing stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeSource {
+    Stored,
+    System,
+}
+
+impl ThemeSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemeSource::Stored => "stored",
+            ThemeSource::System => "system",
+        }
+    }
+}
+
 /// What a viewer sent back for one `canvas snapshot` request.
 #[derive(Debug)]
 pub enum SnapshotReply {
@@ -158,9 +197,9 @@ pub struct AppState {
     /// Snapshot requests waiting for a viewer's answer, by request id.
     pub(crate) snapshots:
         Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<SnapshotReply>>>>,
-    /// The theme a viewer last reported showing (`PUT /api/theme`), in
-    /// memory only; `None` until a viewer reports one.
-    pub(crate) viewer_theme: Arc<std::sync::Mutex<Option<Theme>>>,
+    /// The theme a viewer last reported showing and where it comes from
+    /// (`PUT /api/theme`), in memory only; `None` until a viewer reports one.
+    pub(crate) viewer_theme: Arc<std::sync::Mutex<Option<(Theme, ThemeSource)>>>,
     /// The artifact pane a viewer last reported showing, in memory only;
     /// `None` until a viewer reports one.
     pub(crate) viewer_pane: Arc<std::sync::Mutex<Option<PaneReport>>>,

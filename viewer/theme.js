@@ -1,7 +1,8 @@
 // Loaded in <head> by the viewer and the Settings window so the first paint
 // already has the right palette. The choice is one string under one
 // localStorage key, shared by both windows; with nothing stored, the system
-// setting decides. localStorage can throw, which only costs persistence.
+// setting decides, and set("system") removes the key to get back there.
+// localStorage can throw, which only costs persistence.
 // Canvas.app's own appearance follows the choice too (set_app_theme), so
 // `prefers-color-scheme` in every frame, an artifact's pane included, agrees
 // with the theme the window shows.
@@ -40,27 +41,56 @@
     window.dispatchEvent(new CustomEvent("canvas-theme", { detail: theme }));
   }
 
+  // After the stored choice or the system's answer moved: a new theme repaints
+  // through apply(); the same theme only changed its source, which the app's
+  // appearance and canvas-theme-source listeners still need to hear, without
+  // rebuilding anything that draws the theme.
+  function show(next) {
+    if (next !== theme) {
+      theme = next;
+      apply();
+      return;
+    }
+    syncApp();
+    window.dispatchEvent(new CustomEvent("canvas-theme-source", { detail: theme }));
+  }
+
   window.canvasTheme = {
     get: function () {
       return theme;
     },
+    // "stored" while a choice is in localStorage, else "system".
+    source: function () {
+      return stored() === null ? "system" : "stored";
+    },
     set: function (next) {
+      if (next === "system") {
+        try {
+          localStorage.removeItem(KEY);
+        } catch (e) {}
+        show(read());
+        return;
+      }
       if (next !== "light" && next !== "dark") return;
-      theme = next;
       try {
-        localStorage.setItem(KEY, theme);
+        localStorage.setItem(KEY, next);
       } catch (e) {}
-      apply();
+      show(next);
     },
   };
 
   window.addEventListener("storage", function (e) {
-    if (e.key !== KEY) return;
-    var next = read();
-    if (next === theme) return;
-    theme = next;
-    apply();
+    if (e.key === KEY) show(read());
   });
+
+  // With nothing stored, the window follows the system. While a choice is
+  // stored, the app's forced appearance answers the media query, so the
+  // system's own answer arrives here once set_app_theme(null) releases it.
+  if (window.matchMedia) {
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+      if (stored() === null) show(read());
+    });
+  }
 
   document.documentElement.setAttribute("data-theme", theme);
   syncApp();

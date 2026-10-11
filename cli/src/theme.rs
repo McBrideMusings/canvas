@@ -1,9 +1,11 @@
-//! `canvas theme [light|dark]`: with a theme, every open viewer switches to it
-//! the way a click on its title-bar button does, so the choice persists in the
-//! viewer's localStorage like a click's. Prints `{"viewers": N}`; a set no
+//! `canvas theme [light|dark|system]`: with a theme, every open viewer switches
+//! to it the way a click on its title-bar button does, so the choice persists
+//! in the viewer's localStorage like a click's; `system` clears that stored
+//! choice, so the window follows macOS again. Prints `{"viewers": N}`; a set no
 //! viewer received is an error, since nothing changed. With no argument it
-//! prints `{"theme": "light"|"dark"}`, the theme a viewer last reported
-//! showing, and fails when no viewer is open or none has reported one.
+//! prints `{"theme": "light"|"dark", "source": "stored"|"system"}`, the theme a
+//! viewer last reported showing and whether a stored choice or the system
+//! picked it, and fails when no viewer is open or none has reported one.
 
 use crate::client;
 
@@ -15,8 +17,11 @@ pub const NOT_REPORTED: &str = "no open Canvas viewer has reported its theme";
 
 pub fn run(theme: Option<&str>) -> Result<(), String> {
     let Some(theme) = theme else {
-        let current = client::viewer_theme()?.ok_or_else(|| NOT_REPORTED.to_string())?;
-        println!("{}", serde_json::json!({ "theme": current }));
+        let (theme, source) = client::viewer_theme()?.ok_or_else(|| NOT_REPORTED.to_string())?;
+        println!(
+            "{}",
+            serde_json::json!({ "theme": theme, "source": source })
+        );
         return Ok(());
     };
     let viewers = client::set_theme(theme)?;

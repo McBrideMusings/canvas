@@ -80,10 +80,12 @@ or filtered out by the search (`canvas focus <card_id>` clears both).
 Only the part inside the window is captured: a card taller than the window
 is cut at the window's bottom edge, and the output says `"clipped": true`.
 
-`canvas theme light|dark` switches every open Canvas window's theme, so a
+`canvas theme light|dark|system` switches every open Canvas window's theme, so a
 snapshot can show a card in both. It is the user's own setting and persists
 like a click on the theme button: read it first with bare `canvas theme`
-(`{"theme": "light"}`) and set it back when you are done. It prints
+(`{"theme": "light", "source": "system"}`) and set it back when you are done —
+`canvas theme system` when `source` was `"system"` (the window was following
+macOS; this clears the stored choice), else `canvas theme <theme>`. It prints
 `{"viewers": N}` and exits 1 when no window is open.
 
 Input is Markdown, plain text, or HTML — pick with `--format md|text|html`,

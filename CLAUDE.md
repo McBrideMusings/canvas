@@ -403,16 +403,20 @@ beside the terminal all day.
   ScreenCaptureKit's user-declined error; it asks for it once), a bad
   extension or `--seconds` exit 1 with one stderr line. Codex's rules leave it
   out, since it writes anywhere.
-  `canvas theme light|dark` (`POST /api/theme`, any other value refused)
-  publishes a viewer-only `theme-set` event; each viewer calls
+  `canvas theme light|dark|system` (`POST /api/theme`, any other value
+  refused) publishes a viewer-only `theme-set` event; each viewer calls
   `window.canvasTheme.set`, the same path as a click on the theme button, so
-  the choice persists in the viewer's localStorage like a click's (the
-  Settings window follows through the `storage` event). It prints
+  the choice persists in the viewer's localStorage like a click's, and
+  `system` removes the stored choice so the window follows macOS again (the
+  Settings window follows through the `storage` event; with nothing stored,
+  a `prefers-color-scheme` change re-reads the system's answer once
+  `set_app_theme` hands the appearance back). It prints
   `{"viewers": N}` and exits 1 with one stderr line when N is 0. The viewer
-  reports the theme it shows with `PUT /api/theme` after every state load and
-  every change; canvasd holds it in memory only, and `GET /api/theme` (bare
-  `canvas theme`) prints `{"theme": ...}`, exiting 1 when no viewer is open
-  or none has reported. The unbundled dev app keeps its localStorage
+  reports the theme it shows and its `source` (`stored` or `system`) with
+  `PUT /api/theme` after every state load and every change; canvasd holds it
+  in memory only, and `GET /api/theme` (bare `canvas theme`) prints
+  `{"theme": ..., "source": ...}`, exiting 1 when no viewer is open or none
+  has reported. The unbundled dev app keeps its localStorage
   under `~/Library/WebKit/app`, apart from the installed app's
   `~/Library/WebKit/com.piercemakes.canvas`.
   `canvas post --update <card_id> <file>` sends a PUT to `/api/cards/:id`

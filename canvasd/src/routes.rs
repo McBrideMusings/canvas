@@ -18,7 +18,9 @@ use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
 use crate::repo::github_repo;
-use crate::state::{process_alive, AppState, CanvasEvent, SnapshotReply, Theme};
+use crate::state::{
+    process_alive, AppState, CanvasEvent, SnapshotReply, Theme, ThemeChoice, ThemeSource,
+};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -355,12 +357,13 @@ pub async fn focus_card(State(state): State<AppState>, Path(id): Path<String>) -
 
 #[derive(serde::Deserialize)]
 pub struct ThemeBody {
-    theme: Theme,
+    theme: ThemeChoice,
 }
 
-/// `canvas theme <light|dark>`: asks every open viewer to switch theme the
-/// way a click on its title-bar button does, so the choice persists. Answers
-/// how many viewers the event reached, so the CLI can fail when nobody saw it.
+/// `canvas theme <light|dark|system>`: asks every open viewer to switch theme
+/// the way a click on its title-bar button does, so the choice persists, or,
+/// for `system`, to clear the stored choice and follow macOS. Answers how many
+/// viewers the event reached, so the CLI can fail when nobody saw it.
 pub async fn set_theme(State(state): State<AppState>, Json(body): Json<ThemeBody>) -> Response {
     let viewers = state.publish(CanvasEvent::ThemeSet(body.theme));
     canvas_core::log::info(
@@ -370,19 +373,40 @@ pub async fn set_theme(State(state): State<AppState>, Json(body): Json<ThemeBody
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 
-/// The viewer reports the theme it shows, on load and after every change.
-pub async fn report_theme(State(state): State<AppState>, Json(body): Json<ThemeBody>) -> Response {
-    *state.viewer_theme.lock().unwrap_or_else(|e| e.into_inner()) = Some(body.theme);
-    canvas_core::log::info("viewer theme", &[("theme", &body.theme.as_str())]);
+#[derive(serde::Deserialize)]
+pub struct ThemeReport {
+    theme: Theme,
+    source: ThemeSource,
+}
+
+/// The viewer reports the theme it shows and where it comes from, on load
+/// and after every change.
+pub async fn report_theme(
+    State(state): State<AppState>,
+    Json(body): Json<ThemeReport>,
+) -> Response {
+    *state.viewer_theme.lock().unwrap_or_else(|e| e.into_inner()) = Some((body.theme, body.source));
+    canvas_core::log::info(
+        "viewer theme",
+        &[
+            ("theme", &body.theme.as_str()),
+            ("source", &body.source.as_str()),
+        ],
+    );
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// `canvas theme`: the theme a viewer last reported, `null` before any has or
-/// while no viewer is connected, so a closed app never reads as showing one.
+/// `canvas theme`: the theme a viewer last reported and its source, both
+/// `null` before any has or while no viewer is connected, so a closed app
+/// never reads as showing one.
 pub async fn get_theme(State(state): State<AppState>) -> Response {
     let reported = *state.viewer_theme.lock().unwrap_or_else(|e| e.into_inner());
-    let theme = reported.filter(|_| state.events.receiver_count() > 0);
-    Json(serde_json::json!({ "theme": theme })).into_response()
+    let reported = reported.filter(|_| state.events.receiver_count() > 0);
+    Json(serde_json::json!({
+        "theme": reported.map(|(theme, _)| theme),
+        "source": reported.map(|(_, source)| source),
+    }))
+    .into_response()
 }
 
 /// How long `snapshot_card` waits for a viewer to answer: the viewer waits

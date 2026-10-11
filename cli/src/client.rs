@@ -169,8 +169,9 @@ pub fn focus_card(card_id: &str) -> Result<u64, String> {
     }
 }
 
-/// Asks every open viewer to switch to `theme`; returns how many it reached.
-/// canvasd refuses anything but `light` or `dark`.
+/// Asks every open viewer to switch to `theme`, or with `system` to clear its
+/// stored choice; returns how many it reached. canvasd refuses anything but
+/// `light`, `dark` or `system`.
 pub fn set_theme(theme: &str) -> Result<u64, String> {
     #[derive(serde::Deserialize)]
     struct Set {
@@ -187,14 +188,17 @@ pub fn set_theme(theme: &str) -> Result<u64, String> {
     Ok(viewers)
 }
 
-/// The theme a viewer last reported showing, `None` before any has.
-pub fn viewer_theme() -> Result<Option<String>, String> {
+/// The theme a viewer last reported showing and where it comes from
+/// (`stored` or `system`), `None` before any has.
+pub fn viewer_theme() -> Result<Option<(String, String)>, String> {
     #[derive(serde::Deserialize)]
     struct Reported {
         theme: Option<String>,
+        source: Option<String>,
     }
     let response = call("GET", "/api/theme", None).map_err(|e| e.to_string())?;
-    Ok(into_json::<Reported>(response)?.theme)
+    let reported = into_json::<Reported>(response)?;
+    Ok(reported.theme.zip(reported.source))
 }
 
 /// canvasd waits up to 20s for a viewer to capture a card; this leaves it

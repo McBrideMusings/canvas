@@ -503,16 +503,21 @@
     if (page === "artifacts") renderArtifactList();
     reportTheme();
   });
+  window.addEventListener("canvas-theme-source", reportTheme);
 
-  // Tells canvasd which theme this window shows, so `canvas theme` with no
-  // argument can read it back. Sent with every state load, which follows each
+  // Tells canvasd which theme this window shows and whether a stored choice
+  // or the system picked it, so `canvas theme` with no argument can read it
+  // back. Sent with every state load, which follows each
   // stream open (canvasd keeps it in memory, so a restart forgets it), and
   // after every change.
   function reportTheme() {
     fetch("/api/theme", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ theme: window.canvasTheme.get() }),
+      body: JSON.stringify({
+        theme: window.canvasTheme.get(),
+        source: window.canvasTheme.source(),
+      }),
     }).catch(() => {});
   }
 
@@ -3869,11 +3874,10 @@
     handlers["card-focus"] = ({ id }) => openCardLink(id);
 
     // `canvas theme`: the same path as a click on the theme button, so the
-    // choice persists in localStorage. Setting the theme already shown
-    // changes nothing, rather than rebuilding every card.
-    handlers["theme-set"] = ({ theme }) => {
-      if (theme !== window.canvasTheme.get()) window.canvasTheme.set(theme);
-    };
+    // choice persists in localStorage; `system` clears it. A set that keeps
+    // the theme already shown stores or clears the choice without
+    // rebuilding any card.
+    handlers["theme-set"] = ({ theme }) => window.canvasTheme.set(theme);
 
     // One at a time: a second snapshot's scroll would move the first card
     // out from under its capture.

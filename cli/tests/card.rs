@@ -206,7 +206,17 @@ fn theme_with_no_viewer_fails_with_one_line() {
 }
 
 #[test]
-fn theme_refuses_anything_but_light_or_dark() {
+fn theme_system_reports_the_viewers_it_reached() {
+    let daemon = spawn_daemon();
+    let _viewer = connect_viewer(&daemon);
+    let output = run(&daemon, &["theme", "system"], None);
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value, serde_json::json!({"viewers": 1}));
+}
+
+#[test]
+fn theme_refuses_anything_but_light_dark_or_system() {
     let daemon = spawn_daemon();
     let output = run(&daemon, &["theme", "sepia"], None);
     assert_eq!(output.status.code(), Some(2), "{:?}", output);
@@ -221,7 +231,7 @@ fn bare_theme_prints_what_the_viewer_reported() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("reported"));
 
     let viewer = connect_viewer(&daemon);
-    let body = r#"{"theme":"dark"}"#;
+    let body = r#"{"theme":"dark","source":"stored"}"#;
     let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
     write!(
         stream,
@@ -236,7 +246,10 @@ fn bare_theme_prints_what_the_viewer_reported() {
     let output = run(&daemon, &["theme"], None);
     assert!(output.status.success(), "{:?}", output);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value, serde_json::json!({"theme": "dark"}));
+    assert_eq!(
+        value,
+        serde_json::json!({"theme": "dark", "source": "stored"})
+    );
 
     drop(viewer);
     std::thread::sleep(Duration::from_millis(200));
