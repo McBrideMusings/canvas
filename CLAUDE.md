@@ -431,8 +431,9 @@ beside the terminal all day.
   in the tooltip.
   `canvas data <card_id> [file|-]` pushes one JSON value (up to 256KB) into a
   running card: `PUT /api/cards/:id/data` keeps the latest (last write wins, in
-  memory, dropped with its card) and publishes a `card-data` SSE event, which
-  the viewer posts into that card's iframe as `{type:'canvas-data', value}`
+  memory, dropped with its card; `GET` answers it, 204 while there is none,
+  404 for an unknown card) and publishes a `card-data` SSE event, which the
+  viewer posts into that card's iframe as `{type:'canvas-data', value}`
   without rebuilding it, and again after any iframe load. `--update` rebuilds
   the iframe (`upsertCard`), so a dashboard posts its HTML once and streams
   values with `canvas data`. The value is never written to `stream.jsonl`.

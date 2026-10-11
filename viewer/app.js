@@ -2222,7 +2222,7 @@
   function replayCardData(cardId, frame) {
     const pushes = cardDataPushes.get(cardId) || 0;
     fetch(`/api/cards/${cardId}/data`)
-      .then((response) => (response.ok ? response.json() : undefined))
+      .then((response) => (response.status === 200 ? response.json() : undefined))
       .then((value) => {
         if (value !== undefined && (cardDataPushes.get(cardId) || 0) === pushes) {
           postCardData(frame, value);

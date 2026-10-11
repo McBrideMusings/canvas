@@ -994,7 +994,7 @@ async fn card_data_round_trips_and_the_last_write_wins() {
     let uri = format!("/api/cards/{}/data", card.id);
 
     let response = app.clone().oneshot(get(&uri)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     for value in [json!({"n": 1}), json!({"n": 2, "rows": [1, 2, 3]})] {
         let response = app.clone().oneshot(put(&uri, value)).await.unwrap();
@@ -1040,11 +1040,14 @@ async fn card_data_reaches_viewers_as_a_card_data_event() {
 #[tokio::test]
 async fn card_data_on_unknown_card_is_404() {
     let app = app();
+    let uri = "/api/cards/does-not-exist/data";
     let response = app
         .clone()
-        .oneshot(put("/api/cards/does-not-exist/data", json!({"n": 1})))
+        .oneshot(put(uri, json!({"n": 1})))
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = app.clone().oneshot(get(uri)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
@@ -1061,7 +1064,7 @@ async fn oversized_card_data_is_rejected() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let response = app.clone().oneshot(get(&uri)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]

@@ -625,11 +625,14 @@ pub async fn deliver_snapshot(
     }
 }
 
-/// The latest value `put_card_data` stored for this card; 404 until one has.
+/// The latest value `put_card_data` stored for this card; 204 until one has,
+/// since the viewer asks for every card and most never get a value. 404 only
+/// for a card canvasd doesn't hold.
 pub async fn get_card_data(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let inner = state.inner.read().await;
     match inner.data.get(&id) {
         Some(value) => (StatusCode::OK, Json(value.clone())).into_response(),
+        None if inner.cards.iter().any(|c| c.id == id) => StatusCode::NO_CONTENT.into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
