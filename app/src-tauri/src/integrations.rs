@@ -110,11 +110,7 @@ fn search_path() -> OsString {
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let extra = [
-        home.as_ref().map(|h| h.join(".local/bin")),
-        Some(PathBuf::from("/opt/homebrew/bin")),
-        Some(PathBuf::from("/usr/local/bin")),
-    ];
+    let extra = home.as_deref().map(canvas_core::service::tool_dirs);
     for dir in extra.into_iter().flatten() {
         if !dirs.contains(&dir) {
             dirs.push(dir);

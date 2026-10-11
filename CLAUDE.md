@@ -79,7 +79,10 @@ beside the terminal all day.
   renamed into place, so a running daemon's inode is never written through)
   and the `com.piercemakes.canvasd` launchd agent's plist (no `ProcessType`
   key, so canvasd and every refresh command it spawns run at standard
-  priority), then restarts only what changed: nothing when both match and
+  priority; a fixed `PATH`, `service::daemon_path`: `~/.local/bin`,
+  `/opt/homebrew/bin`, `/usr/local/bin`, then launchd's system folders, so a
+  refresh finds Homebrew tools and `canvas`; canvasd logs it on `daemon
+  started`), then restarts only what changed: nothing when both match and
   canvasd is running, `kickstart -k` when the plist matches and the agent is
   loaded, bootout and bootstrap when the plist changed, the agent wasn't
   loaded or the kickstart failed (a failed bootstrap gets a `kickstart -k` and

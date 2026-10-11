@@ -18,11 +18,33 @@ pub fn plist_path(home: &Path) -> PathBuf {
         .join(format!("{LABEL}.plist"))
 }
 
+/// Where the person's command-line tools live: `canvas` and `claude` in
+/// `~/.local/bin`, Homebrew's in `/opt/homebrew/bin` or `/usr/local/bin`.
+/// launchd and Finder start a process with none of them on PATH.
+pub fn tool_dirs(home: &Path) -> [PathBuf; 3] {
+    [
+        home.join(".local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]
+}
+
+/// The PATH the plist gives canvasd, and so every artifact refresh command it
+/// runs: [`tool_dirs`] ahead of launchd's own `/usr/bin:/bin:/usr/sbin:/sbin`.
+/// A fixed value, so the plist stays byte-stable across installs.
+pub fn daemon_path(home: &Path) -> String {
+    let tools = tool_dirs(home);
+    let tools = tools.iter().map(|d| d.display().to_string());
+    let system = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(String::from);
+    tools.chain(system).collect::<Vec<_>>().join(":")
+}
+
 // No ProcessType key: launchd's default is Standard. `Background` would run
 // canvasd, and every artifact refresh command it spawns, at darwin background
 // priority with throttled disk I/O.
 pub fn render_plist(canvas_path: &Path, home: &Path) -> String {
     let log_path = home.join("Library/Logs/canvasd.log");
+    let path = daemon_path(home);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -41,6 +63,11 @@ pub fn render_plist(canvas_path: &Path, home: &Path) -> String {
 	<true/>
 	<key>WorkingDirectory</key>
 	<string>{home}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>{path}</string>
+	</dict>
 	<key>StandardOutPath</key>
 	<string>{log}</string>
 	<key>StandardErrorPath</key>
@@ -242,6 +269,17 @@ mod tests {
         assert!(!plist.contains("ProcessType"), "{plist}");
         assert!(plist.contains("<string>/h/.local/bin/canvas</string>"));
         assert!(plist.contains("<string>/h/Library/Logs/canvasd.log</string>"));
+    }
+
+    #[test]
+    fn plist_gives_canvasd_the_tool_folders_on_path() {
+        let plist = render_plist(Path::new("/h/.local/bin/canvas"), Path::new("/h"));
+        assert!(
+            plist.contains(
+                "<key>PATH</key>\n\t\t<string>/h/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>"
+            ),
+            "{plist}"
+        );
     }
 
     #[test]

@@ -77,6 +77,11 @@ async fn serve() {
             ("socket", &socket.display()),
             ("pid", &std::process::id()),
             ("version", &env!("CARGO_PKG_VERSION")),
+            (
+                "path",
+                &std::env::var_os("PATH")
+                    .map_or("(unset)".into(), |p| p.to_string_lossy().into_owned()),
+            ),
         ],
     );
     canvasd::serve_unix(listener, app).await;
