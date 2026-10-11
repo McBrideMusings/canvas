@@ -204,49 +204,100 @@ def turn_triggers(turn, cfg):
     return hits
 
 
-def read_turns(path, since, seen):
-    turns, cur, sid = [], None, os.path.basename(path)[:-6]
-    for line in open(path):
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        ts, uid = r.get("timestamp", ""), r.get("uuid")
-        t = r.get("type")
-        if uid and t in ("user", "assistant", "attachment"):
-            if uid in seen:
+def load_records(path):
+    out = []
+    with open(path) as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
                 continue
-            seen.add(uid)
-        if t == "user":
-            txt = user_text(r)
-            if txt is None:
-                continue
-            cur = {"session": sid, "uuid": uid, "ts": ts, "user": txt, "final": "", "writes": [],
-                   "images": [], "posts": [], "reminder": None, "path": path}
-            turns.append(cur)
-        elif cur is None:
-            continue
-        elif t == "attachment":
-            a = r.get("attachment", {})
-            c = a.get("content") or ""
-            if a.get("type") == "hook_success" and a.get("hookEvent") == "UserPromptSubmit" and str(c).startswith(REMINDER_PREFIX) \
-                    and not cur["final"] and not cur["posts"]:
-                cur["reminder"] = c
-        elif t == "assistant":
-            content = r["message"]["content"]
-            for b in content if isinstance(content, list) else []:
-                if b.get("type") == "text" and b["text"].strip():
-                    cur["final"] = b["text"]
-                elif b.get("type") == "tool_use":
-                    inp, name = b.get("input", {}), b["name"]
-                    if name in ("Write", "Edit", "NotebookEdit") and inp.get("file_path"):
-                        cur["writes"].append(inp["file_path"])
-                    elif name == "Read" and str(inp.get("file_path", "")).lower().endswith(IMAGE_EXT):
-                        cur["images"].append(inp["file_path"])
-                    elif name == "Bash" and is_post_call(inp.get("command", "")):
-                        cmd = inp["command"]
-                        cur["posts"].append({"update": "--update" in cmd, "body": post_body(cmd)})
-    return [t for t in turns if t["ts"] >= since] if since else turns
+            if r.get("type") in ("user", "assistant", "attachment"):
+                out.append(r)
+    return out
+
+
+def session_groups(files):
+    """Files sharing a record uuid hold one session: resuming copies the history into a new
+    file under the new session id. Each group lists its files in the order they were written:
+    by the timestamps of the records not every file in the group holds, so the file whose
+    history the others copied comes first and a resume of a resume comes after its source."""
+    stamps = {f: {r["uuid"]: r.get("timestamp", "") for r in load_records(f) if r.get("uuid")} for f in files}
+    holders = defaultdict(list)
+    for f in files:
+        for u in stamps[f]:
+            holders[u].append(f)
+    root = {f: f for f in files}
+
+    def find(f):
+        while root[f] != f:
+            root[f] = root[root[f]]
+            f = root[f]
+        return f
+
+    for fs in holders.values():
+        for f in fs[1:]:
+            root[find(f)] = find(fs[0])
+    groups = defaultdict(list)
+    for f in files:
+        groups[find(f)].append(f)
+
+    def ordered(g):
+        return sorted(g, key=lambda f: (sorted(ts for u, ts in stamps[f].items() if len(holders[u]) < len(g)), f))
+
+    return [ordered(g) for g in groups.values()]
+
+
+def read_turns(files, since):
+    """One list of turns per transcript file, in its order. A turn a resumed file copied is
+    the one its source file read, so a session's branches share their common turns."""
+    seqs = []
+    for group in session_groups(files):
+        chain, turn_of = os.path.basename(group[0])[:-6], {}
+        for path in group:
+            cur, sid, seq = None, os.path.basename(path)[:-6], []
+            for r in load_records(path):
+                cur = read_record(r, path, sid, chain, cur, turn_of)
+                if cur is not None and (not seq or seq[-1] is not cur):
+                    seq.append(cur)
+            seqs.append([t for t in seq if t["ts"] >= since] if since else seq)
+    return seqs
+
+
+def read_record(r, path, sid, chain, cur, turn_of):
+    """Adds one record to the turn it belongs to and returns the current turn. A record an
+    earlier file already read moves this file's current turn to the one it joined there."""
+    uid, t = r.get("uuid"), r.get("type")
+    if uid in turn_of:
+        return turn_of[uid]
+    if t == "user":
+        txt = user_text(r)
+        if txt is not None:
+            cur = {"session": sid, "chain": chain, "uuid": uid, "ts": r.get("timestamp", ""), "user": txt,
+                   "final": "", "writes": [], "images": [], "posts": [], "reminder": None, "path": path}
+    elif cur is not None and t == "attachment":
+        a = r.get("attachment", {})
+        c = a.get("content") or ""
+        if a.get("type") == "hook_success" and a.get("hookEvent") == "UserPromptSubmit" and str(c).startswith(REMINDER_PREFIX) \
+                and not cur["final"] and not cur["posts"]:
+            cur["reminder"] = c
+    elif cur is not None and t == "assistant":
+        content = r["message"]["content"]
+        for b in content if isinstance(content, list) else []:
+            if b.get("type") == "text" and b["text"].strip():
+                cur["final"] = b["text"]
+            elif b.get("type") == "tool_use":
+                inp, name = b.get("input", {}), b["name"]
+                if name in ("Write", "Edit", "NotebookEdit") and inp.get("file_path"):
+                    cur["writes"].append(inp["file_path"])
+                elif name == "Read" and str(inp.get("file_path", "")).lower().endswith(IMAGE_EXT):
+                    cur["images"].append(inp["file_path"])
+                elif name == "Bash" and is_post_call(inp.get("command", "")):
+                    cmd = inp["command"]
+                    cur["posts"].append({"update": "--update" in cmd, "body": post_body(cmd)})
+    if uid:
+        turn_of[uid] = cur
+    return cur
 
 
 def clip(s, n):
@@ -254,18 +305,21 @@ def clip(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def analyze(turns, cfg):
-    by_session = defaultdict(list)
-    for t in turns:
-        by_session[t["session"]].append(t)
-    out = []
+def analyze(seqs, cfg):
+    """Pairs each turn with its neighbours in every file that holds it; a turn shared by a
+    session's branches gives each candidate once."""
+    out, emitted = [], set()
 
     def add(signal, t, **extra):
-        out.append({"signal": signal, "session": t["session"], "ts": t["ts"], "uuid": t["uuid"],
-                    "user": clip(t["user"], 300), "reply_tail": clip(t["final"][-400:], 400),
-                    "posts": len(t["posts"]), "path": t["path"], **extra})
+        c = {"signal": signal, "session": t["session"], "ts": t["ts"], "uuid": t["uuid"],
+             "user": clip(t["user"], 300), "reply_tail": clip(t["final"][-400:], 400),
+             "posts": len(t["posts"]), "path": t["path"], **extra}
+        key = json.dumps(c, sort_keys=True)
+        if key not in emitted:
+            emitted.add(key)
+            out.append(c)
 
-    for ts in by_session.values():
+    for ts in seqs:
         for i, t in enumerate(ts):
             prev = ts[i - 1] if i else None
             nxt = ts[i + 1] if i + 1 < len(ts) else None
@@ -304,16 +358,17 @@ def main():
     args = ap.parse_args()
     if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?", args.since):
         ap.error("--since must be YYYY-MM-DD or YYYY-MM-DDTHH:MM, in UTC")
-    cfg, seen, turns, files = load_config(), set(), [], corpus_files(args.path)
-    for f in files:
-        turns += read_turns(f, args.since, seen)
-    found = analyze(turns, cfg)
+    cfg, files = load_config(), corpus_files(args.path)
+    seqs = read_turns(files, args.since)
+    turns = list({id(t): t for seq in seqs for t in seq}.values())
+    found = analyze(seqs, cfg)
     posted = sum(1 for t in turns if t["posts"])
+    sessions = len({t["chain"] for t in turns})
     if args.json:
-        json.dump({"sessions": len({t["session"] for t in turns}), "turns": len(turns), "turns_with_post": posted,
+        json.dump({"sessions": sessions, "turns": len(turns), "turns_with_post": posted,
                    "candidates": found}, sys.stdout, indent=1)
         return
-    print(f"{len(files)} transcripts, {len({t['session'] for t in turns})} sessions, {len(turns)} turns, "
+    print(f"{len(files)} transcripts, {sessions} sessions, {len(turns)} turns, "
           f"{posted} turns posted, since {args.since or 'the start'}")
     counts = Counter(c["signal"] for c in found)
     for sig, n in sorted(counts.items()):
