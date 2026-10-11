@@ -120,7 +120,8 @@ async fn a_refresh_printing_json_delivers_it_as_artifact_data() {
 
 #[tokio::test]
 async fn a_failing_refresh_records_the_error_and_keeps_the_last_data() {
-    let (state, _app, id) = artifact_with(refresh("echo boom >&2; exit 1"), None).await;
+    // `always` skips the first-watch hold-off a freshly seeded value gets.
+    let (state, _app, id) = artifact_with(always("echo boom >&2; exit 1"), None).await;
     state
         .artifacts
         .write()
@@ -286,7 +287,8 @@ async fn an_always_refresh_runs_with_no_window_at_its_interval() {
 
 #[tokio::test]
 async fn empty_output_skips_and_keeps_the_last_value() {
-    let (state, _app, id) = artifact_with(refresh("true"), None).await;
+    // `always` skips the first-watch hold-off a freshly seeded value gets.
+    let (state, _app, id) = artifact_with(always("true"), None).await;
     state
         .artifacts
         .write()
