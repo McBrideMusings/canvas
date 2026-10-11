@@ -185,6 +185,22 @@ Pick the form by what the reviewer needs:
   the reviewer must replay it on demand or judge exact timing and easing, which a
   recording's frame rate blurs.
 
+To record a native app or a browser, `canvas record --window <app> <out.mp4|out.webp>
+[--seconds N]` captures that app's frontmost window for N seconds (default 5, at
+most 60) and prints `{"path", "seconds", "width", "height", "frames"}`:
+
+- Put the app in the state you want to show first, then start the recording and
+  trigger the motion within the first second; the capture runs on the real clock,
+  so two runs differ.
+- `.mp4` is H.264 at the window's pixel size and stays small; post it as a video.
+  `.webp` is an animated image at the window's point size, lossless and large
+  (about 400 KB a frame for a full window), so keep it to a few seconds.
+- A still window sends few frames, so a low `frames` count over the full length
+  is normal.
+- It fails with one line when the app has no window on screen, or when canvas
+  lacks the Screen Recording grant (System Settings > Privacy & Security > Screen
+  Recording); ask the person to grant it.
+
 A live animation card:
 
 - Runs ordinary inline `<script>`; the card's CSP allows inline scripts, and

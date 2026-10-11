@@ -18,3 +18,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "net"] }
 pulldown-cmark = "0.13.4"
 zip = { version = "8.6.0", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+image-webp = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-av-foundation = { version = "0.3", features = ["objc2-core-media"] }
+dispatch2 = "0.3"

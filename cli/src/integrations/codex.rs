@@ -17,7 +17,7 @@
 //! the `canvas` subcommands which only talk to canvasd run outside the
 //! sandbox. Codex matches a rule only against a plain command, so a post
 //! through a pipe or heredoc, or by the binary's full path, stays sandboxed.
-//! `export` and `snapshot` are left out because they write to any path.
+//! `export`, `snapshot` and `record` are left out because they write to any path.
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +42,7 @@ prefix_rule(
     decision = "allow",
     justification = "Canvas reaches canvasd over a Unix socket the sandbox blocks",
     match = ["canvas post plan.html", "canvas artifact put art-0123456789 dir"],
-    not_match = ["canvas export --all", "canvas snapshot c1 out.png", "canvas integrations install codex"],
+    not_match = ["canvas export --all", "canvas snapshot c1 out.png", "canvas record --window Safari c.mp4", "canvas integrations install codex"],
 )
 "#;
 const VERSION: &str = env!("CARGO_PKG_VERSION");

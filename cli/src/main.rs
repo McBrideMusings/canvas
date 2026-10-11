@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>] [--always]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>] [--always] | --refresh off] [--focus] | put <id> --refresh off | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas instructions [--reminders] [--cwd <dir>] [--json] | canvas instructions include on|off [--reminders] | canvas instructions projects | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>] [--always]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>] [--always] | --refresh off] [--focus] | put <id> --refresh off | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas record --window <app> <out.mp4|out.webp> [--seconds N] | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas instructions [--reminders] [--cwd <dir>] [--json] | canvas instructions include on|off [--reminders] | canvas instructions projects | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -213,6 +213,24 @@ fn main() {
                 std::process::exit(2);
             };
             if let Err(e) = canvas::snapshot::run(card_id, out) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        Some("record") => {
+            // Run on purpose, so failures are loud like `canvas post`.
+            let parsed = match canvas::record::parse_args(&args[2..]) {
+                Ok(parsed) => parsed,
+                Err(canvas::record::ArgError::Usage) => {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                }
+                Err(canvas::record::ArgError::Bad(e)) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = canvas::record::run(parsed) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

@@ -11,6 +11,7 @@ pub mod inline_css;
 pub mod instructions;
 pub mod integrations;
 pub mod post;
+pub mod record;
 pub mod scan;
 pub mod snapshot;
 pub mod stop;

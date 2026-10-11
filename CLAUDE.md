@@ -381,6 +381,26 @@ beside the terminal all day.
   later one. No viewer is a 409, a reason a 422, no answer a 504; the CLI
   prints canvasd's one line and exits 1. A clipped capture exits 0 with a
   stderr note.
+  `canvas record --window <app> <out.mp4|out.webp> [--seconds N]`
+  (`cli/src/record.rs`; N 1–60, default 5) records, inside the `canvas`
+  process and never through canvasd, the frontmost on-screen normal-layer
+  window at least 40 points each way whose app name or bundle id matches
+  (case-insensitive), through
+  ScreenCaptureKit at up to 30 fps for N seconds from its first frame. `.mp4`
+  is H.264 through AVAssetWriter at the window's pixel size (rounded down to
+  even), its session ended at exactly N seconds; `.webp` is an animated WebP at
+  point size, each frame a lossless VP8L bitstream from `image-webp` in an
+  `ANMF` chunk, encoded on a worker thread that drops a frame when four are
+  waiting or one lands within 20ms of the last, and fails past 256 MB of
+  frames. A frame dropped (the writer busy, the queue full) is kept and written
+  at the end unless a later one replaced it, so the clip ends on the window's
+  last state. The file is written to `.<name>.part` beside the target and
+  renamed into place, so a failed run leaves the target as it was. It prints `{"path", "seconds",
+  "width", "height", "frames"}` and logs `record started|finished|failed`; no
+  window, a missing Screen Recording grant (the preflight check, or
+  ScreenCaptureKit's user-declined error; it asks for it once), a bad
+  extension or `--seconds` exit 1 with one stderr line. Codex's rules leave it
+  out, since it writes anywhere.
   `canvas theme light|dark` (`POST /api/theme`, any other value refused)
   publishes a viewer-only `theme-set` event; each viewer calls
   `window.canvasTheme.set`, the same path as a click on the theme button, so
