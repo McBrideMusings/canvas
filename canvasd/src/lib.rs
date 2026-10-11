@@ -77,10 +77,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/events", get(routes::events))
         .route("/api/cards/:id/images/:index", get(routes::get_card_image))
         .route(
-            "/api/cards/:id/reply",
-            post(routes::post_card_reply).get(routes::get_card_reply),
-        )
-        .route(
             "/api/cards/:id/data",
             put(routes::put_card_data).get(routes::get_card_data),
         )

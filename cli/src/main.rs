@@ -1,5 +1,5 @@
 const USAGE: &str =
-    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>] [--always]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>] [--always] | --refresh off] [--focus] | put <id> --refresh off | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas record --window <app> <out.mp4|out.webp> [--seconds N] | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas wait <card_id> [--timeout secs] | canvas replies <card_id> | canvas instructions [--reminders] [--cwd <dir>] [--json] | canvas instructions include on|off [--reminders] | canvas instructions projects | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
+    "usage: canvas hook <session-start|session-end|prompt> [--agent name] | canvas post [file|-] [--format md|text|html] [--update <card_id>] [--focus] | canvas artifact <new [--title t] [--link <dir|file.html>] [--widget <file>] [--refresh <cmd> [--every <secs>] [--always]] [--focus] | put <id> <file|dir> [--widget <file>] [--refresh <cmd> [--every <secs>] [--always] | --refresh off] [--focus] | put <id> --refresh off | relink <id> <dir|file.html> | list | show <id> | delete <id> | log <id> | reset <id> | state <id> [<key>|--clear] | pane [<id> --size WxH|--reset|--full|--exit]> | canvas card <card_id> | canvas export <card_id> [-o file] | canvas export --all [--session <id>] [-o file.zip] | canvas focus <card_id|artifact_id> | canvas snapshot <card_id|artifact_id> <out.png> | canvas record --window <app> <out.mp4|out.webp> [--seconds N] | canvas theme [light|dark] | canvas data <card_id|artifact_id> [file|-] | canvas instructions [--reminders] [--cwd <dir>] [--json] | canvas instructions include on|off [--reminders] | canvas instructions projects | canvas integrations <list [--json] | install <agent> [repo]> | canvas logs --path | canvas daemon [install]";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -249,62 +249,6 @@ fn main() {
             if let Err(e) = canvas::data::run(id, file.map(String::as_str)) {
                 eprintln!("{e}");
                 std::process::exit(1);
-            }
-        }
-        Some("wait") => {
-            // canvas-17z: blocks until the named card's iframe has posted a
-            // reply, or the timeout elapses. See client::wait_for_reply.
-            let card_id = match args.get(2) {
-                Some(id) => id.clone(),
-                None => {
-                    eprintln!("{USAGE}");
-                    std::process::exit(2);
-                }
-            };
-            let timeout_secs = args
-                .iter()
-                .position(|a| a == "--timeout")
-                .and_then(|i| args.get(i + 1))
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(30);
-            match canvas::client::wait_for_reply(
-                &card_id,
-                std::time::Duration::from_secs(timeout_secs),
-            ) {
-                Ok(value) => {
-                    println!("{value}");
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Some("replies") => {
-            // canvas-17z: one non-blocking check, for an agent that's doing
-            // other work and checking back rather than sitting in `wait`.
-            let card_id = match args.get(2) {
-                Some(id) => id.clone(),
-                None => {
-                    eprintln!("{USAGE}");
-                    std::process::exit(2);
-                }
-            };
-            // Exit 1 means "not yet" — keep polling. Exit 3 means canvasd
-            // itself failed, which a caller retrying on exit code alone
-            // needs to tell apart from "no reply yet" or it retries forever
-            // against a daemon that isn't there.
-            match canvas::client::get_reply(&card_id) {
-                Ok(Some(value)) => {
-                    println!("{value}");
-                }
-                Ok(None) => {
-                    std::process::exit(1);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(3);
-                }
             }
         }
         _ => {

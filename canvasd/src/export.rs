@@ -80,14 +80,6 @@ pub fn export_card(
     if let Some(map) = map {
         html.push_str(&format!("<script type=\"importmap\">{map}</script>"));
     }
-    // A post replies to the viewer with parent.postMessage; at the top level
-    // parent is this window, so the reply is stopped here before the page's
-    // own listeners see it.
-    html.push_str(
-        "<script>window.addEventListener('message',function(e){\
-         if(e.source===window&&e.data&&e.data.type==='canvas-reply')e.stopImmediatePropagation();\
-         },true);</script>",
-    );
     html.push_str(
         "<style>:root{color-scheme:light dark;}\
          body{margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}\
@@ -3336,7 +3328,9 @@ mod tests {
             }})
         );
         // Ahead of every script in the page.
-        assert!(r.html.find("importmap").unwrap() < r.html.find("<script>").unwrap());
+        assert!(
+            r.html.find("importmap").unwrap() < r.html.find(r#"<script type="module""#).unwrap()
+        );
     }
 
     #[test]

@@ -3,7 +3,6 @@ Canvas is the document side of this chat. The chat carries the answer in full, e
 - a chart, or a table of numbers that need scanning
 - an image or screenshot, or a before/after side by side
 - a rendered diff, or code with annotations
-- a control the user answers from (see `canvas wait` in the canvas skill)
 
 Volume is not a reason. A file you changed, code over 15 lines, a list of links, an options list, a closing report or test steps posted as Markdown blocks is the chat text in a second place, so it stays in chat. Before you post, name the figure the card adds; if you can't, answer in chat.
 

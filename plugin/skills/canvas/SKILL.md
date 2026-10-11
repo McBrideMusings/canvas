@@ -1,6 +1,6 @@
 ---
 name: canvas
-description: Post a self-contained HTML card to Canvas, the live stream of Claude Code sessions on this Mac, when the answer needs a figure chat can't carry — a diagram of a structure or flow, a chart or table of numbers, an image or before/after, an annotated diff, a control the user answers from. Build it as a document (panels, headings that tell the story, inline SVG), following DOCUMENTS.md. Don't post for volume alone: a changed file, long code, a list of links or a closing report as Markdown blocks stays in chat.
+description: Post a self-contained HTML card to Canvas, the live stream of Claude Code sessions on this Mac, when the answer needs a figure chat can't carry — a diagram of a structure or flow, a chart or table of numbers, an image or before/after, or an annotated diff. Build it as a document (panels, headings that tell the story, inline SVG), following DOCUMENTS.md. Don't post for volume alone: a changed file, long code, a list of links or a closing report as Markdown blocks stays in chat.
 ---
 
 # Canvas
@@ -252,9 +252,7 @@ Posted HTML renders in `<iframe sandbox="allow-scripts">` (no
 `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, and `unpkg.com` — pin a library
 to an exact version from one of those. There is no `connect-src`, so the
 page cannot `fetch()` or open a `WebSocket`; everything it shows has to
-already be in the content you post. The one exception is `canvas-reply`,
-below — the card's script never fetches anything itself; it hands a value up
-to the viewer, which makes the real HTTP call on its behalf.
+already be in the content you post.
 
 ### Interactive pages are artifacts
 
@@ -388,41 +386,12 @@ addEventListener('message', (e) => {
   read directly. The routes behind them are `GET|DELETE
   /api/artifacts/:id/state` and `GET|PUT /api/artifacts/:id/state/:key`.
 
-### Asking a question in a card and waiting for the answer
+### Reading a post the user points at
 
-A card's own script can send one value back to the session that posted it —
-a button's answer, a form's value, anything JSON-serializable — by calling:
-
-```js
-parent.postMessage({ type: 'canvas-reply', value: 'A' }, '*');
-```
-
-The viewer relays it to canvasd, keyed by which card's iframe sent it — never
-by an id the message names, so one card's script cannot write a reply onto
-another card. The value is capped at 4KB and there's one reply per card
-(a second `canvas-reply` overwrites the first); it lives in canvasd's memory
-only, not in `stream.jsonl`, so it doesn't survive a daemon restart.
-
-On the agent side:
-
-```
-canvas wait <card_id> [--timeout secs]   # blocks until a reply lands (default 30s), prints it as JSON
-canvas card <card_id>                    # prints one post as JSON (id, sessionId, at, html, images, targets)
-canvas replies <card_id>                 # one non-blocking check: prints the value and exits 0 if answered
-```
-
-`canvas card` also reads a post the user points at: their "Copy post link" menu item
-produces `canvas-post://<card_id>`, so a pasted link means `canvas card <card_id>` — use the
-`html` field to see what the post renders, and `canvas post --update <card_id>` to fix it.
-
-`canvas replies` exits 1 for "no reply yet" — keep polling — and exits 3 with a message
-on stderr if canvasd itself couldn't be reached, so a script polling on exit code alone
-can tell "not answered" from "the daemon is down" instead of retrying forever.
-
-Use `wait` when the next step genuinely depends on the answer and there's
-nothing else to do meanwhile. Use `replies` when checking in between other
-work — post a card with a question, keep going, and poll `replies` before
-acting on the default the card describes.
+`canvas card <card_id>` prints one post as JSON (id, sessionId, at, html, images,
+targets). The user's "Copy post link" menu item produces `canvas-post://<card_id>`,
+so a pasted link means `canvas card <card_id>` — use the `html` field to see what
+the post renders, and `canvas post --update <card_id>` to fix it.
 
 ### Pushing live data into a card
 

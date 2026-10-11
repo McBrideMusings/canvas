@@ -30,10 +30,6 @@ _Avoid_: turn card, post (for the rendered card)
 HTML, Markdown or plain text an agent sends with `canvas post`. Each post becomes one card.
 _Avoid_: explicit post, surface
 
-**Card reply**:
-The one value a card's own script sends back to the agent: it posts `canvas-reply` to the viewer, which hands it to canvasd under that card. The latest reply wins, up to 4 KB, held in memory only. The agent reads it with `canvas wait` (blocks) or `canvas replies` (checks once).
-_Avoid_: response, callback
-
 **Card data**:
 One JSON value an agent pushes into a running card or artifact with `canvas data`. canvasd keeps the latest, up to 256 KB, in memory only, and the viewer hands it to the page without rebuilding it. An artifact's refresh command produces it on a timer.
 _Avoid_: payload, stream, live update

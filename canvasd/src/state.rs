@@ -140,11 +140,6 @@ pub struct Inner {
     pub sessions: HashMap<String, Session>,
     /// Front = newest.
     pub cards: VecDeque<Card>,
-    /// One reply value per card id (canvas-17z), last write wins. In-memory
-    /// only, like the rest of `Inner` on a restart — a reply is part of a
-    /// live interaction with a running session, not history worth carrying
-    /// across a daemon restart the way a card's own content is.
-    pub replies: HashMap<String, serde_json::Value>,
     /// The latest value `canvas data` pushed into each card, last write wins.
     /// In-memory only: the viewer replays it into a card whose iframe reloads
     /// (an update, a theme change), and the next push after a daemon restart
@@ -192,7 +187,6 @@ impl AppState {
             inner: Arc::new(RwLock::new(Inner {
                 sessions: HashMap::new(),
                 cards: VecDeque::new(),
-                replies: HashMap::new(),
                 data: HashMap::new(),
             })),
             events: tx,
@@ -442,7 +436,6 @@ impl Inner {
 
     /// Drop what is held beside a card that no longer exists.
     fn forget(&mut self, card_id: &str) {
-        self.replies.remove(card_id);
         self.data.remove(card_id);
     }
 

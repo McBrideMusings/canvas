@@ -478,7 +478,7 @@ mod tests {
             "cat <<EOF\ncanvas post\nEOF",
             "echo \"$(date) canvas post\"",
             "canvas postmortem",
-            "canvas wait abc",
+            "canvas data abc",
         ] {
             assert!(!runs_canvas_post(no), "{no}");
         }

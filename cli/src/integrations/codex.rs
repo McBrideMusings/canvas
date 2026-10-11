@@ -38,7 +38,7 @@ const RULES_TEXT: &str = r#"# Written by `canvas integrations install codex`; it
 # Codex's sandbox blocks canvasd's Unix socket and writes to Canvas's data folder, so
 # these subcommands, which touch only those, run outside it.
 prefix_rule(
-    pattern = ["canvas", ["post", "data", "focus", "wait", "replies", "card", "theme", "artifact", "instructions"]],
+    pattern = ["canvas", ["post", "data", "focus", "card", "theme", "artifact", "instructions"]],
     decision = "allow",
     justification = "Canvas reaches canvasd over a Unix socket the sandbox blocks",
     match = ["canvas post plan.html", "canvas artifact put art-0123456789 dir"],

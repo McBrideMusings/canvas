@@ -130,36 +130,6 @@ pub fn update_card(
     handle_card_response(result)
 }
 
-/// `canvas wait`: polls `GET /api/cards/:id/reply` every 250ms until a reply
-/// lands or `timeout` elapses. Blocks the calling agent, so it's for "ask a
-/// question in a card, then wait for the click" — `get_reply` below is the
-/// non-blocking single check for "did they answer yet".
-pub fn wait_for_reply(card_id: &str, timeout: Duration) -> Result<serde_json::Value, String> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match get_reply(card_id)? {
-            Some(value) => return Ok(value),
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(format!("no reply for {card_id} within {timeout:?}"));
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        }
-    }
-}
-
-/// `canvas replies`: one non-blocking check of `GET /api/cards/:id/reply`.
-/// `Ok(None)` means the card hasn't been answered yet — not an error, since
-/// checking back later without blocking is the whole point of this call.
-pub fn get_reply(card_id: &str) -> Result<Option<serde_json::Value>, String> {
-    match call("GET", &format!("/api/cards/{card_id}/reply"), None) {
-        Ok(response) => into_json(response).map(Some),
-        Err(Failure::Status(404)) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 /// `canvas data`: pushes `value` into the named card's running script.
 pub fn push_data(card_id: &str, value: &serde_json::Value) -> Result<(), String> {
     match call("PUT", &format!("/api/cards/{card_id}/data"), Some(value)) {

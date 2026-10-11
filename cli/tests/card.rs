@@ -396,3 +396,44 @@ fn snapshot_with_no_viewer_fails_with_one_line() {
     assert!(stderr.contains("no Canvas viewer"), "{stderr}");
     assert!(!out.exists());
 }
+
+#[test]
+fn data_pushes_a_json_value_to_a_card_and_refuses_bad_input() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+
+    let ok = run(&daemon, &["data", &card_id], Some(b"{\"n\": 3}"));
+    assert!(ok.status.success(), "{:?}", ok);
+    let stored = canvas_core::unix_http::request(
+        &daemon.socket,
+        "GET",
+        &format!("/api/cards/{card_id}/data"),
+        &[],
+        &[],
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&stored.body).unwrap(),
+        serde_json::json!({"n": 3})
+    );
+
+    let bad = run(&daemon, &["data", &card_id], Some(b"not json"));
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("JSON"));
+    let unknown = run(&daemon, &["data", "nope"], Some(b"1"));
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("404"));
+}
+
+#[test]
+fn a_second_daemon_refuses_a_socket_that_answers() {
+    let daemon = spawn_daemon();
+
+    let output = run(&daemon, &["daemon"], None);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already running"));
+    // The first daemon still owns the socket.
+    assert!(std::os::unix::net::UnixStream::connect(&daemon.socket).is_ok());
+}

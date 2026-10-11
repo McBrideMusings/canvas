@@ -274,8 +274,7 @@ beside the terminal all day.
   placeholder, while later files that fit still go in; a video or source
   left out either way loses its src), each `#canvas-open-<n>` anchor becomes a real
   `target="_blank"` link (http/https) or plain text (a local path), and a shim
-  delivers the card's latest `canvas data` value as `canvas-data` and swallows
-  `canvas-reply`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
+  delivers the card's latest `canvas data` value as `canvas-data`. Each `<script src>`, `<link rel="stylesheet">`, `@import`
   and `url()` on the card CSP's hosts (`canvasd/src/cdn.rs`: cdnjs, jsdelivr,
   unpkg, Google Fonts) is downloaded over HTTPS (10s limit, `MAX_ASSET_BYTES`
   cap; each request looks its host up once within that limit, before any connection's
@@ -421,12 +420,6 @@ beside the terminal all day.
   (`Card::touched_at`, which age pruning reads too), so an updated card moves
   to the top; its header reads "posted 40m ago · updated 3m ago", clock times
   in the tooltip.
-  A card can send one value back (canvas-17z): its script posts
-  `{type:'canvas-reply', value}` to the viewer, which relays it to
-  `POST /api/cards/:id/reply` keyed by which iframe sent it, capped at 4KB,
-  last write wins, in memory only. `canvas wait <card_id> [--timeout secs]`
-  blocks until a reply lands (default 30s); `canvas replies <card_id>` is
-  the non-blocking single check.
   `canvas data <card_id> [file|-]` pushes one JSON value (up to 256KB) into a
   running card: `PUT /api/cards/:id/data` keeps the latest (last write wins, in
   memory, dropped with its card) and publishes a `card-data` SSE event, which
@@ -658,7 +651,7 @@ beside the terminal all day.
   `workspace-write`) refuses the socket connect, so install also writes
   `rules/canvas.rules` there, a file Canvas owns whole: a `prefix_rule` that
   runs the subcommands which only talk to canvasd (`post`, `data`, `focus`,
-  `wait`, `replies`, `card`, `theme`, `artifact`, and `instructions`, which
+  `card`, `theme`, `artifact`, and `instructions`, which
   writes the Include flag into Canvas's data folder; not
   `export` or `snapshot`, which write anywhere) outside the sandbox. Codex
   matches it only for a plain `canvas …` command with no pipe or heredoc, which
@@ -698,9 +691,8 @@ beside the terminal all day.
   changes nothing a command prints or how it exits.
 - HTML posts render in `<iframe sandbox="allow-scripts">` (no `allow-same-origin`)
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
-  `connect-src` — a card can still hand one value back via `canvas-reply`
-  (canvas-17z), but only by posting it up to the viewer, never by fetching
-  anything itself. Never set post markup as `innerHTML` in the viewer's own origin.
+  `connect-src`, so a card never fetches anything itself and sends nothing
+  back to canvasd. Never set post markup as `innerHTML` in the viewer's own origin.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
 - canvasd refuses a post or update (400, logged `card refused`) whose HTML would
   freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag
