@@ -225,21 +225,45 @@ fn quote(value: &str) -> String {
 fn append(dir: &Path, name: &str, line: &str, max_bytes: u64) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{name}.log"));
-    if fs::metadata(&path).is_ok_and(|m| m.len() >= max_bytes) {
-        for n in (1..KEEP).rev() {
-            let _ = fs::rename(
-                dir.join(format!("{name}.log.{n}")),
-                dir.join(format!("{name}.log.{}", n + 1)),
-            );
-        }
-        // Another process may have rotated first; the line still goes in.
-        let _ = fs::rename(&path, dir.join(format!("{name}.log.1")));
+    if is_full(&path, max_bytes) {
+        rotate(dir, name, max_bytes);
     }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)?
         .write_all(line.as_bytes())
+}
+
+fn is_full(path: &Path, max_bytes: u64) -> bool {
+    fs::metadata(path).is_ok_and(|m| m.len() >= max_bytes)
+}
+
+/// Shifts `<name>.log` to `<name>.log.1` and each older copy up one, keeping
+/// [`KEEP`]. It runs only under an exclusive lock on `<name>.log.lock` and only
+/// if the file is still full once it holds it, so processes that all saw a
+/// full file rotate it once. The lock is never waited for: a writer that can't
+/// take it at once leaves the rotation to its holder and appends unrotated.
+fn rotate(dir: &Path, name: &str, max_bytes: u64) {
+    let Ok(lock) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("{name}.log.lock")))
+    else {
+        return;
+    };
+    let path = dir.join(format!("{name}.log"));
+    if lock.try_lock().is_err() || !is_full(&path, max_bytes) {
+        return;
+    }
+    for n in (1..KEEP).rev() {
+        let _ = fs::rename(
+            dir.join(format!("{name}.log.{n}")),
+            dir.join(format!("{name}.log.{}", n + 1)),
+        );
+    }
+    let _ = fs::rename(&path, dir.join(format!("{name}.log.1")));
 }
 
 #[cfg(test)]
@@ -273,6 +297,43 @@ mod tests {
         assert_eq!(read("cli.log.1"), "line 4\n");
         assert_eq!(read("cli.log.3"), "line 2\n");
         assert!(!dir.join("cli.log.4").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_writer_that_saw_the_full_file_does_not_rotate_again() {
+        let dir = std::env::temp_dir().join(format!("canvas-log-twice-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cli.log"), "full\n").unwrap();
+        fs::write(dir.join("cli.log.1"), "old\n").unwrap();
+        // Both writers saw the full file; the first rotates, then the second
+        // takes the lock.
+        rotate(&dir, "cli", 5);
+        rotate(&dir, "cli", 5);
+        let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(read("cli.log.1"), "full\n");
+        assert_eq!(read("cli.log.2"), "old\n");
+        assert!(!dir.join("cli.log.3").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_writer_that_finds_the_lock_held_appends_without_waiting() {
+        let dir = std::env::temp_dir().join(format!("canvas-log-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cli.log"), "full\n").unwrap();
+        let held = fs::File::create(dir.join("cli.log.lock")).unwrap();
+        held.lock().unwrap();
+        append(&dir, "cli", "w\n", 5).unwrap();
+        let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(read("cli.log"), "full\nw\n");
+        assert!(!dir.join("cli.log.1").exists());
+        held.unlock().unwrap();
+        append(&dir, "cli", "x\n", 5).unwrap();
+        assert_eq!(read("cli.log.1"), "full\nw\n");
+        assert_eq!(read("cli.log"), "x\n");
         let _ = fs::remove_dir_all(&dir);
     }
 }

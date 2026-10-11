@@ -632,7 +632,10 @@ beside the terminal all day.
 - Logs: `canvas-core/src/log.rs` writes `<UTC time> <process> <LEVEL> <message>
   key=value ...` lines to `daemon.log`, `cli.log` or `app.log` in `logs/` under
   `CANVAS_DATA_DIR` (`canvas logs --path` prints it), rotating a file at 5 MB and
-  keeping three old copies. A process writes nothing until it calls `log::init`, so
+  keeping three old copies. A process rotates only while holding a lock on
+  `<name>.log.lock` and only if the file is still full, so processes that all
+  saw a full file rotate it once; one that finds the lock held appends
+  unrotated rather than wait. A process writes nothing until it calls `log::init`, so
   canvasd's in-process tests never touch the real data dir. canvasd logs every
   request (an axum middleware in `canvasd/src/lib.rs`: method, path, status, ms, and
   the body of a 4xx/5xx as `error`) plus start, reload, store, sweep and refresh
