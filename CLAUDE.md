@@ -446,7 +446,8 @@ beside the terminal all day.
   sizes, mtimes, inodes, in memory) still matches its last stamp; a `put` holds
   its artifact's bursts (`Watcher::hold`) until it has stamped, so its own
   writes never reload twice; `list`,
-  `show <id>` and `delete <id>` (record and folder) round it out, each failing
+  `show <id>` and `delete <id>` (record and folder; a folder that can't be
+  removed puts the record back and answers 500) round it out, each failing
   loudly with canvasd's error text. Every create, put, relink, watched change
   and delete appends a line (`at`, `action`, `sessionId`, `agent`, `pid`) to
   `artifact-log.jsonl` in `CANVAS_DATA_DIR` (`canvasd/src/provenance.rs`); the

@@ -401,6 +401,45 @@ async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
 }
 
 #[tokio::test]
+async fn a_delete_whose_folder_cant_be_removed_fails_and_keeps_the_record() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir();
+    let state = AppState::open(&dir).await;
+    let app = build_router(state.clone());
+    let created = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let folder = PathBuf::from(created["path"].as_str().unwrap());
+    let locked = folder.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("page.html"), "<h1>x</h1>").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/artifacts/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), 500);
+    let text = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&text).starts_with("removing the artifact folder failed: "));
+    let shown: Value =
+        serde_json::from_slice(&send(&app, "GET", &format!("/api/artifacts/{id}"), None).await)
+            .unwrap();
+    assert_eq!(shown["id"], id.as_str());
+    assert!(locked.join("page.html").exists());
+    let saved = std::fs::read_to_string(dir.join("artifacts.json")).unwrap();
+    assert!(saved.contains(&id), "{saved}");
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let deleted = send_as(&app, "DELETE", &format!("/api/artifacts/{id}"), None).await;
+    assert_eq!(deleted["deleted"], id.as_str());
+    assert!(!folder.exists());
+    let app = restart(state, &dir).await;
+    assert_eq!(state_of(&app).await["artifacts"], json!([]));
+}
+
+#[tokio::test]
 async fn artifact_reset_drops_data_and_errors_and_tells_viewers() {
     let dir = temp_dir();
     let state = AppState::open(&dir).await;

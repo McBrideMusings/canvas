@@ -326,8 +326,10 @@ pub async fn put_artifact(
     }
 }
 
-/// `canvas artifact delete`: removes the record, and an owned artifact's
-/// folder. A linked artifact's files belong to the person and stay.
+/// `canvas artifact delete`: removes the record, then an owned artifact's
+/// folder. A folder that can't be removed puts the record back and fails the
+/// delete, so nothing is left on disk that no record names. A linked
+/// artifact's files belong to the person and stay.
 pub async fn delete_artifact(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -341,22 +343,30 @@ pub async fn delete_artifact(
         artifacts.records.insert(id.clone(), record);
         return failed("saving artifacts.json failed", &id, &e);
     }
-    state.watcher.unwatch(&id).await;
-    artifacts.forget(&id);
     let owned_folder = match record.source {
         ArtifactSource::Owned => artifacts.folder(&id),
         ArtifactSource::Linked { .. } => None,
     };
+    // The hold keeps the removal's writes in one burst until the delete has
+    // answered, so a removal that fails partway stamps the restored record
+    // once rather than finding no record mid-burst.
+    let _hold = state.watcher.hold(&id);
     if let Some(folder) = owned_folder {
         if let Err(e) = tokio::fs::remove_dir_all(&folder).await {
             if e.kind() != std::io::ErrorKind::NotFound {
-                canvas_core::log::warn(
-                    "artifact folder not removed",
-                    &[("id", &id), ("error", &e)],
-                );
+                artifacts.records.insert(id.clone(), record);
+                if let Err(save) = artifacts.save().await {
+                    canvas_core::log::error(
+                        "saving artifacts.json failed",
+                        &[("id", &id), ("error", &save)],
+                    );
+                }
+                return failed("removing the artifact folder failed", &id, &e);
             }
         }
     }
+    state.watcher.unwatch(&id).await;
+    artifacts.forget(&id);
     artifacts.log_action(&id, Action::Delete, &actor).await;
     state.publish(CanvasEvent::ArtifactRemoved(id.clone()));
     canvas_core::log::info("artifact deleted", &[("id", &id)]);
