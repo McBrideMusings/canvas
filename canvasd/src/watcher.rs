@@ -36,14 +36,20 @@ pub const RETRY_EVERY: Duration = Duration::from_secs(1);
 
 /// The paths being watched, by artifact id. Until [`spawn_artifact_watcher`]
 /// starts the OS watcher, `watch` only records the path.
+///
+/// Starting an FSEvents stream can block for seconds on a busy machine, so
+/// the OS watcher sits in its own mutex, taken before `inner` and held only by
+/// the calls that change what the OS watches; those run on the blocking pool.
+/// `inner` is never held across an OS call, so [`Watcher::owners`] and the
+/// hold checks never wait behind one.
 #[derive(Default)]
 pub struct Watcher {
+    os: std::sync::Mutex<Option<notify::RecommendedWatcher>>,
     inner: std::sync::Mutex<Inner>,
 }
 
 #[derive(Default)]
 struct Inner {
-    os: Option<notify::RecommendedWatcher>,
     /// Canonical paths, since the OS reports events under those. Two ids may
     /// hold the same path; the OS watch stays until neither does.
     paths: HashMap<String, PathBuf>,
@@ -55,34 +61,7 @@ struct Inner {
     failed: HashMap<String, String>,
 }
 
-impl Inner {
-    /// Stops the OS watch on `path` unless another artifact still holds it.
-    fn release(&mut self, path: &Path) {
-        if self.paths.values().any(|p| p == path) {
-            return;
-        }
-        if let Some(os) = self.os.as_mut() {
-            let _ = os.unwatch(path);
-        }
-    }
-
-    /// Asks the OS to watch `path` for `id`, recording a failure for retry.
-    fn watch_os(&mut self, id: &str, path: &Path) {
-        let Some(os) = self.os.as_mut() else { return };
-        match os.watch(path, RecursiveMode::Recursive) {
-            Ok(()) => {
-                self.failed.remove(id);
-            }
-            Err(e) => {
-                canvas_core::log::warn(
-                    "artifact folder not watched",
-                    &[("id", &id), ("path", &path.display()), ("error", &e)],
-                );
-                self.failed.insert(id.to_string(), e.to_string());
-            }
-        }
-    }
-}
+type OsGuard<'a> = std::sync::MutexGuard<'a, Option<notify::RecommendedWatcher>>;
 
 /// While alive, the artifact's bursts don't end; see [`Watcher::hold`].
 pub struct Hold {
@@ -107,76 +86,153 @@ impl Watcher {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn lock_os(&self) -> OsGuard<'_> {
+        self.os.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Watches `path` recursively on behalf of artifact `id`, replacing any
     /// path `id` had. A path the OS can't watch yet is retried every
     /// [`RETRY_EVERY`].
-    pub fn watch(&self, id: &str, path: &Path) {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let mut inner = self.lock();
-        let old = inner.paths.insert(id.to_string(), path.clone());
-        if old.as_ref() == Some(&path) && !inner.failed.contains_key(id) {
-            return;
+    pub async fn watch(self: &Arc<Self>, id: &str, path: &Path) {
+        let (this, id, path) = (Arc::clone(self), id.to_string(), path.to_path_buf());
+        let task = tokio::task::spawn_blocking(move || this.watch_blocking(&id, &path));
+        if let Err(e) = task.await {
+            canvas_core::log::error("artifact folder watch failed", &[("error", &e)]);
         }
-        inner.watch_os(id, &path);
+    }
+
+    fn watch_blocking(&self, id: &str, path: &Path) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut os = self.lock_os();
+        let old = {
+            let mut inner = self.lock();
+            let old = inner.paths.insert(id.to_string(), path.clone());
+            if old.as_ref() == Some(&path) && !inner.failed.contains_key(id) {
+                return;
+            }
+            old
+        };
+        self.watch_os(&mut os, id, &path);
         if let Some(old) = old {
-            inner.release(&old);
+            self.release(&mut os, &old);
         }
     }
 
     /// Stops watching artifact `id`'s path.
-    pub fn unwatch(&self, id: &str) {
+    pub async fn unwatch(self: &Arc<Self>, id: &str) {
+        let (this, id) = (Arc::clone(self), id.to_string());
+        let task = tokio::task::spawn_blocking(move || this.unwatch_blocking(&id));
+        if let Err(e) = task.await {
+            canvas_core::log::error("artifact folder unwatch failed", &[("error", &e)]);
+        }
+    }
+
+    fn unwatch_blocking(&self, id: &str) {
+        let mut os = self.lock_os();
+        let path = {
+            let mut inner = self.lock();
+            inner.failed.remove(id);
+            inner.paths.remove(id)
+        };
+        if let Some(path) = path {
+            self.release(&mut os, &path);
+        }
+    }
+
+    /// Stops the OS watch on `path` unless another artifact still holds it.
+    fn release(&self, os: &mut OsGuard<'_>, path: &Path) {
+        if self.lock().paths.values().any(|p| p == path) {
+            return;
+        }
+        if let Some(os) = os.as_mut() {
+            let _ = os.unwatch(path);
+        }
+    }
+
+    /// Asks the OS to watch `path` for `id`, recording a failure for retry.
+    fn watch_os(&self, os: &mut OsGuard<'_>, id: &str, path: &Path) {
+        let Some(os) = os.as_mut() else { return };
+        let result = os.watch(path, RecursiveMode::Recursive);
         let mut inner = self.lock();
-        inner.failed.remove(id);
-        if let Some(path) = inner.paths.remove(id) {
-            inner.release(&path);
+        match result {
+            Ok(()) => {
+                inner.failed.remove(id);
+            }
+            Err(e) => {
+                canvas_core::log::warn(
+                    "artifact folder not watched",
+                    &[("id", &id), ("path", &path.display()), ("error", &e)],
+                );
+                inner.failed.insert(id.to_string(), e.to_string());
+            }
         }
     }
 
     /// Tries again to watch every path whose OS watch failed, and returns the
     /// ids now watched. A path still missing is skipped without asking the OS.
+    /// The OS lock is taken per path, so a `watch` or `unwatch` waits behind
+    /// at most one FSEvents start.
     fn retry_failed(&self) -> Vec<String> {
-        let mut inner = self.lock();
-        let inner = &mut *inner;
-        let Some(os) = inner.os.as_mut() else {
-            return Vec::new();
+        let due: Vec<(String, PathBuf)> = {
+            let inner = self.lock();
+            inner
+                .failed
+                .keys()
+                .filter_map(|id| Some((id.clone(), inner.paths.get(id)?.clone())))
+                .collect()
         };
         let mut watched = Vec::new();
-        for (id, last_error) in inner.failed.iter_mut() {
-            let Some(path) = inner.paths.get_mut(id) else {
-                continue;
-            };
-            // Recorded uncanonicalized while missing; the OS reports events
-            // under the canonical path, which `owners` matches against.
+        for (id, path) in due {
+            // Paths are recorded uncanonicalized while missing; the OS reports
+            // events under the canonical path, which `owners` matches against.
             let Ok(canonical) = path.canonicalize() else {
                 continue;
             };
-            match os.watch(&canonical, RecursiveMode::Recursive) {
+            let mut os = self.lock_os();
+            let Some(os) = os.as_mut() else {
+                return watched;
+            };
+            // Only calls holding `os` change `paths` and `failed`: check that
+            // a `watch` or `unwatch` since the list was read left `id` as is.
+            {
+                let inner = self.lock();
+                if !inner.failed.contains_key(&id) || inner.paths.get(&id) != Some(&path) {
+                    continue;
+                }
+            }
+            let started = std::time::Instant::now();
+            let result = os.watch(&canonical, RecursiveMode::Recursive);
+            let ms = started.elapsed().as_millis();
+            let mut inner = self.lock();
+            match result {
                 Ok(()) => {
                     canvas_core::log::info(
                         "artifact folder watched on retry",
-                        &[("id", id), ("path", &canonical.display())],
+                        &[("id", &id), ("path", &canonical.display()), ("ms", &ms)],
                     );
-                    *path = canonical;
-                    watched.push(id.clone());
+                    inner.failed.remove(&id);
+                    inner.paths.insert(id.clone(), canonical);
+                    watched.push(id);
                 }
                 Err(e) => {
                     let error = e.to_string();
+                    let Some(last_error) = inner.failed.get_mut(&id) else {
+                        continue;
+                    };
                     if *last_error != error {
                         canvas_core::log::warn(
                             "artifact folder retry failed",
                             &[
-                                ("id", id),
-                                ("path", &canonical.display()),
+                                ("id", &id),
+                                ("path", &path.display()),
                                 ("error", &error),
+                                ("ms", &ms),
                             ],
                         );
                         *last_error = error;
                     }
                 }
             }
-        }
-        for id in &watched {
-            inner.failed.remove(id);
         }
         watched
     }
@@ -232,23 +288,27 @@ impl Watcher {
     /// Hands the watcher the OS watcher and watches every path recorded so
     /// far, returning how many the OS took (the rest are retried).
     fn start(&self, os: notify::RecommendedWatcher) -> usize {
-        let mut inner = self.lock();
-        inner.os = Some(os);
-        let paths: Vec<(String, PathBuf)> = inner
+        let mut guard = self.lock_os();
+        *guard = Some(os);
+        let paths: Vec<(String, PathBuf)> = self
+            .lock()
             .paths
             .iter()
             .map(|(id, path)| (id.clone(), path.clone()))
             .collect();
         for (id, path) in &paths {
-            inner.watch_os(id, path);
+            self.watch_os(&mut guard, id, path);
         }
-        paths.len() - inner.failed.len()
+        paths.len() - self.lock().failed.len()
     }
 }
 
 /// Starts watching every artifact's folder, and every folder `watch`ed from
 /// here on, and runs the loop that turns each burst of writes into one reload.
-pub fn spawn_artifact_watcher(state: AppState) {
+/// The receiver gets how many paths the OS took once the OS watcher has
+/// started; it closes empty when the OS watcher can't be created.
+pub fn spawn_artifact_watcher(state: AppState) -> tokio::sync::oneshot::Receiver<usize> {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
     let os = notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
         Ok(event) if !matches!(event.kind, EventKind::Access(_)) => {
@@ -263,7 +323,7 @@ pub fn spawn_artifact_watcher(state: AppState) {
         Ok(os) => os,
         Err(e) => {
             canvas_core::log::error("artifact watcher not started", &[("error", &e)]);
-            return;
+            return started_rx;
         }
     };
     tokio::spawn(async move {
@@ -271,18 +331,25 @@ pub fn spawn_artifact_watcher(state: AppState) {
             let artifacts = state.artifacts.read().await;
             for (id, record) in &artifacts.records {
                 if let Some(root) = artifacts.source_path(record) {
-                    state.watcher.watch(id, &root);
+                    state.watcher.watch(id, &root).await;
                 }
             }
         }
-        let watched = state.watcher.start(os);
+        let watcher = Arc::clone(&state.watcher);
+        let Ok(watched) = tokio::task::spawn_blocking(move || watcher.start(os)).await else {
+            canvas_core::log::error(
+                "artifact watcher not started",
+                &[("error", &"start panicked")],
+            );
+            return;
+        };
         canvas_core::log::info("artifact watcher started", &[("watched", &watched)]);
+        let _ = started_tx.send(watched);
+        let mut retried = spawn_retry(Arc::clone(&state.watcher));
 
         // Per artifact: the burst's first write, its latest, how many, and
         // the paths written, relative to the artifact's.
         let mut pending: HashMap<String, Burst> = HashMap::new();
-        let mut retry = tokio::time::interval(RETRY_EVERY);
-        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let due = pending
                 .values()
@@ -307,14 +374,11 @@ pub fn spawn_artifact_watcher(state: AppState) {
                         }
                     }
                 }
-                _ = retry.tick() => {
+                Some(id) = retried.recv() => {
                     // A burst with no writes: what changed before the watch
                     // began is in the fingerprint, so it stamps once if
                     // anything did, and waits out a hold like any burst.
-                    let now = Instant::now();
-                    for id in state.watcher.retry_failed() {
-                        pending.entry(id).or_insert_with(|| Burst::new(now));
-                    }
+                    pending.entry(id).or_insert_with(|| Burst::new(Instant::now()));
                 }
                 () = wait => {
                     let now = Instant::now();
@@ -340,6 +404,32 @@ pub fn spawn_artifact_watcher(state: AppState) {
             }
         }
     });
+    started_rx
+}
+
+/// Retries every failed OS watch each [`RETRY_EVERY`] on the blocking pool,
+/// apart from the burst loop, which keeps gathering writes while a slow
+/// FSEvents start runs, and sends it each id the OS now watches.
+fn spawn_retry(watcher: Arc<Watcher>) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut retry = tokio::time::interval(RETRY_EVERY);
+        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        while !tx.is_closed() {
+            retry.tick().await;
+            if watcher.lock().failed.is_empty() {
+                continue;
+            }
+            let watcher = Arc::clone(&watcher);
+            let Ok(ids) = tokio::task::spawn_blocking(move || watcher.retry_failed()).await else {
+                continue;
+            };
+            for id in ids {
+                let _ = tx.send(id);
+            }
+        }
+    });
+    rx
 }
 
 /// Whether a path a burst saw names one of the page's files, rather than a

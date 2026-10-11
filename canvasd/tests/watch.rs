@@ -33,7 +33,9 @@ async fn send(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) 
 /// the OS watcher to start reporting.
 async fn watched_artifact() -> (AppState, axum::Router, String, PathBuf) {
     let state = AppState::open(&temp_dir()).await;
-    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    canvasd::watcher::spawn_artifact_watcher(state.clone())
+        .await
+        .expect("watcher started");
     let app = build_router(state.clone());
     let created = send(&app, "POST", "/api/artifacts", Some(json!({}))).await;
     let id = created["id"].as_str().unwrap().to_string();
@@ -165,7 +167,9 @@ async fn artifacts_on_disk_are_watched_after_a_restart() {
     let id = created["id"].as_str().unwrap();
     let folder = PathBuf::from(created["path"].as_str().unwrap());
     let state = AppState::open(&dir).await;
-    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    canvasd::watcher::spawn_artifact_watcher(state.clone())
+        .await
+        .expect("watcher started");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let mut rx = state.events.subscribe();
 
@@ -216,7 +220,9 @@ async fn a_put_reloads_the_artifact_once() {
 /// A daemon with the watcher running and one artifact linked to `link`.
 async fn linked_artifact(link: &std::path::Path) -> (AppState, axum::Router, String) {
     let state = AppState::open(&temp_dir()).await;
-    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    canvasd::watcher::spawn_artifact_watcher(state.clone())
+        .await
+        .expect("watcher started");
     let app = build_router(state.clone());
     let created = send(
         &app,
@@ -246,6 +252,23 @@ async fn views_for(
         }
     }
     seen
+}
+
+/// The first view published for `id` within `window`.
+async fn first_view(
+    rx: &mut tokio::sync::broadcast::Receiver<CanvasEvent>,
+    id: &str,
+    window: Duration,
+) -> Option<canvas_core::ArtifactView> {
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        if let CanvasEvent::ArtifactUpserted(view) = event {
+            if view.artifact.id == id {
+                return Some(*view);
+            }
+        }
+    }
+    None
 }
 
 #[tokio::test]
@@ -369,14 +392,18 @@ async fn a_linked_folder_missing_at_start_is_watched_once_it_returns() {
     };
     std::fs::rename(&web, parent.join("web-moved")).unwrap();
     let state = AppState::open(&dir).await;
-    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    canvasd::watcher::spawn_artifact_watcher(state.clone())
+        .await
+        .expect("watcher started");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let mut rx = state.events.subscribe();
 
     std::fs::rename(parent.join("web-moved"), &web).unwrap();
-    let back = views_for(&mut rx, &id, Duration::from_secs(3)).await;
-    assert_eq!(back.len(), 1, "got {} views", back.len());
-    assert!(!back[0].source_missing);
+    // Starting the FSEvents stream took up to 7s on a loaded machine.
+    let back = first_view(&mut rx, &id, Duration::from_secs(10)).await;
+    assert!(!back.expect("no view within 10s").source_missing);
+    let more = views_for(&mut rx, &id, Duration::from_secs(1)).await;
+    assert!(more.is_empty(), "got {} more views", more.len());
 
     std::fs::write(web.join("index.html"), "<h1>watched</h1>").unwrap();
     let seen = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;

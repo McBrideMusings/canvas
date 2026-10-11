@@ -126,7 +126,7 @@ pub async fn new_artifact(
             artifacts
                 .fingerprints
                 .insert(id.clone(), artifacts::fingerprint(&root));
-            state.watcher.watch(&id, &root);
+            state.watcher.watch(&id, &root).await;
             artifacts.log_action(&id, Action::Create, &actor).await;
             canvas_core::log::info(
                 "artifact created",
@@ -177,7 +177,7 @@ pub async fn relink_artifact(
     let was_print = artifacts.fingerprints.insert(id.clone(), print);
     match save_and_publish(&state, &artifacts, &id, None).await {
         Ok(view) => {
-            state.watcher.watch(&id, &root);
+            state.watcher.watch(&id, &root).await;
             artifacts.log_action(&id, Action::Relink, &actor).await;
             canvas_core::log::info(
                 "artifact relinked",
@@ -341,7 +341,7 @@ pub async fn delete_artifact(
         artifacts.records.insert(id.clone(), record);
         return failed("saving artifacts.json failed", &id, &e);
     }
-    state.watcher.unwatch(&id);
+    state.watcher.unwatch(&id).await;
     artifacts.forget(&id);
     let owned_folder = match record.source {
         ArtifactSource::Owned => artifacts.folder(&id),

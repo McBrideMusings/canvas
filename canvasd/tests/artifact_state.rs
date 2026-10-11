@@ -340,7 +340,9 @@ fn only_events_for(rx: &mut tokio::sync::broadcast::Receiver<CanvasEvent>, id: &
 #[tokio::test]
 async fn a_state_write_fires_no_artifact_event_owned_or_linked() {
     let state = AppState::open(&temp_dir()).await;
-    canvasd::watcher::spawn_artifact_watcher(state.clone());
+    canvasd::watcher::spawn_artifact_watcher(state.clone())
+        .await
+        .expect("watcher started");
     let app = build_router(state.clone());
     let linked_dir = temp_dir();
     std::fs::write(linked_dir.join("index.html"), "<p>x</p>").unwrap();
