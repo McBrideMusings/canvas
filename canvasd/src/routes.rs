@@ -434,8 +434,8 @@ impl Drop for Waiting<'_> {
 /// `canvas snapshot`: asks the open viewers to capture the card as rendered
 /// and answers the first PNG one sends back to `deliver_snapshot`, with
 /// `x-canvas-clipped: true` when the card ran past the window. 409 when no
-/// viewer is open, 422 with the viewer's reason when it could not capture the
-/// card (filtered out, its session hidden), 504 when no viewer answered in time.
+/// viewer is open, 422 with a viewer's reason when every viewer refused
+/// (filtered out, its session hidden), 504 when they didn't answer in time.
 pub async fn snapshot_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if !state.inner.read().await.cards.iter().any(|c| c.id == id) {
         return StatusCode::NOT_FOUND.into_response();
@@ -459,12 +459,14 @@ impl Snapshotted {
     }
 }
 
-/// Publishes the capture request and waits for the first viewer's answer,
-/// for `snapshot_card` and `snapshot_artifact` alike: the PNG, 409 when no
-/// viewer is open, 422 with the viewer's reason, 504 when none answered.
+/// Publishes the capture request and waits for the viewers' answers, for
+/// `snapshot_card` and `snapshot_artifact` alike: the first PNG any viewer
+/// sends, 409 when no viewer is open, 422 with the first reason once every
+/// viewer that received the request refused (or, at the timeout, once any
+/// had), 504 when none answered in time.
 pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Response {
     let request = Uuid::new_v4().to_string();
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     state.snapshots.lock().unwrap().insert(request.clone(), tx);
     let _waiting = Waiting {
         state,
@@ -493,8 +495,16 @@ pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Respon
         )
             .into_response();
     }
-    match tokio::time::timeout(SNAPSHOT_TIMEOUT, rx).await {
-        Ok(Ok(SnapshotReply::Png { png, clipped })) => {
+    let mut refusals = Vec::new();
+    let answer = tokio::time::timeout(
+        SNAPSHOT_TIMEOUT,
+        first_png(&mut rx, viewers, &mut refusals, noun, &id, &request),
+    )
+    .await;
+    // Answered: a later reply's send fails, so `deliver_snapshot` 404s it.
+    rx.close();
+    match (answer, refusals.first()) {
+        (Ok(Some((png, clipped))), _) => {
             canvas_core::log::info(
                 "snapshot captured",
                 &[
@@ -512,12 +522,20 @@ pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Respon
             }
             response
         }
-        Ok(Ok(SnapshotReply::Failed(reason))) => {
+        // Every viewer refused, or the rest never answered: the first reason
+        // says more than a timeout would.
+        (_, Some(reason)) => {
             canvas_core::log::info(
                 "snapshot refused",
-                &[(noun, &id), ("request", &request), ("reason", &reason)],
+                &[
+                    (noun, &id),
+                    ("request", &request),
+                    ("reason", reason),
+                    ("refusals", &refusals.len()),
+                    ("viewers", &viewers),
+                ],
             );
-            (StatusCode::UNPROCESSABLE_ENTITY, reason).into_response()
+            (StatusCode::UNPROCESSABLE_ENTITY, reason.clone()).into_response()
         }
         _ => {
             canvas_core::log::warn("snapshot timed out", &[(noun, &id), ("request", &request)]);
@@ -533,10 +551,44 @@ pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Respon
     }
 }
 
+/// Reads viewers' replies until one sends a PNG, returned with whether it
+/// was clipped, or all `viewers` refused (`None`). Each refusal's reason is
+/// pushed onto `refusals`, so a timeout still has them.
+async fn first_png(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<SnapshotReply>,
+    viewers: usize,
+    refusals: &mut Vec<String>,
+    noun: &str,
+    id: &str,
+    request: &str,
+) -> Option<(Vec<u8>, bool)> {
+    while let Some(reply) = rx.recv().await {
+        let reason = match reply {
+            SnapshotReply::Png { png, clipped } => return Some((png, clipped)),
+            SnapshotReply::Failed(reason) => reason,
+        };
+        canvas_core::log::info(
+            "snapshot viewer refused",
+            &[
+                (noun, &id),
+                ("request", &request),
+                ("reason", &reason),
+                ("refusals", &(refusals.len() + 1)),
+                ("viewers", &viewers),
+            ],
+        );
+        refusals.push(reason);
+        if refusals.len() >= viewers {
+            break;
+        }
+    }
+    None
+}
+
 /// A viewer's answer to a `card-snapshot` event: an `image/png` body (with
 /// `x-canvas-clipped: true` when the card ran past the window), or
 /// `{"error": "..."}` saying why it could not capture the card. 404 when no
-/// request with that id is waiting (it timed out, or another viewer answered).
+/// request with that id is waiting (it timed out, or was already answered).
 pub async fn deliver_snapshot(
     State(state): State<AppState>,
     Path(request): Path<String>,
@@ -560,11 +612,17 @@ pub async fn deliver_snapshot(
             .unwrap_or_else(|| "the viewer could not capture the card".to_string());
         SnapshotReply::Failed(reason)
     };
-    let Some(tx) = state.snapshots.lock().unwrap().remove(&request) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let _ = tx.send(reply);
-    StatusCode::NO_CONTENT.into_response()
+    let sent = state
+        .snapshots
+        .lock()
+        .unwrap()
+        .get(&request)
+        .is_some_and(|tx| tx.send(reply).is_ok());
+    if sent {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 /// The latest value `put_card_data` stored for this card; 404 until one has.

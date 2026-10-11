@@ -1613,6 +1613,115 @@ async fn snapshot_relays_the_reason_a_viewer_could_not_capture() {
 }
 
 #[tokio::test]
+async fn snapshot_takes_a_png_from_one_viewer_over_another_viewers_refusal() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut refusing = response.into_body().into_data_stream();
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut capturing = response.into_body().into_data_stream();
+
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let reason = json!({"error": "the card's session is hidden"});
+    answer_snapshot(
+        &app,
+        &mut refusing,
+        "application/json",
+        reason.to_string().into_bytes(),
+    )
+    .await;
+    let png = b"\x89PNG\r\n\x1a\nsecond".to_vec();
+    let data = answer_snapshot(&app, &mut capturing, "image/png", png.clone()).await;
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.to_vec(), png);
+
+    let late = post(
+        &format!("/api/snapshots/{}", data["request"].as_str().unwrap()),
+        json!({"error": "late"}),
+    );
+    assert_eq!(
+        app.clone().oneshot(late).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn snapshot_refuses_only_once_every_viewer_refused() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut first = response.into_body().into_data_stream();
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut second = response.into_body().into_data_stream();
+
+    let mut waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let hidden = json!({"error": "the card's session is hidden"});
+    answer_snapshot(
+        &app,
+        &mut first,
+        "application/json",
+        hidden.to_string().into_bytes(),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut waiting)
+            .await
+            .is_err(),
+        "one refusal of two answered the snapshot"
+    );
+    let filtered = json!({"error": "the card is hidden by the search"});
+    answer_snapshot(
+        &app,
+        &mut second,
+        "application/json",
+        filtered.to_string().into_bytes(),
+    )
+    .await;
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"the card's session is hidden");
+}
+
+#[tokio::test(start_paused = true)]
+async fn snapshot_answers_a_refusal_when_the_other_viewer_never_answers() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut refusing = response.into_body().into_data_stream();
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let _silent = response.into_body().into_data_stream();
+
+    let waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let reason = json!({"error": "the card's session is hidden"});
+    answer_snapshot(
+        &app,
+        &mut refusing,
+        "application/json",
+        reason.to_string().into_bytes(),
+    )
+    .await;
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"the card's session is hidden");
+}
+
+#[tokio::test]
 async fn snapshot_with_no_viewer_is_409() {
     let app = app();
     let card = seed_card(&app, "s1", "/tmp/proj").await;

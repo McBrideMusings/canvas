@@ -379,8 +379,10 @@ beside the terminal all day.
   hidden, filtered by the search). `app/src-tauri/src/snapshot.rs` captures the
   rect with WKWebView's `takeSnapshot` and posts the PNG (`x-canvas-clipped:
   true` for a card taller than the window), or the reason as `{"error"}`, to
-  `POST /api/snapshots/:request`, which answers the first reply and 404s any
-  later one. No viewer is a 409, a reason a 422, no answer a 504; the CLI
+  `POST /api/snapshots/:request`. canvasd answers the first PNG any viewer
+  sends, or the first reason once every viewer the request reached (the
+  count `publish` returned) has refused, or at the timeout once any has, and
+  404s a reply once the request is answered. No viewer is a 409, a reason a 422, no answer a 504; the CLI
   prints canvasd's one line and exits 1. A clipped capture exits 0 with a
   stderr note.
   `canvas record --window <app> <out.mp4|out.webp> [--seconds N]`

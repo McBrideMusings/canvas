@@ -194,9 +194,10 @@ pub struct AppState {
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// The artifact folders being watched; see [`crate::watcher`].
     pub watcher: Arc<crate::watcher::Watcher>,
-    /// Snapshot requests waiting for a viewer's answer, by request id.
+    /// Snapshot requests waiting for viewers' answers, by request id; each
+    /// reply goes down the request's channel until the request is answered.
     pub(crate) snapshots:
-        Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<SnapshotReply>>>>,
+        Arc<std::sync::Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<SnapshotReply>>>>,
     /// The theme a viewer last reported showing and where it comes from
     /// (`PUT /api/theme`), in memory only; `None` until a viewer reports one.
     pub(crate) viewer_theme: Arc<std::sync::Mutex<Option<(Theme, ThemeSource)>>>,
