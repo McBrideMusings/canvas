@@ -63,7 +63,10 @@ beside the terminal all day.
   proxying each request to canvasd's Unix socket (a request that can't reach it
   gets a 503 carrying `app/dist/index.html`, a page that reloads itself, so a
   not-yet-started or restarting daemon never leaves the window on a dead error
-  page). A custom scheme response is one whole body, so it can't carry SSE:
+  page). It forwards a request's `Range` and passes back canvasd's status and
+  `Accept-Ranges`/`Content-Range`, so a video reads canvasd's 206 slices (at
+  most 8 MB each) instead of the whole file on every loop. A custom scheme
+  response is one whole body, so it can't carry SSE:
   `bridge::forward_events` holds the one `/api/events` stream and re-emits it
   as `canvas-event` and `canvas-stream` Tauri events, which the viewer listens
   for. Tauri counts a custom scheme as a local URL, so

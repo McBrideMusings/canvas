@@ -22,9 +22,19 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_TIMEOUT: Duration = Duration::from_secs(45);
 
 // Headers canvasd sets that must reach the webview: an artifact file's CSP
-// (its `connect-src 'none'` and `sandbox`) and the CORS header its module
-// scripts need in the pane's opaque origin.
-const PASSED_HEADERS: &[&str] = &["content-security-policy", "access-control-allow-origin"];
+// (its `connect-src 'none'` and `sandbox`), the CORS header its module
+// scripts need in the pane's opaque origin, and a media file's range headers,
+// so a video reads the bounded 206 slices canvasd serves rather than the
+// whole file on every loop. wry sets Content-Length from the body.
+const PASSED_HEADERS: &[&str] = &[
+    "content-security-policy",
+    "access-control-allow-origin",
+    "accept-ranges",
+    "content-range",
+];
+
+// Request headers the webview sends that canvasd reads.
+const FORWARDED_HEADERS: &[&str] = &["content-type", "range"];
 
 fn reply(status: u16, content_type: &str, body: Vec<u8>) -> Response<Vec<u8>> {
     reply_with(status, content_type, &[], body)
@@ -73,13 +83,7 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
         canvas_core::log::error("bridge: no HOME to place the socket", &[]);
         return reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec());
     };
-    let content_type = request
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok());
-    let headers: Vec<(&str, &str)> = content_type
-        .map(|ct| vec![("Content-Type", ct)])
-        .unwrap_or_default();
+    let headers = forwarded_headers(request.headers());
     match canvas_core::unix_http::request(
         &socket,
         method,
@@ -105,6 +109,13 @@ pub fn proxy(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
             reply(503, "text/html", WAITING_PAGE.as_bytes().to_vec())
         }
     }
+}
+
+fn forwarded_headers(headers: &tauri::http::HeaderMap) -> Vec<(&'static str, &str)> {
+    FORWARDED_HEADERS
+        .iter()
+        .filter_map(|&name| Some((name, headers.get(name)?.to_str().ok()?)))
+        .collect()
 }
 
 /// Runs forever on its own thread: connects to `/api/events`, emits a
@@ -166,5 +177,34 @@ fn read_events(app: &AppHandle, reader: impl BufRead) {
             }
             data.push_str(chunk.strip_prefix(' ').unwrap_or(chunk));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_range_request_reaches_canvasd_and_its_range_headers_come_back() {
+        let request = Request::builder()
+            .header("Range", "bytes=0-")
+            .header("Accept", "*/*")
+            .body(Vec::<u8>::new())
+            .unwrap();
+        assert_eq!(
+            forwarded_headers(request.headers()),
+            vec![("range", "bytes=0-")]
+        );
+
+        let canvasd = [
+            ("accept-ranges".to_string(), "bytes".to_string()),
+            ("content-range".to_string(), "bytes 0-99/1000".to_string()),
+            ("x-other".to_string(), "dropped".to_string()),
+        ];
+        let response = reply_with(206, "video/mp4", &canvasd, vec![0; 100]);
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.headers()["content-range"], "bytes 0-99/1000");
+        assert_eq!(response.headers()["accept-ranges"], "bytes");
+        assert!(response.headers().get("x-other").is_none());
     }
 }
