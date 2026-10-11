@@ -1383,6 +1383,17 @@ body[data-page="artifacts"] .main-col {
   flex: 1;
 }
 
+/* The open artifact's refresh: its rule, "Refreshing…" or "Refresh
+   stopped", and the age of the value shown. */
+.artifact-refresh {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #artifact-more[aria-expanded="true"] {
   background: var(--hover);
 }

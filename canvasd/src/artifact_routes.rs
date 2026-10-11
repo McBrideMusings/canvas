@@ -37,7 +37,13 @@ fn bad_request(message: String) -> Response {
 /// The refresh a log line names: its interval, directory and command.
 fn refresh_text(view: &canvas_core::ArtifactView) -> String {
     match &view.artifact.refresh {
-        Some(r) => format!("every {}s in {}: {}", r.every_secs, r.cwd, r.command),
+        Some(r) => format!(
+            "every {}s{} in {}: {}",
+            r.every_secs,
+            if r.always { " always" } else { "" },
+            r.cwd,
+            r.command
+        ),
         None => "none".to_string(),
     }
 }
@@ -102,7 +108,7 @@ pub async fn new_artifact(
         return no_data_dir();
     }
     let mut record = artifacts.new_record(title, source);
-    if let Err(message) = artifacts::apply_extras(&mut record, extras, actor.pid) {
+    if let Err(message) = artifacts::apply_extras(&mut record, extras) {
         return bad_request(message);
     }
     let Some(root) = artifacts.source_path(&record) else {
@@ -232,7 +238,7 @@ pub async fn put_artifact(
         let mut checked = record.clone();
         let widget_given = req.extras.widget_html.is_some();
         let refresh_given = req.extras.refresh.is_some();
-        if let Err(message) = artifacts::apply_extras(&mut checked, req.extras, actor.pid) {
+        if let Err(message) = artifacts::apply_extras(&mut checked, req.extras) {
             return bad_request(message);
         }
         match artifacts.folder(&id) {
@@ -357,6 +363,64 @@ pub async fn delete_artifact(
     Json(serde_json::json!({ "deleted": id })).into_response()
 }
 
+/// `canvas artifact put <id> --refresh off` and the pane header's Stop
+/// button: removes the artifact's refresh, its error and its scheduler slot,
+/// so a run still in flight delivers nothing. Answers the artifact, also when
+/// it had no refresh to stop; 404 for an unknown id.
+pub async fn stop_refresh(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    actor: Actor,
+) -> Response {
+    let mut artifacts = state.artifacts.write().await;
+    let Some(record) = artifacts.records.get_mut(&id) else {
+        return not_found();
+    };
+    let Some(stopped) = record.refresh.take() else {
+        let view = artifacts.view(&artifacts.records[&id]);
+        return Json(view).into_response();
+    };
+    let error = artifacts.refresh_errors.remove(&id);
+    let slot = artifacts.slots.remove(&id);
+    match save_and_publish(&state, &artifacts, &id, None).await {
+        Ok(view) => {
+            canvas_core::log::info(
+                "artifact refresh stopped",
+                &[
+                    ("id", &id),
+                    ("command", &stopped.command),
+                    ("session", &actor.session_id.as_deref().unwrap_or("")),
+                ],
+            );
+            Json(view).into_response()
+        }
+        Err(response) => {
+            if let Some(record) = artifacts.records.get_mut(&id) {
+                record.refresh = Some(stopped);
+            }
+            if let Some(error) = error {
+                artifacts.refresh_errors.insert(id.clone(), error);
+            }
+            if let Some(slot) = slot {
+                artifacts.slots.insert(id, slot);
+            }
+            response
+        }
+    }
+}
+
+/// A viewer window reports the artifacts it shows (`WATCH_REPORT_SECS`
+/// apart while visible, and at once when that changes); canvasd runs a
+/// refresh only while a report under `WATCH_LAPSE_SECS` old names it, unless
+/// it is marked `always`.
+pub async fn report_watch(
+    State(state): State<AppState>,
+    Json(report): Json<canvas_core::WatchReport>,
+) -> Response {
+    state.record_watch(report).await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// `canvas artifact log`: who created and changed the artifact, oldest
 /// first. The lines outlive the artifact, so a deleted id still answers; an
 /// id with no record and no lines is a 404.
@@ -388,7 +452,7 @@ pub async fn put_artifact_data(
     if !artifacts.records.contains_key(&id) {
         return not_found();
     }
-    artifacts.data.insert(id.clone(), value.clone());
+    artifacts.set_data(&id, Some(value.clone()));
     let viewers = state.publish(CanvasEvent::ArtifactData {
         id: id.clone(),
         value,

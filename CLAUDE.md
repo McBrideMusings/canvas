@@ -515,20 +515,34 @@ beside the terminal all day.
   `{"cleared": N}`. canvasd logs `artifact state set`, `artifact state refused`
   and `artifact state cleared`.
   Widgets and refresh: `canvas artifact new|put --widget <file> --refresh '<cmd>'
-  [--every <secs>]` (5s minimum, default 30s; a flag left off keeps what the
-  record has) stores `widgetHtml` and `refresh: {command, everySecs, cwd, pid}`
-  on the record in `artifacts.json` — `cwd` is the CLI's working directory,
-  `pid` the `x-canvas-pid` header. `canvasd/src/refresh.rs` (a 1s tick) runs
-  `sh -c <cmd>` in `cwd` while `pid` is alive (always, with no pid), one run at
-  a time, killed after 60s: stdout JSON is kept as the artifact's `data` and
-  published as `artifact-data`, as `canvas data <art-id>` (`PUT
-  /api/artifacts/:id/data`, up to 256KB, answers `{"viewers": N}`) does;
-  anything else sets `refreshError` `{message, at, retryAt}` (first stderr line
-  or the reason; cleared by the next success, published as `artifact-upserted`,
-  logged `artifact refresh failed`) and doubles the wait per failure up to 10
-  min. The refresh persists with the record, so it runs again after a daemon
-  restart (checked against the same pid); an agent's exit stops it and clears
-  its `refreshError`. `data` and `refreshError` live in memory and ride on the artifact's view
+  [--every <secs>] [--always]` (5s minimum, default 30s; a flag left off keeps
+  what the record has) stores `widgetHtml` and `refresh: {command, everySecs,
+  cwd, always}` on the record in `artifacts.json` — `cwd` is the CLI's working
+  directory. `put <id> [<src>] --refresh off` (no source copies nothing, so a linked
+  artifact's stops too) and the pane header's Stop button call `DELETE
+  /api/artifacts/:id/refresh`, which removes it, its error and its scheduler
+  slot, so a run in flight delivers nothing (logged `artifact refresh
+  stopped`; nothing to stop answers the artifact as it is). Each visible viewer window reports the
+  artifacts it shows — the pane's page and every widget row in view — with
+  `PUT /api/artifact-watch` `{window, artifacts}` every 15s and at once when
+  the set changes (an empty list when hidden; logged `artifact watch` when a
+  window's set changes); a report counts for 30s. `canvasd/src/refresh.rs` (a
+  1s tick, `refresh_tick_at` taking the clock) runs `sh -c <cmd>` in `cwd` at
+  its interval only while a live report names the artifact, or with `always`
+  regardless; an interval that came due unwatched runs as soon as a window
+  shows it. One run at a time, killed after 60s, logged `artifact refresh
+  started` with `reason` `watched`, `first-watch` or `always`; each start and
+  end publishes `artifact-upserted` (`refreshing`, `lastRunAt`). Stdout JSON is
+  kept as the artifact's `data` (stamped `dataAt`) and published as
+  `artifact-data`, as `canvas data <art-id>` (`PUT /api/artifacts/:id/data`,
+  up to 256KB, answers `{"viewers": N}`) does; exit 0 with blank stdout is a
+  skip (logged `artifact refresh skipped`) that keeps the value; anything else
+  sets `refreshError` `{message, at, retryAt}` (first stderr line or the
+  reason; cleared by the next success or skip, logged `artifact refresh
+  failed`) and doubles the wait per failure up to 10 min. The refresh lasts
+  until stopped or the artifact is deleted, and persists across a daemon
+  restart. `data`, `dataAt`, `refreshError`, `refreshing`, `lastRunAt` and
+  `watched` live in memory and ride on the artifact's view
   (`/api/state`, `show`). The viewer posts `data` into the widget and the
   open pane as `{type:'canvas-data', value}`, and again after either frame loads.
   The viewer's title bar has a `Timeline | Artifacts` switch (`showPage`, the
@@ -540,7 +554,10 @@ beside the terminal all day.
   up to 120px, rebuilt only when the HTML or theme changes, and reloaded only
   when the row moves. A refresh error dims the widget, adds a red dot and a
   "refresh failed" line, and puts "Refresh failed 2m ago: … · retrying in 4m"
-  under the pane header. The Timeline shows no widgets. The pane is an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
+  under the pane header. The pane header shows the refresh's rule
+  ("Refreshes every 2 min while open · updated 1 min ago", "…, also in the
+  background" with `always`), "Refreshing…" during a run, or "Refresh stopped"
+  once a refresh this viewer saw goes, beside a Stop button. The Timeline shows no widgets. The pane is an `<iframe sandbox="allow-scripts">` on its URL, white behind the page,
   at its `canvas-size` clamped to the pane or else filling it. A watched change
   or `put` stamps `updatedAt` and its `artifact-upserted` event carries
   `changed`, the paths written relative to the artifact's path (no folders,

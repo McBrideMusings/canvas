@@ -2956,6 +2956,8 @@
   const titlebarArtifactEl = document.getElementById("titlebar-artifact");
   const exitFullEl = document.getElementById("artifact-exit-full");
   const artifactRefreshErrorEl = document.getElementById("artifact-refresh-error");
+  const artifactRefreshEl = document.getElementById("artifact-refresh");
+  const artifactRefreshStopEl = document.getElementById("artifact-refresh-stop");
   artifactMoreEl.appendChild(buildIcon("more"));
   artifactFullEl.appendChild(buildIcon("expand"));
 
@@ -2994,6 +2996,7 @@
     }
     writeStored(PAGE_KEY, next);
     if (next === "artifacts") renderArtifacts();
+    else scheduleWatchReport();
   }
 
   pageSwitchEl.addEventListener("click", (e) => {
@@ -3040,6 +3043,7 @@
     hit.className = "artifact-row-hit";
     hit.addEventListener("click", () => openArtifact(id));
     row.append(title, time, widget, error, hit);
+    widgetRowObserver.observe(row);
     return { row, hit, title, time, widget, error, frame: null, frameKey: null };
   }
 
@@ -3088,6 +3092,8 @@
   function renderArtifactList() {
     for (const [id, entry] of artifactRows) {
       if (artifacts.has(id)) continue;
+      widgetRowObserver.unobserve(entry.row);
+      widgetRowsInView.delete(id);
       entry.row.remove();
       artifactRows.delete(id);
     }
@@ -3144,10 +3150,128 @@
     artifactRefreshErrorEl.textContent = error ? refreshErrorText(error) : "";
   }
 
-  // The line's ages count on while it shows.
+  // "2 min": an interval or an age in the pane header's words.
+  function spanWords(secs) {
+    if (secs >= 86400 && secs % 86400 === 0) return `${secs / 86400} d`;
+    if (secs >= 3600 && secs % 3600 === 0) return `${secs / 3600} h`;
+    if (secs >= 60 && secs % 60 === 0) return `${secs / 60} min`;
+    return `${secs} sec`;
+  }
+
+  function ageWords(iso) {
+    const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (secs < 5) return "just now";
+    if (secs < 60) return `${secs} sec ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+    if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
+    return `${Math.floor(secs / 86400)} d ago`;
+  }
+
+  // Artifacts whose refresh went away while this viewer had it: their
+  // header reads "Refresh stopped" rather than nothing.
+  const stoppedRefreshes = new Set();
+
+  // The header's refresh line: the rule while idle, with the age of the
+  // value shown, "Refreshing…" while a run is in flight, or "Refresh
+  // stopped"; Stop shows while there is a refresh to stop.
+  function paintRefreshLine() {
+    const artifact = openArtifactId && artifacts.get(openArtifactId);
+    const refresh = artifact && artifact.refresh;
+    let text = "";
+    if (refresh && artifact.refreshing) {
+      text = "Refreshing…";
+    } else if (refresh) {
+      const every = spanWords(refresh.everySecs);
+      text = refresh.always
+        ? `Refreshes every ${every}, also in the background`
+        : `Refreshes every ${every} while open`;
+      if (artifact.dataAt) text += ` · updated ${ageWords(artifact.dataAt)}`;
+    } else if (artifact && stoppedRefreshes.has(artifact.id)) {
+      text = "Refresh stopped";
+    }
+    artifactRefreshEl.hidden = !text;
+    artifactRefreshEl.textContent = text;
+    artifactRefreshEl.title = refresh ? refresh.command : "";
+    artifactRefreshStopEl.hidden = !refresh;
+  }
+
+  // The same route as `canvas artifact put <id> … --refresh off`; canvasd's
+  // artifact-upserted event, with no refresh, repaints the header.
+  artifactRefreshStopEl.addEventListener("click", () => {
+    const id = openArtifactId;
+    if (!id) return;
+    fetch(`/api/artifacts/${encodeURIComponent(id)}/refresh`, { method: "DELETE" })
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+      })
+      .catch(() => toast("Couldn't stop the refresh"));
+  });
+
+  // The lines' ages count on while they show.
   setInterval(() => {
-    if (page === "artifacts" && !artifactRefreshErrorEl.hidden) paintRefreshError();
+    if (page !== "artifacts") return;
+    if (!artifactRefreshErrorEl.hidden) paintRefreshError();
+    if (!artifactRefreshEl.hidden) paintRefreshLine();
   }, 1000);
+
+  // ---- Watch reports --------------------------------------------------------
+  // canvasd runs an artifact's refresh only while a visible window shows it
+  // (unless it is marked --always). While this window is visible it reports,
+  // every WATCH_REPORT_MS and at once when the set changes, the artifact
+  // whose page is open in the pane and each artifact whose widget row is in
+  // view; hidden, it reports none. canvasd lets a report lapse after 30s.
+  const WATCH_REPORT_MS = 15000;
+  const watchWindow =
+    (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
+    `w-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const widgetRowsInView = new Set();
+  let watchSent = null;
+  let watchTimer = null;
+
+  // A page switch or an open repaints more than once; the report waits for
+  // the last of them, so an artifact shown for a moment is never named.
+  function scheduleWatchReport() {
+    clearTimeout(watchTimer);
+    watchTimer = setTimeout(() => reportWatch(false), 100);
+  }
+
+  const widgetRowObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const id = entry.target.dataset.artifactId;
+      if (entry.isIntersecting) widgetRowsInView.add(id);
+      else widgetRowsInView.delete(id);
+    }
+    scheduleWatchReport();
+  });
+
+  function watchedArtifactIds() {
+    if (document.visibilityState !== "visible") return [];
+    const ids = new Set();
+    if (page === "artifacts" && artifactFrame && artifactFrameId) ids.add(artifactFrameId);
+    for (const id of widgetRowsInView) {
+      if (artifacts.get(id)?.widgetHtml) ids.add(id);
+    }
+    return [...ids].sort();
+  }
+
+  // `renew` re-sends an unchanged, non-empty set so it doesn't lapse.
+  function reportWatch(renew) {
+    clearTimeout(watchTimer);
+    const ids = watchedArtifactIds();
+    const key = ids.join("\n");
+    if (key === watchSent && !(renew && ids.length)) return;
+    watchSent = key;
+    fetch("/api/artifact-watch", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ window: watchWindow, artifacts: ids }),
+    }).catch(() => {
+      watchSent = null;
+    });
+  }
+
+  setInterval(() => reportWatch(true), WATCH_REPORT_MS);
+  document.addEventListener("visibilitychange", scheduleWatchReport);
 
   // The pane's page: a sandboxed iframe on the artifact's own URL, so its
   // relative links, scripts and the History API work. allow-scripts without
@@ -3212,6 +3336,7 @@
 
   function paintArtifactPane() {
     paintRefreshError();
+    paintRefreshLine();
     const artifact = openArtifactId && artifacts.get(openArtifactId);
     if (!artifact) {
       dropArtifactFrame();
@@ -3315,6 +3440,7 @@
     }
     renderArtifactList();
     paintArtifactPane();
+    scheduleWatchReport();
   }
 
   function openArtifact(id) {
@@ -3330,6 +3456,8 @@
     if (before && before.updatedAt !== artifact.updatedAt) {
       noteArtifactChange(artifact.id, artifact.changed);
     }
+    if (artifact.refresh) stoppedRefreshes.delete(artifact.id);
+    else if (before && before.refresh) stoppedRefreshes.add(artifact.id);
     artifacts.set(artifact.id, artifact);
     if (page === "artifacts") renderArtifacts();
   }

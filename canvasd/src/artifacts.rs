@@ -65,6 +65,17 @@ pub struct Artifacts {
     /// The latest value pushed into each artifact (its refresh or `canvas
     /// data`), last write wins, in memory only.
     pub data: HashMap<String, serde_json::Value>,
+    /// When each artifact's `data` arrived (RFC 3339), in memory only.
+    pub data_at: HashMap<String, String>,
+    /// The same moment on the scheduler's clock: a newly watched artifact
+    /// runs at once only when its value is older than its interval.
+    pub(crate) data_instant: HashMap<String, std::time::Instant>,
+    /// Each viewer window's latest watch report: when it came and the
+    /// artifacts it named. See [`Self::watched_ids`].
+    watches: HashMap<String, (std::time::Instant, Vec<String>)>,
+    /// One refresh loop per artifact with a refresh; see [`crate::refresh`].
+    pub(crate) slots: crate::refresh::Slots,
+    pub(crate) generation: u64,
     data_dir: Option<PathBuf>,
 }
 
@@ -108,13 +119,8 @@ impl Artifacts {
         }
         Artifacts {
             records,
-            fingerprints: HashMap::new(),
-            script_errors: HashMap::new(),
-            opened_links: HashMap::new(),
-            opened_at: HashMap::new(),
-            refresh_errors: HashMap::new(),
-            data: HashMap::new(),
             data_dir: Some(dir.to_path_buf()),
+            ..Artifacts::default()
         }
     }
 
@@ -192,8 +198,62 @@ impl Artifacts {
     /// `data` value, which every reload would re-post into it, and the errors
     /// it threw.
     pub fn reset(&mut self, id: &str) {
-        self.data.remove(id);
+        self.set_data(id, None);
         self.script_errors.remove(id);
+    }
+
+    /// Holds `value` as `id`'s latest data, stamped now; `None` drops it.
+    pub fn set_data(&mut self, id: &str, value: Option<serde_json::Value>) {
+        match value {
+            Some(value) => {
+                self.data.insert(id.to_string(), value);
+                self.data_at
+                    .insert(id.to_string(), chrono::Utc::now().to_rfc3339());
+                self.data_instant
+                    .insert(id.to_string(), std::time::Instant::now());
+            }
+            None => {
+                self.data.remove(id);
+                self.data_at.remove(id);
+                self.data_instant.remove(id);
+            }
+        }
+    }
+
+    /// Keeps `window`'s watch report, received `at`, in place of its last
+    /// one. True when the report names a different set than the last did.
+    pub fn record_watch(
+        &mut self,
+        window: String,
+        mut ids: Vec<String>,
+        at: std::time::Instant,
+    ) -> bool {
+        ids.sort();
+        ids.dedup();
+        let changed = self.watches.get(&window).is_none_or(|(_, was)| *was != ids);
+        self.watches.insert(window, (at, ids));
+        changed
+    }
+
+    /// Every artifact a watch report younger than
+    /// [`canvas_core::WATCH_LAPSE_SECS`] at `now` names. Lapsed reports are
+    /// dropped.
+    pub fn watched_ids(&mut self, now: std::time::Instant) -> std::collections::HashSet<String> {
+        let lapse = std::time::Duration::from_secs(canvas_core::WATCH_LAPSE_SECS);
+        self.watches
+            .retain(|_, (at, _)| now.saturating_duration_since(*at) < lapse);
+        self.watches
+            .values()
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect()
+    }
+
+    /// Whether a live watch report names `id` now.
+    fn is_watched(&self, id: &str) -> bool {
+        let lapse = std::time::Duration::from_secs(canvas_core::WATCH_LAPSE_SECS);
+        self.watches
+            .values()
+            .any(|(at, ids)| at.elapsed() < lapse && ids.iter().any(|i| i == id))
     }
 
     /// Forgets everything kept in memory for `id`, once its record is gone.
@@ -203,7 +263,8 @@ impl Artifacts {
         self.opened_links.remove(id);
         self.opened_at.remove(id);
         self.refresh_errors.remove(id);
-        self.data.remove(id);
+        self.set_data(id, None);
+        self.slots.remove(id);
     }
 
     /// The folder an owned artifact `id` keeps its files in. Only ids
@@ -284,6 +345,10 @@ impl Artifacts {
             opened_links: Vec::new(),
             refresh_error: self.refresh_errors.get(&artifact.id).cloned(),
             data: self.data.get(&artifact.id).cloned(),
+            data_at: self.data_at.get(&artifact.id).cloned(),
+            watched: self.is_watched(&artifact.id),
+            refreshing: self.refreshing(&artifact.id),
+            last_run_at: self.last_run_at(&artifact.id),
             changed: None,
         }
     }
@@ -299,13 +364,8 @@ impl Artifacts {
 /// Sets on `record` the widget and refresh `extras` carry, each one given
 /// replacing the record's own. A refresh needs a command, an interval of at
 /// least [`canvas_core::MIN_REFRESH_SECS`] and the absolute directory it runs
-/// in; `pid` is the agent process asking, whose exit stops it. The error is
-/// canvasd's answer, and leaves `record` as it was.
-pub fn apply_extras(
-    record: &mut Artifact,
-    extras: ArtifactExtras,
-    pid: Option<u32>,
-) -> Result<(), String> {
+/// in. The error is canvasd's answer, and leaves `record` as it was.
+pub fn apply_extras(record: &mut Artifact, extras: ArtifactExtras) -> Result<(), String> {
     let refresh = match extras.refresh {
         Some(refresh) => {
             if refresh.command.trim().is_empty() {
@@ -325,7 +385,7 @@ pub fn apply_extras(
                 command: refresh.command,
                 every_secs: refresh.every_secs,
                 cwd,
-                pid,
+                always: refresh.always,
             })
         }
         None => None,

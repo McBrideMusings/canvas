@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -58,13 +59,36 @@ fn refresh(command: &str) -> Value {
     })
 }
 
-/// Ticks the scheduler until `done` holds for the artifact's view, up to 5s.
+fn always(command: &str) -> Value {
+    json!({
+        "refresh": {"command": command, "everySecs": 5, "always": true},
+        "cwd": std::env::temp_dir(),
+    })
+}
+
+/// One viewer window reporting that it shows `ids`.
+async fn watch(state: &AppState, ids: &[&str]) {
+    state
+        .record_watch(canvas_core::WatchReport {
+            window: "w1".to_string(),
+            artifacts: ids.iter().map(|i| i.to_string()).collect(),
+        })
+        .await;
+}
+
+async fn view_of(state: &AppState, id: &str) -> Value {
+    let artifacts = state.artifacts.read().await;
+    serde_json::to_value(artifacts.view(&artifacts.records[id])).unwrap()
+}
+
+/// Ticks the scheduler, with a window watching the artifact, until `done`
+/// holds for its view, up to 5s.
 async fn tick_until(state: &AppState, id: &str, done: impl Fn(&Value) -> bool) -> Value {
     for _ in 0..50 {
-        state.refresh_tick_with(|_| true).await;
+        watch(state, &[id]).await;
+        state.refresh_tick().await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let artifacts = state.artifacts.read().await;
-        let view = serde_json::to_value(artifacts.view(&artifacts.records[id])).unwrap();
+        let view = view_of(state, id).await;
         if done(&view) {
             return view;
         }
@@ -77,11 +101,21 @@ async fn a_refresh_printing_json_delivers_it_as_artifact_data() {
     let (state, _app, id) = artifact_with(refresh("echo '{\"n\":1}'"), None).await;
     let mut events = state.events.subscribe();
     tick_until(&state, &id, |v| v["data"] == json!({"n": 1})).await;
-    let event = events.recv().await.unwrap();
-    assert!(
-        matches!(event, canvasd::state::CanvasEvent::ArtifactData { ref value, .. } if value == &json!({"n": 1})),
-        "{event:?}"
-    );
+    // The run's start and end reach the viewers as upserts around the data.
+    let mut kinds = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event {
+            canvasd::state::CanvasEvent::ArtifactData { value, .. } => {
+                assert_eq!(value, json!({"n": 1}));
+                kinds.push("data");
+            }
+            canvasd::state::CanvasEvent::ArtifactUpserted(view) => {
+                kinds.push(if view.refreshing { "started" } else { "ended" });
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(kinds[..3], ["started", "data", "ended"], "{kinds:?}");
 }
 
 #[tokio::test]
@@ -91,8 +125,7 @@ async fn a_failing_refresh_records_the_error_and_keeps_the_last_data() {
         .artifacts
         .write()
         .await
-        .data
-        .insert(id.clone(), json!({"last": "good"}));
+        .set_data(&id, Some(json!({"last": "good"})));
     let view = tick_until(&state, &id, |v| v["refreshError"]["message"] == "boom").await;
     assert_eq!(view["data"], json!({"last": "good"}));
     // The first failure waits twice the interval.
@@ -130,16 +163,20 @@ async fn a_success_clears_the_error() {
 #[tokio::test]
 async fn output_that_is_not_json_is_an_error() {
     let err = canvasd::refresh::run_command("echo hello", "/").await;
-    assert_eq!(err, Err("output is not JSON".to_string()));
+    assert_eq!(
+        err,
+        canvasd::refresh::Outcome::Failed("output is not JSON".to_string())
+    );
 }
 
 #[tokio::test]
 async fn an_artifact_with_no_refresh_spawns_nothing() {
     let (state, _app, id) = artifact_with(json!({}), None).await;
-    state.refresh_tick_with(|_| true).await;
+    watch(&state, &[&id]).await;
+    state.refresh_tick().await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(!state.artifacts.read().await.data.contains_key(&id));
-    assert_eq!(state.refreshing_count(), 0);
+    assert_eq!(state.artifacts.read().await.refresh_count(), 0);
 }
 
 #[tokio::test]
@@ -154,34 +191,178 @@ async fn a_refresh_under_the_minimum_interval_or_without_a_cwd_is_refused() {
 }
 
 #[tokio::test]
-async fn the_refresh_records_its_cwd_and_pid_and_stops_with_that_process() {
-    let (state, _app, id) = artifact_with(refresh("echo 1"), Some(4242)).await;
+async fn the_refresh_records_its_cwd_and_outlives_the_agent_that_set_it() {
+    let marker = temp_dir().join("ran");
+    let command = format!("touch {}; echo 1", marker.display());
+    let (state, _app, id) = artifact_with(refresh(&command), Some(4242)).await;
     {
         let artifacts = state.artifacts.read().await;
-        let record = &artifacts.records[&id];
-        let refresh = record.refresh.as_ref().unwrap();
-        assert_eq!(refresh.pid, Some(4242));
+        let saved = serde_json::to_value(&artifacts.records[&id]).unwrap();
+        assert_eq!(saved["refresh"]["always"], false);
+        assert!(saved["refresh"].get("pid").is_none(), "{saved}");
+        let refresh = artifacts.records[&id].refresh.as_ref().unwrap();
         assert_eq!(PathBuf::from(&refresh.cwd), std::env::temp_dir());
     }
-    state.artifacts.write().await.refresh_errors.insert(
-        id.clone(),
-        canvas_core::RefreshError {
-            message: "boom".to_string(),
-            at: String::new(),
-            retry_at: String::new(),
-        },
-    );
-    state.refresh_tick_with(|pid| pid != 4242).await;
-    assert_eq!(state.refreshing_count(), 0);
-    // Nothing will retry it, so its error goes.
-    assert!(!state
+    // pid 4242 is no process; the refresh runs regardless.
+    tick_until(&state, &id, |v| v["data"] == json!(1)).await;
+    assert!(marker.exists());
+}
+
+/// Ticks at `now` and gives any run it started a moment to finish.
+async fn tick_at(state: &AppState, now: Instant) {
+    state.refresh_tick_at(now).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
+
+fn runs(dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(dir.join("runs"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+/// A refresh that appends a line to `dir/runs` on every run.
+fn counting(dir: &std::path::Path, always_on: bool) -> Value {
+    let command = format!("echo x >> {}; echo 1", dir.join("runs").display());
+    if always_on {
+        always(&command)
+    } else {
+        refresh(&command)
+    }
+}
+
+#[tokio::test]
+async fn an_unwatched_refresh_never_runs_and_a_watched_one_runs_at_once() {
+    let dir = temp_dir();
+    let (state, _app, id) = artifact_with(counting(&dir, false), None).await;
+    let start = Instant::now();
+    // Five simulated minutes with no window showing it.
+    for secs in (0..300).step_by(5) {
+        tick_at(&state, start + Duration::from_secs(secs)).await;
+    }
+    assert_eq!(runs(&dir), 0);
+    assert_eq!(view_of(&state, &id).await["watched"], false);
+    assert!(view_of(&state, &id).await["lastRunAt"].is_null());
+
+    watch(&state, &[&id]).await;
+    assert_eq!(view_of(&state, &id).await["watched"], true);
+    tick_at(&state, Instant::now()).await;
+    assert_eq!(runs(&dir), 1);
+    let view = view_of(&state, &id).await;
+    assert_eq!(view["data"], json!(1));
+    assert!(view["lastRunAt"].is_string(), "{view}");
+    assert!(view["dataAt"].is_string(), "{view}");
+}
+
+#[tokio::test]
+async fn a_lapsed_watch_stops_runs() {
+    let dir = temp_dir();
+    let (state, _app, id) = artifact_with(counting(&dir, false), None).await;
+    watch(&state, &[&id]).await;
+    tick_at(&state, Instant::now()).await;
+    assert_eq!(runs(&dir), 1);
+    // The report is 31s old: due, but nothing watches it any more.
+    let later = Instant::now() + Duration::from_secs(31);
+    tick_at(&state, later).await;
+    tick_at(&state, later + Duration::from_secs(10)).await;
+    assert_eq!(runs(&dir), 1);
+    // A window that reports an empty list stops watching at once.
+    watch(&state, &[]).await;
+    assert_eq!(view_of(&state, &id).await["watched"], false);
+}
+
+#[tokio::test]
+async fn an_always_refresh_runs_with_no_window_at_its_interval() {
+    let dir = temp_dir();
+    let (state, _app, _id) = artifact_with(counting(&dir, true), None).await;
+    let start = Instant::now();
+    tick_at(&state, start).await;
+    assert_eq!(runs(&dir), 1);
+    // Not due again until five seconds after that run ended.
+    tick_at(&state, Instant::now() + Duration::from_secs(2)).await;
+    assert_eq!(runs(&dir), 1);
+    tick_at(&state, Instant::now() + Duration::from_secs(6)).await;
+    assert_eq!(runs(&dir), 2);
+}
+
+#[tokio::test]
+async fn empty_output_skips_and_keeps_the_last_value() {
+    let (state, _app, id) = artifact_with(refresh("true"), None).await;
+    state
         .artifacts
-        .read()
+        .write()
         .await
-        .refresh_errors
-        .contains_key(&id));
-    state.refresh_tick_with(|_| true).await;
-    assert_eq!(state.refreshing_count(), 1);
+        .set_data(&id, Some(json!({"last": "good"})));
+    let view = tick_until(&state, &id, |v| v["lastRunAt"].is_string()).await;
+    assert_eq!(view["data"], json!({"last": "good"}));
+    assert!(view["refreshError"].is_null(), "{view}");
+    assert_eq!(
+        canvasd::refresh::run_command("printf '  \\n'", "/").await,
+        canvasd::refresh::Outcome::Skip
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_refresh_removes_it_and_its_error() {
+    let (state, app, id) = artifact_with(refresh("exit 1"), None).await;
+    tick_until(&state, &id, |v| v["refreshError"].is_object()).await;
+    let uri = format!("/api/artifacts/{id}/refresh");
+    let (status, view) = send(&app, "DELETE", &uri, json!(null), None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert!(view["refresh"].is_null(), "{view}");
+    assert!(view["refreshError"].is_null(), "{view}");
+    // Stopping one with nothing to stop answers the artifact as it is.
+    let (status, view) = send(&app, "DELETE", &uri, json!(null), None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    state.refresh_tick().await;
+    assert_eq!(state.artifacts.read().await.refresh_count(), 0);
+}
+
+#[tokio::test]
+async fn a_run_in_flight_when_stopped_delivers_nothing() {
+    let (state, app, id) = artifact_with(refresh("sleep 1; echo 5"), None).await;
+    watch(&state, &[&id]).await;
+    state.refresh_tick().await;
+    assert_eq!(view_of(&state, &id).await["refreshing"], true);
+    let uri = format!("/api/artifacts/{id}/refresh");
+    let (status, view) = send(&app, "DELETE", &uri, json!(null), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(view["refreshing"].is_null(), "{view}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let view = view_of(&state, &id).await;
+    assert!(view["data"].is_null(), "{view}");
+    assert!(view["refreshError"].is_null(), "{view}");
+
+    // A failing run stopped mid-flight leaves no error behind either.
+    let (state, app, id) = artifact_with(refresh("sleep 1; exit 1"), None).await;
+    watch(&state, &[&id]).await;
+    state.refresh_tick().await;
+    let uri = format!("/api/artifacts/{id}/refresh");
+    send(&app, "DELETE", &uri, json!(null), None).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(view_of(&state, &id).await["refreshError"].is_null());
+}
+
+#[tokio::test]
+async fn a_first_watch_runs_at_once_only_for_a_value_older_than_the_interval() {
+    let dir = temp_dir();
+    let (state, _app, id) = artifact_with(counting(&dir, false), None).await;
+    // A value pushed just now is fresh: watching it waits for the interval.
+    state.artifacts.write().await.set_data(&id, Some(json!(0)));
+    watch(&state, &[&id]).await;
+    tick_at(&state, Instant::now()).await;
+    assert_eq!(runs(&dir), 0);
+    // Once that value is five seconds old, the watched artifact runs.
+    tick_at(&state, Instant::now() + Duration::from_secs(5)).await;
+    assert_eq!(runs(&dir), 1);
+}
+
+#[tokio::test]
+async fn the_watch_route_marks_an_artifact_watched() {
+    let (state, app, id) = artifact_with(json!({}), None).await;
+    let body = json!({"window": "w9", "artifacts": [id]});
+    let (status, _) = send(&app, "PUT", "/api/artifact-watch", body, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(view_of(&state, &id).await["watched"], true);
 }
 
 #[tokio::test]
@@ -269,5 +450,8 @@ fn failures_double_the_wait_up_to_ten_minutes() {
 #[tokio::test]
 async fn output_over_the_cap_is_an_error_not_buffered() {
     let err = canvasd::refresh::run_command("yes", "/").await;
-    assert_eq!(err, Err("output is over 256 KB".to_string()));
+    assert_eq!(
+        err,
+        canvasd::refresh::Outcome::Failed("output is over 256 KB".to_string())
+    );
 }

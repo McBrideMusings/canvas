@@ -105,6 +105,11 @@ pub fn build_router(state: AppState) -> Router {
             put(artifact_routes::put_artifact_data),
         )
         .route(
+            "/api/artifacts/:id/refresh",
+            delete(artifact_routes::stop_refresh),
+        )
+        .route("/api/artifact-watch", put(artifact_routes::report_watch))
+        .route(
             "/api/artifacts/:id/state",
             get(artifact_routes::get_artifact_state).delete(artifact_routes::clear_artifact_state),
         )

@@ -45,26 +45,43 @@ pub const MIN_REFRESH_SECS: u64 = 5;
 /// A shell command canvasd runs every `every_secs` to keep an artifact's
 /// widget and page current, as `artifact new|put --refresh` asks for it. It
 /// prints one JSON value to stdout, which reaches the artifact the way
-/// `canvas data` does.
+/// `canvas data` does, or nothing, which skips the run. It runs while a
+/// Canvas window shows the artifact, and with `always` while none does too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Refresh {
     pub command: String,
     pub every_secs: u64,
+    #[serde(default)]
+    pub always: bool,
 }
 
 /// A [`Refresh`] as an artifact record keeps it: also the directory the
-/// command runs in (the asking shell's) and the agent process that asked.
-/// canvasd runs it while that process is alive; with no pid (a person at a
-/// shell) it runs until replaced or the artifact is deleted.
+/// command runs in (the asking shell's). It lasts until it is stopped or
+/// replaced, or the artifact is deleted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactRefresh {
     pub command: String,
     pub every_secs: u64,
     pub cwd: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
+    #[serde(default)]
+    pub always: bool,
+}
+
+/// How long a viewer's watch report counts: it renews one every
+/// [`WATCH_REPORT_SECS`] while its window is visible.
+pub const WATCH_LAPSE_SECS: u64 = 30;
+/// How often a visible viewer window reports the artifacts it shows.
+pub const WATCH_REPORT_SECS: u64 = 15;
+
+/// Body for `PUT /api/artifact-watch`: the artifacts one viewer window shows
+/// right now (its pane's page and the widget rows in view); an empty list
+/// when it shows none or was hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchReport {
+    pub window: String,
+    pub artifacts: Vec<String>,
 }
 
 /// The latest failed refresh run of an artifact, until the next success.
@@ -315,6 +332,20 @@ pub struct ArtifactView {
     /// the viewer hands it to the widget and the page as `canvas-data`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// When `data` arrived (RFC 3339), in memory only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_at: Option<String>,
+    /// Whether a visible Canvas window shows the artifact's page or widget
+    /// row, by a watch report under [`WATCH_LAPSE_SECS`] old.
+    #[serde(default)]
+    pub watched: bool,
+    /// Whether its refresh command is running right now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refreshing: bool,
+    /// When its refresh command last finished, whatever the outcome (RFC
+    /// 3339); in memory only, absent before the first run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
     /// The files the change that stamped `updatedAt` wrote or removed,
     /// relative to `path` (a linked HTML file is its own name). Only on the
     /// `artifact-upserted` event a watched change or a `put` publishes, and

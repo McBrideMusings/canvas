@@ -441,15 +441,17 @@ status. The widget shows in the artifact's row on the Artifacts page, under its 
 and time; the Timeline shows nothing for it. Clicking the row opens the full page.
 
 ```
-canvas artifact new --title "Disk monitor" --widget widget.html [--refresh '<cmd>' [--every <secs>]]
-canvas artifact put <id> <file|dir> [--widget widget.html] [--refresh '<cmd>' [--every <secs>]]
+canvas artifact new --title "Disk monitor" --widget widget.html [--refresh '<cmd>' [--every <secs>] [--always]]
+canvas artifact put <id> <file|dir> [--widget widget.html] [--refresh '<cmd>' [--every <secs>] [--always]]
+canvas artifact put <id> --refresh off      # stops the refresh, copies nothing
 canvas data <artifact_id> values.json      # or "-" for stdin
 ```
 
 - `--widget <file>` is the widget's HTML, converted like a card body (by its extension,
   else Markdown). A `put` without `--widget` or `--refresh` keeps the ones the artifact
   has; with one, it replaces it.
-- `--every` needs `--refresh`. A row without a widget shows only its title and time.
+- `--every` and `--always` need `--refresh`. A row without a widget shows only its title
+  and time.
 - Delete the artifact when the job ends. Don't make one for a one-off answer, a closing
   report or anything that won't change again: those belong in the feed.
 
@@ -493,9 +495,22 @@ canvasd pull them:
   non-zero with one line on stderr.
 - `--refresh '<cmd>' [--every <secs>]` makes canvasd run `<cmd>` under `sh -c` in the
   directory you ran `canvas artifact` from, every `--every` seconds (default 30, minimum
-  5), while the agent that set it is running; a refresh set from a plain shell runs until
-  the artifact is deleted. One run at a time; a run is killed after 60s. Use absolute paths
-  in `<cmd>`: canvasd runs under launchd with a minimal `PATH`.
+  5), while the artifact is **watched**: a visible Canvas window shows its page in the
+  pane, or its widget row on the Artifacts page (a window WebKit reports as hidden, such as a
+  minimized one, shows nothing). Nothing runs while nobody looks; when a
+  window starts showing it and the last value is older than the interval, it runs at once.
+  `--always` keeps it running at its interval with no window showing it, for a monitor
+  that must keep collecting. The refresh lasts until the artifact is deleted, `put <id>
+  --refresh off` stops it, or the person presses Stop in the page header;
+  ending your session does not stop it. One run at a time; a run is killed after 60s.
+  Use absolute paths in `<cmd>`: canvasd runs under launchd with a minimal `PATH`.
+- A run that exits 0 and prints nothing is a **skip**: the last value stays and no error
+  is recorded. Use it to pace an `--always` command yourself (exit early until enough time
+  has passed since your own last fetch).
+- `canvas artifact show <id>` reports `watched`, `refresh.always`, `refreshing` (a run in
+  flight), `lastRunAt` (the last run's end, any outcome) and `dataAt` (when the shown value
+  arrived). The page header reads "Refreshes every 2 min while open · updated 1 min ago",
+  "…, also in the background" with `--always`, "Refreshing…" during a run.
 - The command prints one JSON value to stdout, not HTML. canvasd delivers it to the widget
   and the page as a `canvas-data` message, exactly as `canvas data` does. Both therefore
   carry a small script that redraws from that value (see "Pushing live data into a

@@ -160,9 +160,6 @@ pub struct AppState {
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// The artifact folders being watched; see [`crate::watcher`].
     pub watcher: Arc<crate::watcher::Watcher>,
-    /// One refresh loop per refreshing artifact; see [`crate::refresh`].
-    pub(crate) refreshes: Arc<std::sync::Mutex<crate::refresh::Slots>>,
-    pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
     /// Snapshot requests waiting for a viewer's answer, by request id.
     pub(crate) snapshots:
         Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<SnapshotReply>>>>,
@@ -201,8 +198,6 @@ impl AppState {
             events: tx,
             artifacts: Arc::default(),
             watcher: Arc::default(),
-            refreshes: Arc::default(),
-            generation: Arc::default(),
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
             viewer_pane: Arc::default(),
@@ -234,8 +229,6 @@ impl AppState {
             events: tx,
             artifacts: Arc::new(RwLock::new(artifacts)),
             watcher: Arc::default(),
-            refreshes: Arc::default(),
-            generation: Arc::default(),
             snapshots: Arc::default(),
             viewer_theme: Arc::default(),
             viewer_pane: Arc::default(),
