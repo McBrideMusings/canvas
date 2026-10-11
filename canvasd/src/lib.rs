@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod cdn;
 pub mod esm;
 pub mod export;
+pub mod fd_limit;
 pub mod import_map;
 pub mod instruction_routes;
 pub mod project_files;

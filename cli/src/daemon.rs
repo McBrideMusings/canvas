@@ -26,6 +26,17 @@ pub fn install() -> Result<serde_json::Value, String> {
 
 pub fn run() {
     canvas_core::log::init_background(canvas_core::log::Process::Daemon);
+    match canvasd::fd_limit::raise() {
+        Ok(limit) => canvas_core::log::info(
+            "fd limit",
+            &[
+                ("before", &limit.before),
+                ("soft", &limit.soft),
+                ("hard", &limit.hard),
+            ],
+        ),
+        Err(e) => canvas_core::log::warn("fd limit raise failed", &[("error", &e)]),
+    }
     let rt = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
     rt.block_on(serve());
 }

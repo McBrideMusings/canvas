@@ -610,7 +610,11 @@ beside the terminal all day.
   canvasd's in-process tests never touch the real data dir. canvasd logs every
   request (an axum middleware in `canvasd/src/lib.rs`: method, path, status, ms, and
   the body of a 4xx/5xx as `error`) plus start, reload, store, sweep and refresh
-  failures; `canvas_core::unix_http::call` logs each request it sends (status;
+  failures. At start `canvas daemon` raises its soft open-file limit
+  (`canvasd/src/fd_limit.rs`; launchd gives agents 256, and a viewer reload opens
+  a connection per card image) to the hard limit capped at
+  `kern.maxfilesperproc`, logging `fd limit` with `before`, `soft` and `hard`, or
+  `fd limit raise failed`; `canvas_core::unix_http::call` logs each request it sends (status;
   `canvasd timed out` when canvasd took the connection and stalled past the
   timeout; `canvasd unreachable` with the reason the connect failed): every CLI
   call to canvasd and the app's export fetch; the CLI also logs each hook's outcome
