@@ -18,7 +18,7 @@ use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
 use crate::repo::github_repo;
-use crate::state::{AppState, CanvasEvent, SnapshotReply, Theme};
+use crate::state::{process_alive, AppState, CanvasEvent, SnapshotReply, Theme};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -33,10 +33,15 @@ fn cwd_basename(cwd: &str) -> String {
 
 /// Creates `session_id` with `name` set from `cwd`'s basename when the
 /// daemon doesn't already know it. A session's first `/api/posts` is what
-/// creates it; nothing registers a session at `SessionStart`. Returns the
-/// new session so the caller can publish a `SessionUpserted` event; returns `None` when the session already existed,
-/// since nothing about it changed. `repo` comes from
-/// [`repo_if_unknown`], resolved before the caller took the lock.
+/// creates it; nothing registers a session at `SessionStart`. A post that
+/// carries a pid, to a session the daemon already holds that has ended or
+/// whose pid is gone or unknown, is the session resumed in a new process: it
+/// takes the post's pid and loses `ended_at`, so the liveness sweep watches
+/// the live process.
+/// Returns the new or resumed session so the caller can publish a
+/// `SessionUpserted` event; returns `None` when nothing about it changed.
+/// `repo` comes from [`repo_if_unknown`], resolved before the caller took
+/// the lock.
 fn ensure_session(
     inner: &mut crate::state::Inner,
     session_id: &str,
@@ -45,8 +50,32 @@ fn ensure_session(
     repo: Option<String>,
     pid: Option<u32>,
 ) -> Option<Session> {
-    if inner.sessions.contains_key(session_id) {
-        return None;
+    if let Some(session) = inner.sessions.get_mut(session_id) {
+        let ended = session.ended_at.is_some();
+        // A post with no pid can't say which process is running, so it
+        // changes nothing; a live session keeps a pid that still runs, so
+        // two processes posting under one id don't trade it back and forth.
+        let resumed = match (pid, session.pid) {
+            (None, _) => false,
+            _ if ended => true,
+            (Some(_), None) => true,
+            (Some(new), Some(old)) => new != old && !process_alive(old),
+        };
+        if !resumed {
+            return None;
+        }
+        canvas_core::log::info(
+            "session resumed",
+            &[
+                ("session", &session_id),
+                ("was_ended", &ended),
+                ("old_pid", &format!("{:?}", session.pid)),
+                ("pid", &format!("{pid:?}")),
+            ],
+        );
+        session.ended_at = None;
+        session.pid = pid;
+        return Some(session.clone());
     }
     let session = Session {
         id: session_id.to_string(),
@@ -163,7 +192,8 @@ pub async fn post_explicit(
     // can't land between creating it and adding its card.
     let (card, created) = {
         let mut inner = state.inner.write().await;
-        let created_session = ensure_session(
+        let created = !inner.sessions.contains_key(&req.session_id);
+        let upserted_session = ensure_session(
             &mut inner,
             &req.session_id,
             &req.cwd,
@@ -184,8 +214,7 @@ pub async fn post_explicit(
         inner.push_card(card.clone());
         // Published under the lock, so the persisted log records changes in
         // the order they were applied.
-        let created = created_session.is_some();
-        if let Some(session) = created_session {
+        if let Some(session) = upserted_session {
             state.publish(CanvasEvent::SessionUpserted(session));
         }
         state.publish(CanvasEvent::CardUpserted(card.clone()));

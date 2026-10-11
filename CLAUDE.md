@@ -14,7 +14,10 @@ beside the terminal all day.
   required on `/api/posts`, kept from the first post, and a stored session without one reloads as Claude Code;
   it also records the agent's `pid` from its first post (`CLAUDE_PID` for Claude
   Code, the first `codex` ancestor for Codex), and a 30s sweep ends a session whose
-  pid is gone; sessions with no pid are never swept), SSE push to
+  pid is gone; sessions with no pid are never swept; a later post carrying a pid,
+  to a session that ended or whose pid is gone or unknown, is the session resumed: it takes that
+  pid, clears `ended_at` and keeps `started_at`, logged `session resumed`; a pid that
+  still runs is kept, and a post with no pid changes nothing), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
 - Instructions (`canvas-core/src/instructions.rs`): what an agent reads at
   session start, and the post reminders (`canvas-core/src/reminders.rs`, the

@@ -790,7 +790,7 @@ async fn file_path_endpoint_is_gone() {
 }
 
 #[tokio::test]
-async fn a_later_post_keeps_the_sessions_started_and_ended_at() {
+async fn a_later_post_with_no_pid_keeps_the_sessions_started_and_ended_at() {
     let app = app();
 
     seed_card(&app, "s1", "/tmp/proj").await;
@@ -806,7 +806,8 @@ async fn a_later_post_keeps_the_sessions_started_and_ended_at() {
     let ended: Session = json_body(response).await;
     assert!(ended.ended_at.is_some());
 
-    // A post after the session ended must not reset startedAt or resurrect it.
+    // A post with no pid names no running process, so it neither resets
+    // startedAt nor reopens the ended session.
     seed_card(&app, "s1", "/tmp/proj").await;
     let response = app.clone().oneshot(get("/api/state")).await.unwrap();
     let state: StateResponse = json_body(response).await;
@@ -1193,6 +1194,59 @@ async fn a_dead_agent_process_ends_its_session() {
             .await,
         0
     );
+}
+
+#[tokio::test]
+async fn a_post_from_a_resumed_session_takes_its_new_pid_and_reopens_it() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let post_as = |pid: u32| {
+        post(
+            "/api/posts",
+            json!({
+                "session_id": "s1", "cwd": std::env::temp_dir(), "agent": "claude-code",
+                "html": "<p>x</p>", "pid": pid,
+            }),
+        )
+    };
+    // A pid that ran and exited, so no live process holds it.
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    app.clone().oneshot(post_as(111)).await.unwrap();
+    app.clone()
+        .oneshot(post("/api/sessions/s1/end", json!({})))
+        .await
+        .unwrap();
+    assert!(state.inner.read().await.sessions["s1"].ended_at.is_some());
+
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut body = response.into_body().into_data_stream();
+    let response = app.clone().oneshot(post_as(dead)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let session = state.inner.read().await.sessions["s1"].clone();
+    assert_eq!(session.pid, Some(dead));
+    assert!(session.ended_at.is_none());
+    let event = futures::StreamExt::next(&mut body).await.unwrap().unwrap();
+    let event = String::from_utf8_lossy(&event);
+    assert!(
+        event.contains("session-upserted") && event.contains(&dead.to_string()),
+        "{event}"
+    );
+
+    // A live session posting again under the same pid changes nothing.
+    app.clone().oneshot(post_as(dead)).await.unwrap();
+    let event = futures::StreamExt::next(&mut body).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&event).contains("card-upserted"));
+
+    // The dead pid no longer runs, so a post from another pid takes over; while that pid
+    // runs, a third process posting under the same id leaves it in place.
+    let live = std::process::id();
+    app.clone().oneshot(post_as(live)).await.unwrap();
+    assert_eq!(state.inner.read().await.sessions["s1"].pid, Some(live));
+    app.clone().oneshot(post_as(333)).await.unwrap();
+    assert_eq!(state.inner.read().await.sessions["s1"].pid, Some(live));
 }
 
 #[tokio::test]
