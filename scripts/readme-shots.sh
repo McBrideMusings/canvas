@@ -17,7 +17,8 @@ verify="${repo_root}/scripts/verify-app.sh"
 
 bash "${verify}" start
 trap 'bash "${verify}" stop' EXIT
-socket="$(bash "${verify}" env | sed 's/^export CANVAS_SOCKET=//')"
+eval "$(bash "${verify}" env)"
+socket="${CANVAS_SOCKET}"
 canvas="${repo_root}/target/debug/canvas"
 
 rm -rf "${root}"

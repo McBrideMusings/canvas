@@ -139,16 +139,6 @@
         svg.appendChild(svgEl("circle", { cx: "10.5", cy: "10.5", r: "6.5" }));
         svg.appendChild(svgEl("path", { d: "M15.5 15.5L21 21" }));
         break;
-      // The agent tile's mark: an eight-ray burst, drawn heavier than the
-      // other glyphs because it sits small and white on a coloured tile.
-      case "claude":
-        svg.setAttribute("stroke-width", "2.7");
-        svg.appendChild(
-          svgEl("path", {
-            d: "M12 3v18M3 12h18M5.7 5.7l12.6 12.6M18.3 5.7L5.7 18.3",
-          })
-        );
-        break;
       // A thumbtack drawn upright — round head, flat collar, tapering body
       // to a point — then tilted 45° like SF Symbols' "pin". The group
       // rotates as a whole so the head and body stay one rigid shape.
@@ -586,13 +576,22 @@
     return `${dir.slice(dir.lastIndexOf("/") + 1)} (local)`;
   }
 
-  // The agent icon on a tile in the session colour, which the tile reads
-  // from --session-colour on its chip or card.
-  function buildAgentTile() {
+  // Each agent's display name; its mark is viewer/agents/<agent>.svg.
+  const AGENT_LABEL = { "claude-code": "Claude Code", codex: "Codex" };
+
+  // The session's agent mark on a tile in the session colour, which the tile
+  // reads from --session-colour on its chip or card. An unknown or missing
+  // agent shows as Claude Code, canvasd's own default.
+  function buildAgentTile(session) {
+    const agent = session && Object.hasOwn(AGENT_LABEL, session.agent) ? session.agent : "claude-code";
     const tile = document.createElement("span");
     tile.className = "agent-tile";
-    tile.title = "Claude Code";
-    tile.appendChild(buildIcon("claude"));
+    tile.title = AGENT_LABEL[agent];
+    tile.dataset.agent = agent;
+    const mark = document.createElement("span");
+    mark.className = "agent-mark";
+    mark.style.setProperty("--agent-mark", `url("/agents/${agent}.svg")`);
+    tile.appendChild(mark);
     return tile;
   }
 
@@ -692,7 +691,7 @@
       const x = document.createElement("span");
       x.className = "chip-x";
       x.appendChild(buildIcon("x"));
-      chip.append(buildAgentTile(), name, repo, chipCount(sessionCardCount(s.id)), x);
+      chip.append(buildAgentTile(s), name, repo, chipCount(sessionCardCount(s.id)), x);
       chip.addEventListener("click", () => toggleSessionVisibility(s.id));
       chips.push(chip);
     }
@@ -2470,7 +2469,7 @@
 
     const header = document.createElement("div");
     header.className = "card-header";
-    header.appendChild(buildAgentTile());
+    header.appendChild(buildAgentTile(session));
     const headerInfo = document.createElement("div");
     headerInfo.className = "card-header-info";
     const nameSpan = document.createElement("span");

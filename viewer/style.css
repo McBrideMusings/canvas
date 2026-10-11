@@ -373,7 +373,7 @@ body {
   display: inline-flex;
 }
 
-/* The agent icon, white on the session colour. */
+/* The agent's mark, white on the session colour. */
 .agent-tile {
   flex: none;
   width: 18px;
@@ -386,9 +386,13 @@ body {
   color: #fff;
 }
 
-.agent-tile svg {
+/* The mark file is a mask, so it paints in the tile's text colour. */
+.agent-mark {
   width: 12px;
   height: 12px;
+  background: currentColor;
+  -webkit-mask: var(--agent-mark) center / contain no-repeat;
+  mask: var(--agent-mark) center / contain no-repeat;
 }
 
 .chip[aria-pressed="true"] .agent-tile {
@@ -765,7 +769,7 @@ html.full-width .empty-state {
   border-radius: 6px;
 }
 
-.card-header .agent-tile svg {
+.card-header .agent-mark {
   width: 14px;
   height: 14px;
 }
