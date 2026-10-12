@@ -1158,8 +1158,15 @@ html.full-width .empty-state {
 }
 
 /* `canvas snapshot` captures a card's or artifact frame's rect of the window;
-   what floats over it is hidden for that moment so it never lands in the
-   picture (a filling frame's grip sits inside its corner). */
+   what floats over it is made invisible for that moment so it never lands
+   in the picture (a filling frame's grip sits inside its corner). An open
+   lightbox or menu gets `opacity: 0`, never `visibility: hidden`: that
+   would drop the focus it holds, and a menu closes when focus leaves. */
+html.snapshotting .image-overlay,
+html.snapshotting .card-menu {
+  opacity: 0;
+}
+
 html.snapshotting .to-top,
 html.snapshotting .new-pill,
 html.snapshotting .toasts,
