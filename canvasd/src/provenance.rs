@@ -14,7 +14,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use canvas_core::Agent;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 pub const LOG_FILE: &str = "artifact-log.jsonl";
 
@@ -94,9 +94,27 @@ pub async fn append(dir: &Path, id: &str, action: Action, actor: &Actor) {
     let written = async {
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(dir.join(LOG_FILE))
             .await?;
+        // A crash mid-write leaves a torn last line; start a fresh one so
+        // this entry isn't glued to it and lost with it. A check that fails
+        // assumes a torn line: a stray blank line is skipped on read.
+        let torn = async {
+            if file.metadata().await?.len() == 0 {
+                return Ok::<_, std::io::Error>(false);
+            }
+            file.seek(std::io::SeekFrom::End(-1)).await?;
+            let mut last = [0u8; 1];
+            file.read_exact(&mut last).await?;
+            Ok(last[0] != b'\n')
+        }
+        .await
+        .unwrap_or(true);
+        if torn {
+            line.insert(0, b'\n');
+        }
         file.write_all(&line).await
     }
     .await;

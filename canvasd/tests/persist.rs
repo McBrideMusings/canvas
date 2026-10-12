@@ -401,6 +401,30 @@ async fn artifact_log_names_the_session_and_survives_delete_and_restart() {
 }
 
 #[tokio::test]
+async fn a_torn_artifact_log_line_does_not_swallow_the_next_entry() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let created = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("artifact-log.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(&mut file, br#"{"at":"2026-10-05T00:00:00Z","id":"#).unwrap();
+
+    send_as(&app, "DELETE", &format!("/api/artifacts/{id}"), None).await;
+    let bytes = send(&app, "GET", &format!("/api/artifacts/{id}/log"), None).await;
+    let log: Value = serde_json::from_slice(&bytes).unwrap();
+    let actions: Vec<&str> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["create", "delete"]);
+}
+
+#[tokio::test]
 async fn a_delete_whose_folder_cant_be_removed_fails_and_keeps_the_record() {
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir();
