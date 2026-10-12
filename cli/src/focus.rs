@@ -2,15 +2,16 @@
 //! the search and filters hiding it, scrolls to it and rings it, the way a
 //! `canvas-post://` link does; for an `art-` id, every viewer switches to the
 //! Artifacts page and opens that artifact. The window is never raised. Prints
-//! `{"viewers": N}`; a focus no viewer received is an error, since nobody saw it.
+//! `{"viewers": N}`, the visible viewer windows the focus reached; none is an
+//! error, since nobody saw it.
 
 use crate::client;
 
-/// The stderr line when no viewer was connected to receive the focus.
-pub const NO_VIEWER: &str = "no Canvas viewer is open to show the card";
+/// The stderr line when no visible viewer window received the focus.
+pub const NO_VIEWER: &str = "no Canvas viewer is visible to show the card";
 
 /// The same, for an artifact.
-pub const NO_VIEWER_ARTIFACT: &str = "no Canvas viewer is open to show the artifact";
+pub const NO_VIEWER_ARTIFACT: &str = "no Canvas viewer is visible to show the artifact";
 
 pub fn run(id: &str) -> Result<(), String> {
     let artifact = id.starts_with(canvasd::artifacts::ID_PREFIX);

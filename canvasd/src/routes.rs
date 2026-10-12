@@ -344,14 +344,19 @@ pub async fn put_card_data(
 }
 
 /// `canvas focus`: asks every open viewer to clear what hides the card,
-/// scroll to it and ring it. Answers how many viewers the event reached, so
-/// the CLI can fail when nobody saw it; 404 for an unknown card.
+/// scroll to it and ring it. Answers how many visible viewers the event
+/// reached ([`AppState::visible_viewers`]), so the CLI can fail when nobody
+/// saw it; 404 for an unknown card.
 pub async fn focus_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if !state.inner.read().await.cards.iter().any(|c| c.id == id) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let viewers = state.publish(CanvasEvent::CardFocus(id.clone()));
-    canvas_core::log::info("card focus", &[("card", &id), ("viewers", &viewers)]);
+    let reached = state.publish(CanvasEvent::CardFocus(id.clone()));
+    let viewers = state.visible_viewers(reached).await;
+    canvas_core::log::info(
+        "card focus",
+        &[("card", &id), ("viewers", &viewers), ("reached", &reached)],
+    );
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 

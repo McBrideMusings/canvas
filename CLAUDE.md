@@ -363,8 +363,10 @@ beside the terminal all day.
   id) publishes a `card-focus` SSE event, never persisted; each viewer runs
   the same `openCardLink` a `canvas-post://` link does — clear search and
   filters, scroll, ring — without showing or raising the window. It prints
-  `{"viewers": N}`, the open `/api/events` streams the event reached, and
-  exits 1 with one stderr line when N is 0. `canvas post --focus` (also with
+  `{"viewers": N}`, the windows whose live watch report (below) says visible,
+  capped at the open `/api/events` streams the event reached (both logged on
+  `card focus`), and exits 1 with one stderr line when N is 0, so a closed
+  (hidden) window counts for nothing though its stream stays open. `canvas post --focus` (also with
   `--update`) focuses the card it just wrote and adds `viewers` to its JSON;
   zero viewers there is a stderr warning, not a failure, since the card exists.
   `canvas snapshot <card_id> <out.png>` (`POST /api/cards/:id/snapshot`)
@@ -552,11 +554,13 @@ beside the terminal all day.
   artifact's stops too) and the pane header's Stop button call `DELETE
   /api/artifacts/:id/refresh`, which removes it, its error and its scheduler
   slot, so a run in flight delivers nothing (logged `artifact refresh
-  stopped`; nothing to stop answers the artifact as it is). Each visible viewer window reports the
-  artifacts it shows — the pane's page and every widget row in view — with
-  `PUT /api/artifact-watch` `{window, artifacts}` every 15s and at once when
-  the set changes (an empty list when hidden; logged `artifact watch` when a
-  window's set changes); a report counts for 30s. `canvasd/src/refresh.rs` (a
+  stopped`; nothing to stop answers the artifact as it is). Each viewer window reports
+  whether it is visible and the artifacts it shows — the pane's page and every
+  widget row in view — with `PUT /api/artifact-watch` `{window, visible,
+  artifacts}` every 15s while visible, at once when either changes and after
+  every state load (an empty list when hidden; logged `artifact watch` when a
+  window's set or visibility changes); a report counts for 30s, and `canvas
+  focus` counts the windows one says are visible. `canvasd/src/refresh.rs` (a
   1s tick, `refresh_tick_at` taking the clock) runs `sh -c <cmd>` in `cwd` at
   its interval only while a live report names the artifact, or with `always`
   regardless; an interval that came due unwatched runs as soon as a window

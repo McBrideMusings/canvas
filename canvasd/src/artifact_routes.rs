@@ -419,10 +419,11 @@ pub async fn stop_refresh(
     }
 }
 
-/// A viewer window reports the artifacts it shows (`WATCH_REPORT_SECS`
-/// apart while visible, and at once when that changes); canvasd runs a
-/// refresh only while a report under `WATCH_LAPSE_SECS` old names it, unless
-/// it is marked `always`.
+/// A viewer window reports whether it is visible and the artifacts it shows
+/// (`WATCH_REPORT_SECS` apart while visible, and at once when either
+/// changes); canvasd runs a refresh only while a report under
+/// `WATCH_LAPSE_SECS` old names it, unless it is marked `always`, and
+/// `canvas focus` counts the windows such a report says are visible.
 pub async fn report_watch(
     State(state): State<AppState>,
     Json(report): Json<canvas_core::WatchReport>,
@@ -536,14 +537,19 @@ pub async fn open_artifact_link(
 }
 
 /// `canvas focus art-…`: asks every open viewer to switch to the Artifacts
-/// page and open the artifact. Answers how many viewers the event reached, so
-/// the CLI can fail when nobody saw it.
+/// page and open the artifact. Answers how many visible viewers the event
+/// reached ([`AppState::visible_viewers`]), so the CLI can fail when nobody
+/// saw it.
 pub async fn focus_artifact(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if !state.artifacts.read().await.records.contains_key(&id) {
         return not_found();
     }
-    let viewers = state.publish(CanvasEvent::ArtifactFocus(id.clone()));
-    canvas_core::log::info("artifact focus", &[("id", &id), ("viewers", &viewers)]);
+    let reached = state.publish(CanvasEvent::ArtifactFocus(id.clone()));
+    let viewers = state.visible_viewers(reached).await;
+    canvas_core::log::info(
+        "artifact focus",
+        &[("id", &id), ("viewers", &viewers), ("reached", &reached)],
+    );
     Json(serde_json::json!({ "viewers": viewers })).into_response()
 }
 

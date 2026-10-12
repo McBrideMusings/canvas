@@ -75,12 +75,14 @@ pub const WATCH_LAPSE_SECS: u64 = 30;
 /// How often a visible viewer window reports the artifacts it shows.
 pub const WATCH_REPORT_SECS: u64 = 15;
 
-/// Body for `PUT /api/artifact-watch`: the artifacts one viewer window shows
-/// right now (its pane's page and the widget rows in view); an empty list
-/// when it shows none or was hidden.
+/// Body for `PUT /api/artifact-watch`: whether one viewer window is visible,
+/// and the artifacts it shows right now (its pane's page and the widget rows
+/// in view); an empty list when it shows none or is hidden. `canvas focus`
+/// counts the windows whose live report says visible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchReport {
     pub window: String,
+    pub visible: bool,
     pub artifacts: Vec<String>,
 }
 

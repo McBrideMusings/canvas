@@ -209,20 +209,34 @@ impl AppState {
     }
 
     /// Keeps one viewer window's watch report; a report naming a different
-    /// set than the window's last is logged.
+    /// set or visibility than the window's last is logged.
     pub async fn record_watch(&self, report: canvas_core::WatchReport) {
         let ids = report.artifacts.join(",");
         let changed = self.artifacts.write().await.record_watch(
             report.window.clone(),
+            report.visible,
             report.artifacts,
             Instant::now(),
         );
         if changed {
             canvas_core::log::info(
                 "artifact watch",
-                &[("window", &report.window), ("ids", &ids)],
+                &[
+                    ("window", &report.window),
+                    ("visible", &report.visible),
+                    ("ids", &ids),
+                ],
             );
         }
+    }
+
+    /// How many viewers can see a viewer-only event that reached `reached`
+    /// event streams: the windows whose live watch report says visible, never
+    /// more than the streams open. A hidden window keeps its stream, so
+    /// `reached` alone counts it.
+    pub async fn visible_viewers(&self, reached: usize) -> usize {
+        let visible = self.artifacts.read().await.visible_windows(Instant::now());
+        visible.min(reached)
     }
 
     /// Delivers a run's outcome, unless the refresh was stopped or replaced,

@@ -70,13 +70,30 @@ pub struct Artifacts {
     /// The same moment on the scheduler's clock: a newly watched artifact
     /// runs at once only when its value is older than its interval.
     pub(crate) data_instant: HashMap<String, std::time::Instant>,
-    /// Each viewer window's latest watch report: when it came and the
-    /// artifacts it named. See [`Self::watched_ids`].
-    watches: HashMap<String, (std::time::Instant, Vec<String>)>,
+    /// Each viewer window's latest watch report. See [`Self::watched_ids`]
+    /// and [`Self::visible_windows`].
+    watches: HashMap<String, Watch>,
     /// One refresh loop per artifact with a refresh; see [`crate::refresh`].
     pub(crate) slots: crate::refresh::Slots,
     pub(crate) generation: u64,
     data_dir: Option<PathBuf>,
+}
+
+/// One viewer window's latest watch report: when it came, whether the
+/// window was visible, and the artifacts it named.
+struct Watch {
+    at: std::time::Instant,
+    visible: bool,
+    ids: Vec<String>,
+}
+
+impl Watch {
+    /// Whether the report still counts at `now`: it is younger than
+    /// [`canvas_core::WATCH_LAPSE_SECS`].
+    fn live(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.at)
+            < std::time::Duration::from_secs(canvas_core::WATCH_LAPSE_SECS)
+    }
 }
 
 impl Artifacts {
@@ -221,17 +238,22 @@ impl Artifacts {
     }
 
     /// Keeps `window`'s watch report, received `at`, in place of its last
-    /// one. True when the report names a different set than the last did.
+    /// one. True when the report names a different set, or a different
+    /// visibility, than the last did.
     pub fn record_watch(
         &mut self,
         window: String,
+        visible: bool,
         mut ids: Vec<String>,
         at: std::time::Instant,
     ) -> bool {
         ids.sort();
         ids.dedup();
-        let changed = self.watches.get(&window).is_none_or(|(_, was)| *was != ids);
-        self.watches.insert(window, (at, ids));
+        let changed = self
+            .watches
+            .get(&window)
+            .is_none_or(|was| was.visible != visible || was.ids != ids);
+        self.watches.insert(window, Watch { at, visible, ids });
         changed
     }
 
@@ -239,21 +261,27 @@ impl Artifacts {
     /// [`canvas_core::WATCH_LAPSE_SECS`] at `now` names. Lapsed reports are
     /// dropped.
     pub fn watched_ids(&mut self, now: std::time::Instant) -> std::collections::HashSet<String> {
-        let lapse = std::time::Duration::from_secs(canvas_core::WATCH_LAPSE_SECS);
-        self.watches
-            .retain(|_, (at, _)| now.saturating_duration_since(*at) < lapse);
+        self.watches.retain(|_, w| w.live(now));
         self.watches
             .values()
-            .flat_map(|(_, ids)| ids.iter().cloned())
+            .flat_map(|w| w.ids.iter().cloned())
             .collect()
+    }
+
+    /// How many viewer windows a live watch report says are visible at `now`.
+    pub fn visible_windows(&self, now: std::time::Instant) -> usize {
+        self.watches
+            .values()
+            .filter(|w| w.visible && w.live(now))
+            .count()
     }
 
     /// Whether a live watch report names `id` now.
     fn is_watched(&self, id: &str) -> bool {
-        let lapse = std::time::Duration::from_secs(canvas_core::WATCH_LAPSE_SECS);
+        let now = std::time::Instant::now();
         self.watches
             .values()
-            .any(|(at, ids)| at.elapsed() < lapse && ids.iter().any(|i| i == id))
+            .any(|w| w.live(now) && w.ids.iter().any(|i| i == id))
     }
 
     /// Forgets everything kept in memory for `id`, once its record is gone.

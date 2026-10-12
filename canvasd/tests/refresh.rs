@@ -71,6 +71,7 @@ async fn watch(state: &AppState, ids: &[&str]) {
     state
         .record_watch(canvas_core::WatchReport {
             window: "w1".to_string(),
+            visible: true,
             artifacts: ids.iter().map(|i| i.to_string()).collect(),
         })
         .await;
@@ -361,7 +362,7 @@ async fn a_first_watch_runs_at_once_only_for_a_value_older_than_the_interval() {
 #[tokio::test]
 async fn the_watch_route_marks_an_artifact_watched() {
     let (state, app, id) = artifact_with(json!({}), None).await;
-    let body = json!({"window": "w9", "artifacts": [id]});
+    let body = json!({"window": "w9", "visible": true, "artifacts": [id]});
     let (status, _) = send(&app, "PUT", "/api/artifact-watch", body, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(view_of(&state, &id).await["watched"], true);

@@ -3223,10 +3223,12 @@
 
   // ---- Watch reports --------------------------------------------------------
   // canvasd runs an artifact's refresh only while a visible window shows it
-  // (unless it is marked --always). While this window is visible it reports,
-  // every WATCH_REPORT_MS and at once when the set changes, the artifact
-  // whose page is open in the pane and each artifact whose widget row is in
-  // view; hidden, it reports none. canvasd lets a report lapse after 30s.
+  // (unless it is marked --always), and `canvas focus` counts only visible
+  // windows. This window reports whether it is visible and, while it is,
+  // the artifact whose page is open in the pane and each artifact whose
+  // widget row is in view; hidden, it reports none. It reports at once when
+  // either changes and after every state load, and renews every
+  // WATCH_REPORT_MS while visible. canvasd lets a report lapse after 30s.
   const WATCH_REPORT_MS = 15000;
   const watchWindow =
     (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
@@ -3261,17 +3263,19 @@
     return [...ids].sort();
   }
 
-  // `renew` re-sends an unchanged, non-empty set so it doesn't lapse.
+  // `renew` re-sends an unchanged report from a visible window so it
+  // doesn't lapse.
   function reportWatch(renew) {
     clearTimeout(watchTimer);
+    const visible = document.visibilityState === "visible";
     const ids = watchedArtifactIds();
-    const key = ids.join("\n");
-    if (key === watchSent && !(renew && ids.length)) return;
+    const key = `${visible}\n${ids.join("\n")}`;
+    if (key === watchSent && !(renew && visible)) return;
     watchSent = key;
     fetch("/api/artifact-watch", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ window: watchWindow, artifacts: ids }),
+      body: JSON.stringify({ window: watchWindow, visible, artifacts: ids }),
     }).catch(() => {
       watchSent = null;
     });
@@ -3827,6 +3831,10 @@
     if (page === "artifacts") renderArtifacts();
     paneReported = "";
     schedulePaneReport();
+    // A restarted canvasd holds no report, so this window's goes again, at
+    // once: a `canvas focus` right after a launch counts only reported windows.
+    watchSent = null;
+    reportWatch(false);
     // A card that aged out of the server's window (or was deleted) while
     // this browser was disconnected never passes through removeCard, so
     // drop it here instead of leaving its id in unseen.cardIds forever.

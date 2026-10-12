@@ -358,9 +358,26 @@ fn put_skips_a_link_to_nothing_in_the_source() {
     assert!(std::fs::symlink_metadata(folder.join("broken")).is_err());
 }
 
-/// A viewer as canvasd counts one: an open `/api/events` stream. Returns once
-/// the response headers arrive, so the stream is subscribed.
+/// A visible viewer window: an open `/api/events` stream (returned once the
+/// response headers arrive, so it is subscribed) and a watch report saying
+/// the window is visible.
 fn connect_viewer(daemon: &Daemon) -> std::os::unix::net::UnixStream {
+    let stream = open_events(daemon);
+    let body = serde_json::json!({"window": "w1", "visible": true, "artifacts": []});
+    let response = canvas_core::unix_http::request(
+        &daemon.socket,
+        "PUT",
+        "/api/artifact-watch",
+        &[("Content-Type", "application/json")],
+        body.to_string().as_bytes(),
+        Some(Duration::from_secs(5)),
+    )
+    .expect("canvasd answered");
+    assert_eq!(response.status, 204);
+    stream
+}
+
+fn open_events(daemon: &Daemon) -> std::os::unix::net::UnixStream {
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
     stream
@@ -413,7 +430,7 @@ fn focus_on_an_artifact_fails_with_no_viewer_or_an_unknown_id() {
     assert!(none.stdout.is_empty());
     assert_eq!(
         String::from_utf8_lossy(&none.stderr).trim(),
-        "no Canvas viewer is open to show the artifact"
+        "no Canvas viewer is visible to show the artifact"
     );
     let unknown = run(&daemon, &["focus", "art-0000000000"]);
     assert_eq!(unknown.status.code(), Some(1));

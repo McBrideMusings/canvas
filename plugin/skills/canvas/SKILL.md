@@ -63,11 +63,12 @@ canvas post --update c1 - <<'EOF' # later, same card
 EOF
 ```
 
-`canvas focus <card_id>` brings a card into view in every open Canvas window:
+`canvas focus <card_id>` brings a card into view in every visible Canvas window:
 it clears the search and filters hiding it, scrolls to it and rings it, but
-never raises the window. It prints `{"viewers": N}` and exits 1 when no window
-is open. `canvas post --focus` (also with `--update`) does the same for the
-card it just wrote and adds `"viewers"` to its JSON; with no window open it
+never raises the window. It prints `{"viewers": N}`, counting only windows that
+can be seen, and exits 1 when none is visible (a closed window doesn't count).
+`canvas post --focus` (also with `--update`) does the same for the
+card it just wrote and adds `"viewers"` to its JSON; with no visible window it
 warns on stderr and still exits 0, since the card was written.
 
 `canvas snapshot <card_id> <out.png>` writes a PNG of the card as the open

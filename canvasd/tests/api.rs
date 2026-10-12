@@ -1260,6 +1260,7 @@ async fn focus_reaches_viewers_as_a_card_focus_event_naming_the_card() {
     let card = seed_card(&app, "s1", "/tmp/proj").await;
     let response = app.clone().oneshot(get("/api/events")).await.unwrap();
     let mut body = response.into_body().into_data_stream();
+    report_window(&app, "w1", true).await;
 
     let response = app
         .clone()
@@ -1295,6 +1296,44 @@ async fn focus_with_no_viewer_reports_zero() {
     assert_eq!(response.status(), StatusCode::OK);
     let value: serde_json::Value = json_body(response).await;
     assert_eq!(value, json!({"viewers": 0}));
+}
+
+/// Reports one viewer window's visibility, as the viewer's watch report does.
+async fn report_window(app: &axum::Router, window: &str, visible: bool) {
+    let body = json!({"window": window, "visible": visible, "artifacts": []});
+    let request = Request::builder()
+        .method("PUT")
+        .uri("/api/artifact-watch")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn focus_counts_only_viewers_whose_window_is_visible() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let focus = || async {
+        let response = app
+            .clone()
+            .oneshot(post(&format!("/api/cards/{}/focus", card.id), json!({})))
+            .await
+            .unwrap();
+        json_body::<serde_json::Value>(response).await["viewers"].clone()
+    };
+    // A window's stream with no report yet, then one reporting hidden: the
+    // event reaches it, but nobody sees the card.
+    let _stream = app.clone().oneshot(get("/api/events")).await.unwrap();
+    assert_eq!(focus().await, json!(0));
+    report_window(&app, "w1", false).await;
+    assert_eq!(focus().await, json!(0));
+    report_window(&app, "w1", true).await;
+    assert_eq!(focus().await, json!(1));
+    // Two visible reports but one stream open: one viewer.
+    report_window(&app, "w2", true).await;
+    assert_eq!(focus().await, json!(1));
 }
 
 #[tokio::test]

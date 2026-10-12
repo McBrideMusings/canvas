@@ -135,9 +135,32 @@ fn post_card(daemon: &Daemon) -> String {
     posted["card_id"].as_str().unwrap().to_string()
 }
 
-/// A viewer as canvasd counts one: an open `/api/events` stream. Returns once
-/// the response headers arrive, so the stream is subscribed.
+/// A visible viewer window: an open `/api/events` stream and a watch report
+/// saying the window is visible.
 fn connect_viewer(daemon: &Daemon) -> std::os::unix::net::UnixStream {
+    let stream = open_events(daemon);
+    report_window(daemon, true);
+    stream
+}
+
+/// Reports one viewer window's visibility, as the viewer's watch report does.
+fn report_window(daemon: &Daemon, visible: bool) {
+    let body = serde_json::json!({"window": "w1", "visible": visible, "artifacts": []});
+    let response = canvas_core::unix_http::request(
+        &daemon.socket,
+        "PUT",
+        "/api/artifact-watch",
+        &[("Content-Type", "application/json")],
+        body.to_string().as_bytes(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    assert_eq!(response.status, 204);
+}
+
+/// An open `/api/events` stream. Returns once the response headers arrive,
+/// so the stream is subscribed.
+fn open_events(daemon: &Daemon) -> std::os::unix::net::UnixStream {
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
     stream
@@ -173,6 +196,21 @@ fn focus_with_no_viewer_fails_with_one_line() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
     assert!(stderr.contains("no Canvas viewer"), "{stderr}");
+}
+
+#[test]
+fn focus_fails_when_the_only_viewer_window_is_hidden() {
+    let daemon = spawn_daemon();
+    let card_id = post_card(&daemon);
+    let _viewer = open_events(&daemon);
+    report_window(&daemon, false);
+    let output = run(&daemon, &["focus", &card_id], None);
+    assert_eq!(output.status.code(), Some(1), "{:?}", output);
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "no Canvas viewer is visible to show the card"
+    );
 }
 
 #[test]
