@@ -2149,7 +2149,7 @@
       `#__canvas_root{overflow:hidden;box-sizing:border-box;overflow-wrap:anywhere;}` +
       `:where(#__canvas_root) *{max-width:100%;}` +
       `:where(#__canvas_root) :is(img,video){height:auto;}` +
-      `mark[data-canvas-hit]{background:#fde68a;color:inherit;border-radius:2px;}</style>` +
+      `mark[data-canvas-hit]{background:#fde68a!important;color:#1a1a1a!important;border-radius:2px;}</style>` +
       `</head><body><div id="__canvas_root">${html}</div>${postStyle}${resizeScript}</body></html>`
     );
   }
