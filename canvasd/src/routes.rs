@@ -871,55 +871,104 @@ pub async fn get_card_image(
     }
 
     let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let content_type = (header::CONTENT_TYPE, mime.essence_str().to_string());
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-
-    let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Ok(len) = file.metadata().await.map(|m| m.len()) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let span = match range.map(|r| parse_byte_range(r, len)) {
-        None | Some(ByteRange::Ignore) => None,
-        Some(ByteRange::Span(start, end)) => Some((start, end)),
-        Some(ByteRange::Unsatisfiable) => {
-            return (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                [(header::CONTENT_RANGE, format!("bytes */{len}"))],
-            )
-                .into_response();
-        }
-    };
-    let Some((start, end)) = span else {
-        return match tokio::fs::read(path).await {
-            Ok(bytes) => (
-                StatusCode::OK,
-                [content_type, (header::ACCEPT_RANGES, "bytes".to_string())],
-                bytes,
-            )
-                .into_response(),
-            Err(_) => StatusCode::NOT_FOUND.into_response(),
-        };
-    };
-    let mut buf = vec![0u8; (end - start + 1) as usize];
-    let read = async {
-        file.seek(std::io::SeekFrom::Start(start)).await?;
-        file.read_exact(&mut buf).await
-    };
-    if read.await.is_err() {
-        return StatusCode::NOT_FOUND.into_response();
+    match read_ranged(path, &headers).await {
+        Ok(read) => read.respond(vec![(header::CONTENT_TYPE, mime.essence_str().to_string())]),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
-    (
-        StatusCode::PARTIAL_CONTENT,
-        [
-            content_type,
-            (header::ACCEPT_RANGES, "bytes".to_string()),
-            (header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}")),
-        ],
-        buf,
-    )
-        .into_response()
+}
+
+/// A file read as the request's `Range` header asks.
+pub(crate) enum RangedRead {
+    /// No usable range: the whole file, answered 200.
+    Whole(Vec<u8>),
+    /// One slice (inclusive `start..=end` of `len` bytes), answered 206.
+    Slice {
+        bytes: Vec<u8>,
+        start: u64,
+        end: u64,
+        len: u64,
+    },
+    /// A range starting past the end of a `len`-byte file, answered 416.
+    Unsatisfiable(u64),
+}
+
+/// Reads `path` whole, or the one `bytes=` range `headers` names (at most
+/// `MAX_RANGE_BYTES`), so a video can seek without the file being read whole.
+pub(crate) async fn read_ranged(
+    path: &StdPath,
+    headers: &HeaderMap,
+) -> std::io::Result<RangedRead> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    match range.map(|r| parse_byte_range(r, len)) {
+        None | Some(ByteRange::Ignore) => {
+            let mut bytes = Vec::with_capacity(len as usize);
+            file.read_to_end(&mut bytes).await?;
+            Ok(RangedRead::Whole(bytes))
+        }
+        Some(ByteRange::Unsatisfiable) => Ok(RangedRead::Unsatisfiable(len)),
+        Some(ByteRange::Span(start, end)) => {
+            let mut bytes = vec![0u8; (end - start + 1) as usize];
+            file.seek(std::io::SeekFrom::Start(start)).await?;
+            file.read_exact(&mut bytes).await?;
+            Ok(RangedRead::Slice {
+                bytes,
+                start,
+                end,
+                len,
+            })
+        }
+    }
+}
+
+impl RangedRead {
+    /// The response: its status, `Accept-Ranges`, `Content-Range` where one
+    /// applies, then `headers`, then the bytes.
+    pub(crate) fn respond(self, mut headers: Vec<(header::HeaderName, String)>) -> Response {
+        headers.push((header::ACCEPT_RANGES, "bytes".to_string()));
+        let (status, body) = match self {
+            RangedRead::Whole(bytes) => (StatusCode::OK, bytes),
+            RangedRead::Slice {
+                bytes,
+                start,
+                end,
+                len,
+            } => {
+                headers.push((header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}")));
+                (StatusCode::PARTIAL_CONTENT, bytes)
+            }
+            RangedRead::Unsatisfiable(len) => {
+                headers.push((header::CONTENT_RANGE, format!("bytes */{len}")));
+                (StatusCode::RANGE_NOT_SATISFIABLE, Vec::new())
+            }
+        };
+        respond_with(status, headers, body)
+    }
+}
+
+/// Answers `status` with `headers`, replacing the body's default
+/// `Content-Type` rather than sending a second one beside it. A header value
+/// that isn't valid fails the response with a 500 rather than going out
+/// without it, since it may be a CSP.
+pub(crate) fn respond_with(
+    status: StatusCode,
+    headers: Vec<(header::HeaderName, String)>,
+    body: Vec<u8>,
+) -> Response {
+    let mut map = HeaderMap::new();
+    for (name, value) in headers {
+        match value.parse() {
+            Ok(value) => {
+                map.insert(name, value);
+            }
+            Err(_) => {
+                canvas_core::log::error("response header invalid", &[("name", &name)]);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
+    (status, map, body).into_response()
 }
 
 fn is_openable(path: &str) -> bool {

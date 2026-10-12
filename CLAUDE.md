@@ -488,8 +488,11 @@ beside the terminal all day.
   CSP header (scripts, styles and fonts from the folder, inline or the three
   CDNs; `connect-src 'none'`, `form-action 'none'`, `sandbox allow-scripts`) and
   `Access-Control-Allow-Origin: *` for module scripts in the pane's opaque origin;
-  `bridge.rs` passes those two headers through. `artifact-upserted` and
-  `artifact-removed` SSE events are viewer-only; `/api/state` carries
+  `bridge.rs` passes those two headers through. A file other than an HTML page
+  honours one `bytes=` `Range` as a card image does (`routes::read_ranged`, 206
+  slices of at most 8 MB), so a video seeks; an HTML page is always sent whole,
+  200 with no `Accept-Ranges`, since the relay canvasd adds changes its length.
+  `artifact-upserted` and `artifact-removed` SSE events are viewer-only; `/api/state` carries
   `artifacts`. `canvas focus <art-id>` (`POST /api/artifacts/:id/focus`,
   `artifact-focus`) switches every viewer to the Artifacts page on that artifact
   and rings its frame; `--focus` on `artifact new|put` does the same once the

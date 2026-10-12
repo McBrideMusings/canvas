@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use canvas_core::{
@@ -16,7 +16,7 @@ use canvas_core::{
 use crate::artifact_state;
 use crate::artifacts::{self, Artifacts};
 use crate::provenance::{Action, Actor};
-use crate::routes::MAX_DATA_BYTES;
+use crate::routes::{read_ranged, respond_with, MAX_DATA_BYTES};
 use crate::state::{AppState, CanvasEvent, PaneAction, PaneReport};
 
 const NO_DATA_DIR: &str = "canvasd has no data directory to keep artifacts in";
@@ -651,8 +651,12 @@ pub async fn get_pane(State(state): State<AppState>) -> Response {
 }
 
 /// `/artifacts/:id/` — the artifact's entry page.
-pub async fn artifact_entry(state: State<AppState>, Path(id): Path<String>) -> Response {
-    serve_file(state, id, String::new()).await
+pub async fn artifact_entry(
+    state: State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    serve_file(state, id, String::new(), headers).await
 }
 
 /// `/artifacts/:id/*path` — one file of the artifact, confined to its folder
@@ -660,11 +664,19 @@ pub async fn artifact_entry(state: State<AppState>, Path(id): Path<String>) -> R
 pub async fn artifact_file(
     state: State<AppState>,
     Path((id, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    serve_file(state, id, path).await
+    serve_file(state, id, path, headers).await
 }
 
-async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> Response {
+/// Serves one artifact file with the artifact CSP, honouring a single `Range`
+/// request for anything but an HTML page.
+async fn serve_file(
+    State(state): State<AppState>,
+    id: String,
+    rel: String,
+    request_headers: HeaderMap,
+) -> Response {
     let folder = {
         let artifacts = state.artifacts.read().await;
         let Some(record) = artifacts.records.get(&id) else {
@@ -685,53 +697,53 @@ async fn serve_file(State(state): State<AppState>, id: String, rel: String) -> R
             return (StatusCode::NOT_FOUND, refusal.as_str()).into_response();
         }
     };
-    let bytes = match tokio::fs::read(&file).await {
-        Ok(bytes) => bytes,
-        Err(e) => return failed("reading an artifact file failed", &id, &e),
-    };
     let mime = mime_guess::from_path(&file).first_or_octet_stream();
-    let bytes = if mime.essence_str() == "text/html" {
-        // The freeze scan costs about 20ms per MB of page, so it runs off the
-        // runtime's workers.
-        let page = tokio::task::spawn_blocking(move || {
-            let freeze = canvas_core::html::webkit_freeze_page_reason(&bytes);
-            match freeze {
-                Some(reason) => Err(reason),
-                None => Ok(artifacts::served_page(&bytes)),
-            }
-        })
-        .await;
-        match page {
-            Ok(Ok(page)) => page,
-            Ok(Err(reason)) => return refused_page(&id, &rel, &reason),
-            Err(e) => return failed("serving an artifact page failed", &id, &e),
-        }
-    } else {
-        bytes
-    };
     let content_type = match (mime.type_(), mime.subtype().as_str()) {
         (mime_guess::mime::TEXT, _) | (_, "javascript" | "json" | "xml" | "svg+xml") => {
             format!("{}; charset=utf-8", mime.essence_str())
         }
         _ => mime.essence_str().to_string(),
     };
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                artifacts::content_security_policy(&id),
-            ),
-            // The pane's sandboxed page has an opaque origin, so its module
-            // scripts load cross-origin and need this to run.
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-        ],
-        bytes,
-    )
-        .into_response()
+    let headers = vec![
+        (header::CONTENT_TYPE, content_type),
+        (header::CACHE_CONTROL, "no-store".to_string()),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            artifacts::content_security_policy(&id),
+        ),
+        // The pane's sandboxed page has an opaque origin, so its module
+        // scripts load cross-origin and need this to run.
+        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+    ];
+    if mime.essence_str() != "text/html" {
+        return match read_ranged(&file, &request_headers).await {
+            Ok(read) => read.respond(headers),
+            Err(e) => failed("reading an artifact file failed", &id, &e),
+        };
+    }
+    // An HTML page is always sent whole, without `Accept-Ranges`: the relay
+    // canvasd adds changes its length, so a byte range of the file on disk
+    // would not match the page served.
+    let bytes = match tokio::fs::read(&file).await {
+        Ok(bytes) => bytes,
+        Err(e) => return failed("reading an artifact file failed", &id, &e),
+    };
+    // The freeze scan costs about 20ms per MB of page, so it runs off the
+    // runtime's workers.
+    let page = tokio::task::spawn_blocking(move || {
+        let freeze = canvas_core::html::webkit_freeze_page_reason(&bytes);
+        match freeze {
+            Some(reason) => Err(reason),
+            None => Ok(artifacts::served_page(&bytes)),
+        }
+    })
+    .await;
+    match page {
+        Ok(Ok(page)) => respond_with(StatusCode::OK, headers, page),
+        Ok(Err(reason)) => refused_page(&id, &rel, &reason),
+        Err(e) => failed("serving an artifact page failed", &id, &e),
+    }
 }
 
 /// The folder `id`'s state sits in (see [`artifact_state`]).

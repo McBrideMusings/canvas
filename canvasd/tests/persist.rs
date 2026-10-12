@@ -664,6 +664,59 @@ async fn artifact_html_is_served_with_the_error_relay_and_other_files_untouched(
 }
 
 #[tokio::test]
+async fn artifact_files_serve_a_byte_range_but_pages_are_sent_whole() {
+    let dir = temp_dir();
+    let app = build_router(AppState::open(&dir).await);
+    let id = send_as(&app, "POST", "/api/artifacts", Some(json!({}))).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("index.html"), "<!doctype html><p>hi").unwrap();
+    std::fs::write(src.join("clip.webm"), b"0123456789").unwrap();
+    send_as(
+        &app,
+        "POST",
+        &format!("/api/artifacts/{id}/put"),
+        Some(json!({ "source": src.to_str().unwrap() })),
+    )
+    .await;
+    let ranged = |path: &str, range: &'static str| {
+        let request = Request::builder()
+            .uri(format!("/artifacts/{id}/{path}"))
+            .header("range", range)
+            .body(Body::empty())
+            .unwrap();
+        let app = app.clone();
+        async move {
+            let res = app.oneshot(request).await.unwrap();
+            let status = res.status().as_u16();
+            let headers = res.headers().clone();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            (status, headers, body)
+        }
+    };
+
+    let (status, headers, body) = ranged("clip.webm", "bytes=2-4").await;
+    assert_eq!(status, 206);
+    assert_eq!(headers["content-range"], "bytes 2-4/10");
+    assert_eq!(headers["accept-ranges"], "bytes");
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert!(headers.contains_key("content-security-policy"));
+    assert_eq!(&body[..], b"234");
+
+    let (status, headers, _) = ranged("clip.webm", "bytes=10-").await;
+    assert_eq!(status, 416);
+    assert_eq!(headers["content-range"], "bytes */10");
+
+    let (status, headers, body) = ranged("index.html", "bytes=0-4").await;
+    assert_eq!(status, 200);
+    assert!(!headers.contains_key("accept-ranges"));
+    assert!(String::from_utf8_lossy(&body).contains("canvas-artifact-error"));
+}
+
+#[tokio::test]
 async fn a_linked_page_that_would_freeze_the_viewer_is_refused_and_left_as_is() {
     let dir = temp_dir();
     let app = build_router(AppState::open(&dir).await);
