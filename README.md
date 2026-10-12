@@ -36,7 +36,7 @@ The app is not code-signed, so build it yourself rather than copying a built
 cargo build --release -p canvas
 
 # 2. Build the app.
-( cd app/src-tauri && cargo tauri build -b app )
+( cd app/src-tauri && cargo tauri build -b app --config tauri.bundle.json )
 
 # 3. Install it and open it once.
 cp -R app/src-tauri/target/release/bundle/macos/Canvas.app /Applications/

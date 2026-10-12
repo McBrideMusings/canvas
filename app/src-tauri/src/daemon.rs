@@ -22,7 +22,9 @@ pub struct DaemonStatus {
     pub up_to_date: bool,
     // A bundled binary exists and differs from the installed one: only a
     // relaunch (whose setup() runs ensure_daemon) brings them level. False
-    // in a debug build, which bundles nothing, where up_to_date is always false.
+    // in a debug build, which bundles nothing (the resource is declared only
+    // in tauri.bundle.json, which `cargo tauri build` merges), where
+    // up_to_date is always false.
     pub relaunch_needed: bool,
     pub loaded: bool,
     pub running: bool,

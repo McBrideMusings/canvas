@@ -78,7 +78,9 @@ beside the terminal all day.
   Cargo workspace, outside the root one. It holds no persisted state;
   quitting it loses nothing. `daemon.rs` makes the app self-installing: on a
   release build's `setup()`, `ensure_daemon` installs the `canvas` binary
-  bundled as a Tauri resource (`tauri.conf.json`) through
+  bundled as a Tauri resource (declared in `tauri.bundle.json`, which only
+  `cargo tauri build --config tauri.bundle.json` merges, so a debug `cargo
+  build` copies no `canvas` beside the app and `relaunchNeeded` stays false) through
   `canvas_core::service::install`, the one installer `canvas daemon install`
   also runs, so the app and a deploy write the same bytes and never restart
   canvasd over each other. It writes the binary to `~/.local/bin` (a temp file

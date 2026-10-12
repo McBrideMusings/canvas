@@ -42,12 +42,6 @@ case "${1:-}" in
     # Not -p: fail if anything recreated the folder after the rm, and keep it private.
     mkdir -m 700 "${dir}"
     cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
-    # The app's build script needs the release binary it bundles as a resource
-    # (tauri.conf.json) to exist, even though a debug app never installs it.
-    if [ ! -f "${repo_root}/target/release/canvas" ]; then
-      echo "verify-app: building target/release/canvas for the app's build (first start in this checkout)" >&2
-      cargo build -q --release --manifest-path "${repo_root}/Cargo.toml" -p canvas
-    fi
     cargo build -q --manifest-path "${repo_root}/app/src-tauri/Cargo.toml"
     export CANVAS_DATA_DIR="${dir}" CANVAS_SOCKET="${socket}"
     "${repo_root}/target/debug/canvas" daemon > "${dir}/daemon.log" 2>&1 &

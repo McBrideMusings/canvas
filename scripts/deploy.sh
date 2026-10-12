@@ -18,7 +18,7 @@ canvas="$HOME/.local/bin/canvas"
 cd "$repo_root"
 cargo build --release -p canvas
 bash scripts/sign-canvas.sh
-(cd app/src-tauri && cargo tauri build -b app)
+(cd app/src-tauri && cargo tauri build -b app --config tauri.bundle.json)
 
 if pgrep -f "^$exe" >/dev/null; then
   echo "quitting Canvas.app"
