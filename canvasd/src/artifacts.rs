@@ -821,11 +821,22 @@ fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::copy(src, dest).map(|_| ())
 }
 
-/// A hash of every entry under `folder` except its `canvas-data/` state: its relative path, size, modified
-/// time and inode, walked without following symlinked folders. Any write,
-/// rename, add or removal changes it; reading a file does not. A linked HTML
-/// file hashes as its own one entry, and a missing root hashes differently
-/// from an empty folder, so a linked path disappearing counts as a change.
+/// Whether a file or folder name is scratch rather than part of a page: a
+/// hidden name (Finder's `.DS_Store`, vim's `.x.swp`, a linked repo's `.git`)
+/// or a `~` backup.
+pub fn scratch_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.starts_with('.') || name.ends_with('~')
+}
+
+/// A hash of every entry under `folder` except its `canvas-data/` state and
+/// [`scratch_name`]s: each file's relative path, size, modified time and
+/// inode, and each folder's relative path and inode (a folder's own time and
+/// size move when a scratch file comes and goes), walked without following
+/// symlinked folders. Any write, rename, add or removal of a page file
+/// changes it; reading a file does not. A linked HTML file hashes as its own
+/// one entry, and a missing root hashes differently from an empty folder, so
+/// a linked path disappearing counts as a change.
 pub fn fingerprint(folder: &Path) -> u64 {
     use std::hash::{Hash, Hasher};
     use std::os::unix::fs::MetadataExt;
@@ -853,17 +864,20 @@ pub fn fingerprint(folder: &Path) -> u64 {
         for entry in read.filter_map(Result::ok) {
             let path = entry.path();
             // A page's saved state is not part of the page.
-            if crate::artifact_state::is_data_dir_name(&entry.file_name()) {
+            let name = entry.file_name();
+            if crate::artifact_state::is_data_dir_name(&name) || scratch_name(&name) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 continue;
             };
+            let rel = path.strip_prefix(folder).unwrap_or(&path).to_path_buf();
             if meta.is_dir() {
                 stack.push(path.clone());
+                entries.push((rel, 0, 0, 0, meta.ino()));
+            } else {
+                entries.push((rel, meta.len(), meta.mtime(), meta.mtime_nsec(), meta.ino()));
             }
-            let rel = path.strip_prefix(folder).unwrap_or(&path).to_path_buf();
-            entries.push((rel, meta.len(), meta.mtime(), meta.mtime_nsec(), meta.ino()));
         }
     }
     entries.sort();

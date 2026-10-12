@@ -134,6 +134,30 @@ async fn a_reload_names_the_paths_its_burst_wrote() {
 }
 
 #[tokio::test]
+async fn scratch_files_alone_reload_nothing() {
+    let (state, _app, id, folder) = watched_artifact().await;
+    std::fs::create_dir_all(folder.join("css")).unwrap();
+    std::fs::write(folder.join("index.html"), "<h1>one</h1>").unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let mut rx = state.events.subscribe();
+
+    std::fs::write(folder.join(".DS_Store"), "finder").unwrap();
+    std::fs::write(folder.join("css/.DS_Store"), "finder").unwrap();
+    std::fs::write(folder.join("index.html~"), "backup").unwrap();
+    std::fs::write(folder.join(".index.html.swp"), "x").unwrap();
+    std::fs::remove_file(folder.join(".index.html.swp")).unwrap();
+    std::fs::create_dir_all(folder.join(".git/objects")).unwrap();
+    std::fs::write(folder.join(".git/objects/ab"), "x").unwrap();
+
+    let quiet = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;
+    assert!(quiet.is_empty(), "scratch writes reloaded: {quiet:?}");
+
+    std::fs::write(folder.join("index.html"), "<h1>two</h1>").unwrap();
+    let seen = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;
+    assert_eq!(seen.len(), 1, "got {seen:?}");
+}
+
+#[tokio::test]
 async fn a_put_names_the_files_it_copied() {
     let (state, app, id, _folder) = watched_artifact().await;
     let source = temp_dir();

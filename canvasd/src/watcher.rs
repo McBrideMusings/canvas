@@ -8,7 +8,8 @@
 //! `artifact-upserted` goes out once, listing the paths the burst wrote; the
 //! viewer tells the open page when `updatedAt` changes. A burst that leaves the folder's
 //! [`fingerprint`](crate::artifacts::fingerprint) as it was last stamped
-//! (a `put`, which stamps itself) publishes nothing. Writes under an
+//! (a `put`, which stamps itself, or only scratch files such as `.DS_Store`
+//! or a swap file coming and going) publishes nothing. Writes under an
 //! artifact's `canvas-data/` folder (a page's saved state) belong to no burst.
 //!
 //! The OS refuses to watch a path that doesn't exist (a link whose folder is
@@ -24,6 +25,7 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 use tokio::time::Instant;
 
 use crate::artifact_routes::save_and_publish;
+use crate::artifacts::scratch_name;
 use crate::provenance::{Action, Actor};
 use crate::state::AppState;
 
@@ -433,16 +435,13 @@ fn spawn_retry(watcher: Arc<Watcher>) -> tokio::sync::mpsc::UnboundedReceiver<St
 }
 
 /// Whether a path a burst saw names one of the page's files, rather than a
-/// folder or an editor's scratch file: a hidden name or a `~` backup, or a
-/// name with no extension that is gone again by the burst's end (vim's
-/// `4913` probe). A removed file with an extension is a change the page needs.
+/// folder or an editor's scratch file: a [`scratch_name`] anywhere in its
+/// path, or a name with no extension that is gone again by the burst's end
+/// (vim's `4913` probe). A removed file with an extension is a change the
+/// page needs.
 fn page_file(folder: &Path, rel: &str) -> bool {
     let path = Path::new(rel);
-    if rel.ends_with('~')
-        || path
-            .components()
-            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
-    {
+    if path.components().any(|c| scratch_name(c.as_os_str())) {
         return false;
     }
     let full = if folder.is_file() {
