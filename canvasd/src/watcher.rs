@@ -8,9 +8,10 @@
 //! `artifact-upserted` goes out once, listing the paths the burst wrote; the
 //! viewer tells the open page when `updatedAt` changes. A burst that leaves the folder's
 //! [`fingerprint`](crate::artifacts::fingerprint) as it was last stamped
-//! (a `put`, which stamps itself, or only scratch files such as `.DS_Store`
-//! or a swap file coming and going) publishes nothing. Writes under an
-//! artifact's `canvas-data/` folder (a page's saved state) belong to no burst.
+//! (a `put`, which stamps itself) publishes nothing. Writes under an artifact's `canvas-data/` folder (a
+//! page's saved state), and to any path with an
+//! [`ignored_name`](crate::artifacts::ignored_name) in it (`.DS_Store`, a swap
+//! file, a linked repo's `.git`, `target` or `node_modules`), belong to no burst.
 //!
 //! The OS refuses to watch a path that doesn't exist (a link whose folder is
 //! gone when canvasd starts), so a path whose watch failed is tried again
@@ -25,7 +26,7 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 use tokio::time::Instant;
 
 use crate::artifact_routes::save_and_publish;
-use crate::artifacts::scratch_name;
+use crate::artifacts::ignored_name;
 use crate::provenance::{Action, Actor};
 use crate::state::AppState;
 
@@ -265,6 +266,10 @@ impl Watcher {
             .iter()
             .filter_map(|(id, root)| {
                 let rel = path.strip_prefix(root).ok()?;
+                // Scratch files, `.git` and build output are not the page.
+                if rel.components().any(|c| ignored_name(c.as_os_str())) {
+                    return None;
+                }
                 // A page's saved state is not a change to the page.
                 if rel
                     .components()
@@ -434,16 +439,12 @@ fn spawn_retry(watcher: Arc<Watcher>) -> tokio::sync::mpsc::UnboundedReceiver<St
     rx
 }
 
-/// Whether a path a burst saw names one of the page's files, rather than a
-/// folder or an editor's scratch file: a [`scratch_name`] anywhere in its
-/// path, or a name with no extension that is gone again by the burst's end
-/// (vim's `4913` probe). A removed file with an extension is a change the
-/// page needs.
+/// Whether a path a burst saw names one of the page's files. A folder is not
+/// one, nor is a name with no extension that is gone again by the burst's end
+/// (vim's `4913` probe); a removed file with an extension is a change the
+/// page needs. [`Watcher::owners`] has already dropped [`ignored_name`]s.
 fn page_file(folder: &Path, rel: &str) -> bool {
     let path = Path::new(rel);
-    if path.components().any(|c| scratch_name(c.as_os_str())) {
-        return false;
-    }
     let full = if folder.is_file() {
         folder.to_path_buf()
     } else {
@@ -523,5 +524,43 @@ async fn files_changed(state: &AppState, id: &str, burst: Burst) {
                 ("source_missing", &view.source_missing),
             ],
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_under_ignored_names_belong_to_no_artifact() {
+        let watcher = Watcher::default();
+        let root = std::env::temp_dir().join(format!("canvasd-owners-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        watcher.lock().paths.insert("art-1".into(), root.clone());
+        for rel in [
+            ".git/index",
+            "target/debug/x.o",
+            "node_modules/a/b.js",
+            "css/.DS_Store",
+            "index.html~",
+        ] {
+            assert!(
+                watcher.owners(&root.join(rel)).is_empty(),
+                "{rel} started a burst"
+            );
+        }
+        assert_eq!(
+            watcher.owners(&root.join("css/site.css")),
+            [("art-1".to_string(), Some("css/site.css".to_string()))]
+        );
+        // Only the path below the artifact counts: a root inside `target` still reloads.
+        let nested = root.join("target/site");
+        std::fs::create_dir_all(&nested).unwrap();
+        watcher.lock().paths.insert("art-2".into(), nested.clone());
+        assert_eq!(
+            watcher.owners(&nested.join("index.html")),
+            [("art-2".to_string(), Some("index.html".to_string()))]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

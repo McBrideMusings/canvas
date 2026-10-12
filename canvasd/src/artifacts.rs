@@ -821,18 +821,22 @@ fn copy_file(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::copy(src, dest).map(|_| ())
 }
 
-/// Whether a file or folder name is scratch rather than part of a page: a
-/// hidden name (Finder's `.DS_Store`, vim's `.x.swp`, a linked repo's `.git`)
-/// or a `~` backup.
-pub fn scratch_name(name: &std::ffi::OsStr) -> bool {
+/// Build output folders a linked repo holds beside its page.
+const BUILD_DIRS: [&str; 2] = ["target", "node_modules"];
+
+/// Whether a file or folder name, and everything under it, is left out of an
+/// artifact's watch and fingerprint: a hidden name (Finder's `.DS_Store`,
+/// vim's `.x.swp`, a linked repo's `.git`), a `~` backup, or a build folder
+/// (`target`, `node_modules`).
+pub fn ignored_name(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy();
-    name.starts_with('.') || name.ends_with('~')
+    name.starts_with('.') || name.ends_with('~') || BUILD_DIRS.contains(&name.as_ref())
 }
 
 /// A hash of every entry under `folder` except its `canvas-data/` state and
-/// [`scratch_name`]s: each file's relative path, size, modified time and
+/// [`ignored_name`]s: each file's relative path, size, modified time and
 /// inode, and each folder's relative path and inode (a folder's own time and
-/// size move when a scratch file comes and goes), walked without following
+/// size move when an ignored file comes and goes), walked without following
 /// symlinked folders. Any write, rename, add or removal of a page file
 /// changes it; reading a file does not. A linked HTML file hashes as its own
 /// one entry, and a missing root hashes differently from an empty folder, so
@@ -865,7 +869,7 @@ pub fn fingerprint(folder: &Path) -> u64 {
             let path = entry.path();
             // A page's saved state is not part of the page.
             let name = entry.file_name();
-            if crate::artifact_state::is_data_dir_name(&name) || scratch_name(&name) {
+            if crate::artifact_state::is_data_dir_name(&name) || ignored_name(&name) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -890,6 +894,23 @@ pub fn fingerprint(folder: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprint_leaves_out_ignored_names() {
+        let root = std::env::temp_dir().join(format!("canvasd-print-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("index.html"), "<h1>one</h1>").unwrap();
+        let before = fingerprint(&root);
+        for dir in [".git", "target/debug", "node_modules/lib"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("x"), "x").unwrap();
+        }
+        std::fs::write(root.join("index.html~"), "backup").unwrap();
+        assert_eq!(fingerprint(&root), before);
+        std::fs::write(root.join("app.js"), "1").unwrap();
+        assert_ne!(fingerprint(&root), before);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn canvas_size_reads_either_attribute_order() {

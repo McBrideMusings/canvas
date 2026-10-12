@@ -148,6 +148,10 @@ async fn scratch_files_alone_reload_nothing() {
     std::fs::remove_file(folder.join(".index.html.swp")).unwrap();
     std::fs::create_dir_all(folder.join(".git/objects")).unwrap();
     std::fs::write(folder.join(".git/objects/ab"), "x").unwrap();
+    std::fs::create_dir_all(folder.join("target/debug")).unwrap();
+    std::fs::write(folder.join("target/debug/app"), "x").unwrap();
+    std::fs::create_dir_all(folder.join("node_modules/lib")).unwrap();
+    std::fs::write(folder.join("node_modules/lib/index.js"), "x").unwrap();
 
     let quiet = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;
     assert!(quiet.is_empty(), "scratch writes reloaded: {quiet:?}");

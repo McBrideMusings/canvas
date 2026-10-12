@@ -467,12 +467,14 @@ beside the terminal all day.
   file into the folder does the same with no command: `canvasd/src/watcher.rs`
   watches each artifact's path (owned folder or link) recursively (notify,
   FSEvents), and a write belongs to every artifact whose path holds it, so
-  nested links all reload; it ends a burst
+  nested links all reload, except a write whose path below the artifact's
+  holds an ignored name (`artifacts::ignored_name`: hidden names such as
+  `.DS_Store`, `.x.swp` or `.git`, `~` backups, and the build folders
+  `target` and `node_modules`), which starts no burst; it ends a burst
   after 200ms without a write (2s at most), and stamps `updatedAt` and
   publishes `artifact-upserted` once, unless the folder's fingerprint (paths,
-  sizes, mtimes, inodes, in memory; folders by path and inode only; hidden
-  names such as `.DS_Store`, `.x.swp` or `.git` and `~` backups left out,
-  `artifacts::scratch_name`) still matches its last stamp; a `put` holds
+  sizes, mtimes, inodes, in memory; folders by path and inode only; ignored
+  names and everything under them left out) still matches its last stamp; a `put` holds
   its artifact's bursts (`Watcher::hold`) until it has stamped, so its own
   writes never reload twice; `list`,
   `show <id>` and `delete <id>` (record and folder; a folder that can't be
