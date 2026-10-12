@@ -3041,6 +3041,14 @@
     return { row, hit, title, time, widget, error, frame: null, frameKey: null };
   }
 
+  // "updated 3m ago" or "linked · 3m ago"; the once-a-second tick repaints it
+  // while the Artifacts page shows, so a text that hasn't changed isn't rewritten.
+  function paintArtifactRowTime(entry, artifact) {
+    const kind = artifact.kind === "linked" ? "linked ·" : "updated";
+    const text = `${kind} ${relativeTime(artifact.updatedAt)}`;
+    if (entry.time.textContent !== text) entry.time.textContent = text;
+  }
+
   function paintArtifactRow(entry, artifact) {
     const name = artifactTitle(artifact);
     entry.title.replaceChildren();
@@ -3051,8 +3059,7 @@
     }
     entry.title.appendChild(document.createTextNode(name));
     entry.row.title = artifact.sourceMissing ? "Source missing" : "";
-    const kind = artifact.kind === "linked" ? "linked ·" : "updated";
-    entry.time.textContent = `${kind} ${relativeTime(artifact.updatedAt)}`;
+    paintArtifactRowTime(entry, artifact);
     entry.time.title = new Date(artifact.updatedAt).toLocaleString();
     const failed = Boolean(artifact.refreshError);
     entry.row.classList.toggle("refresh-failed", failed);
@@ -3213,10 +3220,17 @@
     }
   }
 
-  // The lines' ages count on while they show.
+  // The ages count on while they show: card headers on the Timeline; list
+  // rows and the pane's refresh lines on the Artifacts page.
   setInterval(() => {
     if (page === "timeline" && !document.hidden) paintCardTimes();
     if (page !== "artifacts") return;
+    if (!document.hidden) {
+      for (const [id, entry] of artifactRows) {
+        const artifact = artifacts.get(id);
+        if (artifact) paintArtifactRowTime(entry, artifact);
+      }
+    }
     if (!artifactRefreshErrorEl.hidden) paintRefreshError();
     if (!artifactRefreshEl.hidden) paintRefreshLine();
   }, 1000);
