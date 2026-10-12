@@ -8,6 +8,7 @@ mod bridge;
 mod daemon;
 #[cfg(debug_assertions)]
 mod debug;
+mod escape;
 mod export;
 mod integrations;
 mod snapshot;
@@ -208,6 +209,7 @@ pub fn run() {
             set_keep_on_top,
             get_keep_on_top,
             set_app_theme,
+            escape::set_artifact_full,
             open_settings,
             daemon_status,
             integration_status,
@@ -274,6 +276,8 @@ pub fn run() {
                     let _ = window.set_always_on_top(true);
                 }
             }
+
+            escape::install(app.handle());
 
             app.set_menu(build_app_menu(app.handle())?)?;
 

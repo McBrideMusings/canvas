@@ -10,6 +10,7 @@ fn main() {
             "set_keep_on_top",
             "get_keep_on_top",
             "set_app_theme",
+            "set_artifact_full",
             "open_settings",
             "daemon_status",
             "integration_status",

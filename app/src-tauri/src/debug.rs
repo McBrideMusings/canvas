@@ -10,6 +10,9 @@
 //!   can put it on a Retina display.
 //! - `save-path`: while it exists, an export writes to the path it holds
 //!   instead of showing the save dialog; an empty file answers "cancelled".
+//! - `escape`: once it exists it is deleted and a bare Escape key-down is sent
+//!   through `NSApplication.sendEvent` to the main window, the path a key
+//!   press takes, so the app's key monitor and the focused page both see it.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -87,6 +90,57 @@ pub fn run_eval_queue(app: AppHandle) {
                 ),
             }
         }
+        let escape = queue.with_file_name("escape");
+        if std::fs::remove_file(&escape).is_ok() {
+            send_escape(&app);
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
 }
+
+/// Sends the main window a bare Escape key-down on the main thread.
+#[cfg(target_os = "macos")]
+fn send_escape(app: &AppHandle) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
+    use objc2_foundation::{NSPoint, NSString};
+
+    let Some(Ok(ptr)) = app.get_webview_window("main").map(|w| w.ns_window()) else {
+        canvas_core::log::warn("debug escape failed", &[("error", &"no main window")]);
+        return;
+    };
+    let ptr = ptr as usize;
+    let result = app.run_on_main_thread(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        // SAFETY: the main window's NSWindow lives as long as the app.
+        let window = unsafe { &*(ptr as *const NSWindow) };
+        let escape = NSString::from_str("\u{1b}");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags(0),
+            0.0,
+            window.windowNumber(),
+            None,
+            &escape,
+            &escape,
+            false,
+            53,
+        );
+        match event {
+            Some(event) => {
+                NSApplication::sharedApplication(mtm).sendEvent(&event);
+                canvas_core::log::info("debug escape sent", &[("window", &window.windowNumber())]);
+            }
+            None => canvas_core::log::warn("debug escape failed", &[("error", &"AppKit made no event")]),
+        }
+    });
+    if let Err(e) = result {
+        canvas_core::log::warn("debug escape failed", &[("error", &e)]);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_escape(_app: &AppHandle) {}

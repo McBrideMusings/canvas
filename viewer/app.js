@@ -3725,8 +3725,9 @@
     exitFullEl.hidden = !full;
     paintArtifactPane();
     schedulePaneReport();
-    // Escape reaches this window only while focus is outside the page's
-    // iframe, so entering puts it on the way back.
+    // A key the page's iframe holds never reaches this window, so the app
+    // takes Escape for us while full window is on (artifact-escape below).
+    if (tauriCore) tauriCore.invoke("set_artifact_full", { full }).catch(() => {});
     if (full) exitFullEl.focus({ preventScroll: true });
     if (refocus) artifactFullEl.focus({ preventScroll: true });
   }
@@ -3734,13 +3735,32 @@
   artifactFullEl.addEventListener("click", () => setArtifactFull(true));
   exitFullEl.addEventListener("click", () => setArtifactFull(false));
 
-  // The menu, lightbox and drawer each take Escape first.
-  window.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !artifactFull) return;
-    if (openMenu || lightbox || drawerIsOpen()) return;
-    e.preventDefault();
-    setArtifactFull(false);
-  });
+  // The menu, lightbox, drawer and an armed confirm each take Escape first.
+  // Their listeners close them as the key arrives, so this one reads what is
+  // open in the capture phase, before any of them runs.
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape" || !artifactFull) return;
+      if (openMenu || lightbox || drawerIsOpen() || pendingConfirm) return;
+      e.preventDefault();
+      setArtifactFull(false);
+    },
+    true,
+  );
+
+  // The app's Escape while full window is on (app/src-tauri/src/escape.rs),
+  // replayed where the key would have landed: the focused element, or the
+  // window when focus is in the page's iframe.
+  if (tauriCore) {
+    // A reload opens out of full window; the app may still hold the old page's on.
+    tauriCore.invoke("set_artifact_full", { full: false }).catch(() => {});
+    window.__TAURI__.event.listen("artifact-escape", () => {
+      const focused = document.activeElement;
+      const target = focused && focused !== document.body && focused !== artifactFrame ? focused : window;
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+  }
 
   // `canvas artifact pane`: the same changes a drag, a double-click or the
   // full-window control make, on the artifact named, opened first.

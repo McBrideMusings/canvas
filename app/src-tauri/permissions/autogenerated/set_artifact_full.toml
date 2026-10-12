@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-artifact-full"
+description = "Enables the set_artifact_full command without any pre-configured scope."
+commands.allow = ["set_artifact_full"]
+
+[[permission]]
+identifier = "deny-set-artifact-full"
+description = "Denies the set_artifact_full command without any pre-configured scope."
+commands.deny = ["set_artifact_full"]

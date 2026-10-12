@@ -636,8 +636,17 @@ beside the terminal all day.
   after every change and state load, held in memory, and `DELETE`s it when no
   pane is showing; bare `canvas artifact pane` (`GET`) prints it, exiting 1
   when no open viewer reports one. A chosen size is kept as asked and clamped
-  to the window only on screen. Escape reaches the viewer only while focus is
-  outside the page's iframe; entering full window focuses the exit button.
+  to the window only on screen. Escape leaves full window even with focus in
+  the page's iframe, whose keys never reach the viewer: the viewer tells the
+  app with `set_artifact_full` on every entry and exit, and while it is on an
+  AppKit local key monitor (`app/src-tauri/src/escape.rs`) takes a bare Escape
+  aimed at the main window before the webview, emits `artifact-escape`, and the
+  viewer replays it as a keydown on its focused element (the window when that
+  is the iframe), so its menu, lightbox and drawer still take Escape first;
+  the app logs `artifact full window full=…` and `artifact escape`. A debug
+  build sends the main window that key through `NSApplication.sendEvent` when
+  the file `escape` appears in `CANVAS_DEBUG_DIR`. Entering full window
+  focuses the exit button.
   The menu's "Reset artifact" and `canvas artifact reset <id>` (`POST
   /api/artifacts/:id/reset`, 404 for an unknown id) take one path: canvasd
   drops the artifact's held `data` and `scriptErrors`, logs `artifact reset`

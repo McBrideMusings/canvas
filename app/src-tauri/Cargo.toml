@@ -34,12 +34,12 @@ tauri-plugin-deep-link = "2"
 # opened from Rust only, so the viewer holds no dialog permission.
 tauri-plugin-dialog = "2"
 
-# `canvas snapshot` captures the window's WKWebView (src/snapshot.rs); these
-# are the versions wry already pulls in.
+# `canvas snapshot` captures the window's WKWebView (src/snapshot.rs) and
+# src/escape.rs watches key events; these are the versions wry already pulls in.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
 objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSResponder", "NSWindow"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit", "objc2-core-foundation"] }
