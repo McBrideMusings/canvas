@@ -16,6 +16,9 @@
 //! The OS refuses to watch a path that doesn't exist (a link whose folder is
 //! gone when canvasd starts), so a path whose watch failed is tried again
 //! every [`RETRY_EVERY`]; once it is watched, it reloads as a burst would.
+//! On the same tick each path is resolved again, so a linked symlink pointed
+//! at a new target (or a symlinked folder above it) moves its watch there and
+//! reloads once; serving and the fingerprint already follow the link.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -56,6 +59,9 @@ struct Inner {
     /// Canonical paths, since the OS reports events under those. Two ids may
     /// hold the same path; the OS watch stays until neither does.
     paths: HashMap<String, PathBuf>,
+    /// Each artifact's path as `watch` was given it, resolved again on every
+    /// retry tick to find a symlink that now points elsewhere.
+    given: HashMap<String, PathBuf>,
     /// Artifacts a `put` is copying into, with how many puts: their bursts
     /// wait until the last put has stamped, however long the copy takes.
     held: HashMap<String, usize>,
@@ -105,10 +111,12 @@ impl Watcher {
     }
 
     fn watch_blocking(&self, id: &str, path: &Path) {
+        let given = path.to_path_buf();
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut os = self.lock_os();
         let old = {
             let mut inner = self.lock();
+            inner.given.insert(id.to_string(), given);
             let old = inner.paths.insert(id.to_string(), path.clone());
             if old.as_ref() == Some(&path) && !inner.failed.contains_key(id) {
                 return;
@@ -135,6 +143,7 @@ impl Watcher {
         let path = {
             let mut inner = self.lock();
             inner.failed.remove(id);
+            inner.given.remove(id);
             inner.paths.remove(id)
         };
         if let Some(path) = path {
@@ -172,7 +181,9 @@ impl Watcher {
     }
 
     /// Tries again to watch every path whose OS watch failed, and returns the
-    /// ids now watched. A path still missing is skipped without asking the OS.
+    /// ids now watched. Each is resolved again from the path as given, so a
+    /// link repointed while its watch was failing is followed to its target.
+    /// A path still missing is skipped without asking the OS.
     /// The OS lock is taken per path, so a `watch` or `unwatch` waits behind
     /// at most one FSEvents start.
     fn retry_failed(&self) -> Vec<String> {
@@ -181,13 +192,13 @@ impl Watcher {
             inner
                 .failed
                 .keys()
-                .filter_map(|id| Some((id.clone(), inner.paths.get(id)?.clone())))
+                .filter_map(|id| Some((id.clone(), inner.given.get(id)?.clone())))
                 .collect()
         };
         let mut watched = Vec::new();
         for (id, path) in due {
-            // Paths are recorded uncanonicalized while missing; the OS reports
-            // events under the canonical path, which `owners` matches against.
+            // The OS reports events under the canonical path, which `owners`
+            // matches against.
             let Ok(canonical) = path.canonicalize() else {
                 continue;
             };
@@ -199,7 +210,7 @@ impl Watcher {
             // a `watch` or `unwatch` since the list was read left `id` as is.
             {
                 let inner = self.lock();
-                if !inner.failed.contains_key(&id) || inner.paths.get(&id) != Some(&path) {
+                if !inner.failed.contains_key(&id) || inner.given.get(&id) != Some(&path) {
                     continue;
                 }
             }
@@ -238,6 +249,64 @@ impl Watcher {
             }
         }
         watched
+    }
+
+    /// Moves the OS watch of every artifact whose path now resolves somewhere
+    /// other than the path watched (a linked symlink, or one above it, pointed
+    /// at a new target), and returns the ids moved. A path that no longer
+    /// resolves keeps its watch, so a link that comes back still recovers by
+    /// itself; a failed watch is `retry_failed`'s.
+    fn follow_retargets(&self) -> Vec<String> {
+        let watched: Vec<(String, PathBuf, PathBuf)> = {
+            let inner = self.lock();
+            inner
+                .given
+                .iter()
+                .filter(|(id, _)| !inner.failed.contains_key(*id))
+                .filter_map(|(id, given)| {
+                    Some((id.clone(), given.clone(), inner.paths.get(id)?.clone()))
+                })
+                .collect()
+        };
+        let mut moved = Vec::new();
+        for (id, given, old) in watched {
+            let Ok(target) = given.canonicalize() else {
+                continue;
+            };
+            if target == old {
+                continue;
+            }
+            let mut os = self.lock_os();
+            if os.is_none() {
+                return moved;
+            }
+            // As in `retry_failed`: skip `id` if a `watch` or `unwatch` changed it.
+            {
+                let mut inner = self.lock();
+                if inner.failed.contains_key(&id)
+                    || inner.paths.get(&id) != Some(&old)
+                    || inner.given.get(&id) != Some(&given)
+                {
+                    continue;
+                }
+                inner.paths.insert(id.clone(), target.clone());
+            }
+            canvas_core::log::info(
+                "artifact link retargeted",
+                &[
+                    ("id", &id),
+                    ("path", &given.display()),
+                    ("from", &old.display()),
+                    ("to", &target.display()),
+                ],
+            );
+            self.watch_os(&mut os, &id, &target);
+            self.release(&mut os, &old);
+            if !self.lock().failed.contains_key(&id) {
+                moved.push(id);
+            }
+        }
+        moved
     }
 
     /// Keeps `id`'s bursts pending until the returned guard drops, so the
@@ -383,8 +452,9 @@ pub fn spawn_artifact_watcher(state: AppState) -> tokio::sync::oneshot::Receiver
                 }
                 Some(id) = retried.recv() => {
                     // A burst with no writes: what changed before the watch
-                    // began is in the fingerprint, so it stamps once if
-                    // anything did, and waits out a hold like any burst.
+                    // began (or the link's new target) is in the fingerprint,
+                    // so it stamps once if anything did, and waits out a hold
+                    // like any burst.
                     pending.entry(id).or_insert_with(|| Burst::new(Instant::now()));
                 }
                 () = wait => {
@@ -414,9 +484,10 @@ pub fn spawn_artifact_watcher(state: AppState) -> tokio::sync::oneshot::Receiver
     started_rx
 }
 
-/// Retries every failed OS watch each [`RETRY_EVERY`] on the blocking pool,
-/// apart from the burst loop, which keeps gathering writes while a slow
-/// FSEvents start runs, and sends it each id the OS now watches.
+/// Retries every failed OS watch and follows every retargeted link each
+/// [`RETRY_EVERY`] on the blocking pool, apart from the burst loop, which
+/// keeps gathering writes while a slow FSEvents start runs, and sends it each
+/// id the OS now watches at a new or retried path.
 fn spawn_retry(watcher: Arc<Watcher>) -> tokio::sync::mpsc::UnboundedReceiver<String> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -424,11 +495,17 @@ fn spawn_retry(watcher: Arc<Watcher>) -> tokio::sync::mpsc::UnboundedReceiver<St
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         while !tx.is_closed() {
             retry.tick().await;
-            if watcher.lock().failed.is_empty() {
+            if watcher.lock().paths.is_empty() {
                 continue;
             }
             let watcher = Arc::clone(&watcher);
-            let Ok(ids) = tokio::task::spawn_blocking(move || watcher.retry_failed()).await else {
+            let Ok(ids) = tokio::task::spawn_blocking(move || {
+                let mut ids = watcher.retry_failed();
+                ids.extend(watcher.follow_retargets());
+                ids
+            })
+            .await
+            else {
                 continue;
             };
             for id in ids {
@@ -561,6 +638,48 @@ mod tests {
             watcher.owners(&nested.join("index.html")),
             [("art-2".to_string(), Some("index.html".to_string()))]
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_retargeted_link_moves_its_watch_to_the_new_target() {
+        let root = std::env::temp_dir().join(format!("canvasd-relink-{}", uuid::Uuid::new_v4()));
+        let (old, new, link) = (root.join("old"), root.join("new"), root.join("link"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+        let (old, new) = (old.canonicalize().unwrap(), new.canonicalize().unwrap());
+
+        let watcher = Watcher::default();
+        watcher.start(notify::recommended_watcher(|_: notify::Result<notify::Event>| {}).unwrap());
+        watcher.watch_blocking("art-1", &link);
+        assert!(watcher.follow_retargets().is_empty());
+
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&new, &link).unwrap();
+        assert_eq!(watcher.follow_retargets(), ["art-1"]);
+        assert!(watcher.follow_retargets().is_empty());
+        assert_eq!(
+            watcher.owners(&new.join("index.html")),
+            [("art-1".to_string(), Some("index.html".to_string()))]
+        );
+        assert!(watcher.owners(&old.join("index.html")).is_empty());
+
+        // A link that resolves to nothing keeps its watch until it comes back.
+        std::fs::remove_file(&link).unwrap();
+        assert!(watcher.follow_retargets().is_empty());
+        assert_eq!(watcher.owners(&new.join("index.html")).len(), 1);
+
+        // A retarget whose new watch failed (its folder went in between) is
+        // retried from the link, so a later repoint is still followed.
+        {
+            let mut inner = watcher.lock();
+            inner.paths.insert("art-1".into(), root.join("gone"));
+            inner.failed.insert("art-1".into(), "gone".into());
+        }
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+        assert_eq!(watcher.retry_failed(), ["art-1"]);
+        assert_eq!(watcher.owners(&old.join("index.html")).len(), 1);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

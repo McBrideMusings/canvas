@@ -460,7 +460,11 @@ beside the terminal all day.
   <path>` repoints a linked artifact, keeping its id, and watches the new path.
   A link that moves away and back while canvasd runs recovers by itself; a path
   the OS refused to watch (missing when canvasd starts) is retried every second
-  and, once watched, reloads as a save would. `put <id>
+  and, once watched, reloads as a save would. On the same one-second tick canvasd
+  resolves each watched path again, so a linked symlink (or a symlinked folder
+  above the path) pointed at a new target moves its watch there and reloads
+  once (logged `artifact link retargeted` with `from` and `to`); a path that
+  no longer resolves keeps its old watch. `put <id>
   <file|dir>` sends canvasd the absolute path
   and canvasd copies the file, or the folder's contents, in (a symlinked folder is
   skipped, a symlinked destination replaced) and stamps `updatedAt`. Saving a

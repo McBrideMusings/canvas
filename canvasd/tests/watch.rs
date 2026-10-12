@@ -357,6 +357,34 @@ async fn a_linked_folder_moving_away_publishes_source_missing_and_back_restores_
 }
 
 #[tokio::test]
+async fn a_linked_symlink_pointed_elsewhere_reloads_and_watches_its_new_target() {
+    let parent = temp_dir();
+    let (old, new, link) = (parent.join("old"), parent.join("new"), parent.join("site"));
+    for dir in [&old, &new] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<h1>here</h1>").unwrap();
+    }
+    std::fs::write(new.join("app.js"), "1").unwrap();
+    std::os::unix::fs::symlink(&old, &link).unwrap();
+    let (state, _app, id) = linked_artifact(&link).await;
+    let mut rx = state.events.subscribe();
+
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&new, &link).unwrap();
+    // The retry tick finds the new target within a second; its files differ.
+    let moved = views_for(&mut rx, &id, Duration::from_secs(3)).await;
+    assert_eq!(moved.len(), 1, "got {} views", moved.len());
+
+    std::fs::write(new.join("index.html"), "<h1>saved</h1>").unwrap();
+    let seen = upserts_for(&mut rx, &id, Duration::from_secs(2)).await;
+    assert_eq!(seen.len(), 1, "a save to the new target, got {seen:?}");
+
+    std::fs::write(old.join("index.html"), "<h1>old</h1>").unwrap();
+    let quiet = upserts_for(&mut rx, &id, Duration::from_secs(1)).await;
+    assert!(quiet.is_empty(), "a save to the old target, got {quiet:?}");
+}
+
+#[tokio::test]
 async fn a_write_inside_nested_links_reloads_both() {
     let outer = temp_dir();
     let inner = outer.join("inner");
