@@ -278,15 +278,18 @@ pub async fn post_explicit(
     if let Some(refused) = refuse_freezing(&req.html) {
         return refused;
     }
-    let images = match state.resolve_media(&req.images) {
-        Ok(images) => images,
-        Err(reason) => return refuse_media(&reason),
-    };
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
     let (card, created) = {
         let mut inner = state.inner.write().await;
+        // Resolved under the same lock hold that names the files on the card,
+        // so the media sweep (which reads under the lock) can't delete one in
+        // between.
+        let images = match state.resolve_media(&req.images) {
+            Ok(images) => images,
+            Err(reason) => return refuse_media(&reason),
+        };
         let created = !inner.sessions.contains_key(&req.session_id);
         let upserted_session = ensure_session(
             &mut inner,

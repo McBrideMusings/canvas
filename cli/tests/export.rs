@@ -172,7 +172,8 @@ fn export_warns_for_a_stored_image_that_is_gone_and_shows_a_placeholder() {
     assert_eq!(warnings.len(), 1, "{printed}");
     assert_eq!(warnings[0]["kind"], "missing-image");
     assert_eq!(warnings[0]["target"], stored.to_str().unwrap());
-    assert!(page.contains("image missing: "), "{page}");
+    let file = stored.file_name().unwrap().to_string_lossy();
+    assert!(page.contains(&format!("image missing: {file}")), "{page}");
 }
 
 /// The one file in the daemon's media folder.
@@ -373,7 +374,10 @@ fn export_all_tags_a_missing_image_with_its_card() {
     assert_eq!(warnings[0]["card_id"], broken.as_str());
     assert_eq!(warnings[0]["kind"], "missing-image");
     assert_eq!(warnings[0]["target"], stored.to_str().unwrap());
-    assert!(entries[&format!("{broken}.html")].contains("image missing: "));
+    assert!(entries[&format!("{broken}.html")].contains(&format!(
+        "image missing: {}",
+        stored.file_name().unwrap().to_string_lossy()
+    )));
 }
 
 #[test]

@@ -118,6 +118,15 @@ pub fn upload_media(path: &str) -> Result<String, String> {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("could not read {path}: {e}"))?
+        .len();
+    if size > canvas_core::MAX_UPLOAD_BYTES as u64 {
+        return Err(format!(
+            "{path} is over the {} MB upload limit",
+            canvas_core::MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("could not read {path}: {e}"))?;
     let response = unix_http::call(
         "POST",

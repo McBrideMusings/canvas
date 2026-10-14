@@ -251,7 +251,17 @@ impl AppState {
     /// State backed by `dir/stream.jsonl` for sessions and cards, and
     /// `dir/artifacts.json` and `dir/projects.json`: reloads them on start.
     pub async fn open(dir: &std::path::Path) -> Self {
-        let (store, inner) = Store::open(dir);
+        let (store, mut inner) = Store::open(dir);
+        // A card stored before media moved into the daemon may name a client's
+        // path; blank it (keeping the indexes) so nothing serves or allows it.
+        let media_dir = dir.join(canvas_core::MEDIA_DIR);
+        for card in inner.cards.iter_mut() {
+            for image in card.images.iter_mut() {
+                if std::path::Path::new(image.as_str()).parent() != Some(media_dir.as_path()) {
+                    image.clear();
+                }
+            }
+        }
         let artifacts = crate::artifacts::Artifacts::load(dir).await;
         let projects = match canvas_core::instructions::seen_projects(dir) {
             Ok(list) => Projects {
@@ -312,15 +322,15 @@ impl AppState {
     /// [`MEDIA_GRACE`] (an upload waits that long for its post). Returns how
     /// many it deleted.
     pub async fn sweep_media(&self) -> usize {
-        let referenced: std::collections::HashSet<std::ffi::OsString> = {
-            let inner = self.inner.read().await;
-            inner
-                .cards
-                .iter()
-                .flat_map(|c| c.images.iter())
-                .filter_map(|p| std::path::Path::new(p).file_name().map(|n| n.to_owned()))
-                .collect()
-        };
+        // Held through the deletes: a post resolves its media under the write
+        // lock, so none can name a file this sweep is about to remove.
+        let inner = self.inner.read().await;
+        let referenced: std::collections::HashSet<std::ffi::OsString> = inner
+            .cards
+            .iter()
+            .flat_map(|c| c.images.iter())
+            .filter_map(|p| std::path::Path::new(p).file_name().map(|n| n.to_owned()))
+            .collect();
         let Ok(entries) = std::fs::read_dir(&self.media_dir) else {
             return 0;
         };

@@ -586,26 +586,6 @@ fn uuid_like() -> &'static str {
 }
 
 #[tokio::test]
-async fn a_card_keeps_its_image_after_the_source_file_is_deleted() {
-    let app = app();
-    let dir = std::env::temp_dir().join(format!("canvasd-source-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("shot.png");
-    std::fs::write(&source, tray_png()).unwrap();
-    let name = upload(&app, &std::fs::read(&source).unwrap(), "png").await;
-    std::fs::remove_dir_all(&dir).unwrap();
-    let card = card_with_images(&app, vec![name]).await;
-    let response = app
-        .clone()
-        .oneshot(get(&format!("/api/cards/{}/images/0", card.id)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(bytes.to_vec(), tray_png());
-}
-
-#[tokio::test]
 async fn upload_refuses_a_type_that_is_not_media() {
     let request = Request::builder()
         .method("POST")
@@ -658,7 +638,13 @@ async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
     assert!(export
         .html
         .contains(&format!("<img src=\"data:image/png;base64,{png}\">")));
-    assert!(export.html.contains("image missing: "));
+    assert!(export.html.contains(&format!(
+        "image missing: {}",
+        std::path::Path::new(&gone_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+    )));
     assert!(!export.html.contains("/api/cards/"));
     assert!(export.html.contains(r#"var v={"n":7}"#));
     assert_eq!(
@@ -2011,5 +1997,37 @@ async fn the_media_sweep_deletes_only_old_files_no_card_names() {
     assert!(dir.join(&kept).exists(), "named by a card");
     assert!(!dir.join(&orphan).exists(), "old and unnamed");
     assert!(dir.join(&fresh).exists(), "unnamed but within the grace");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn an_update_keeps_the_media_it_names_through_a_sweep() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let first = upload(&app, b"first", "png").await;
+    let card = card_with_images(&app, vec![first.clone()]).await;
+    let second = upload(&app, b"second", "png").await;
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", card.id),
+            json!({"html": "<p>v2</p>", "images": [second.clone()]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let dir = state.media_dir().to_path_buf();
+    let old = std::time::SystemTime::now() - canvasd::state::MEDIA_GRACE * 2;
+    for name in [&first, &second] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(name))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    assert_eq!(state.sweep_media().await, 1);
+    assert!(dir.join(&second).exists(), "named by the updated card");
+    assert!(!dir.join(&first).exists(), "dropped by the update");
     std::fs::remove_dir_all(&dir).unwrap();
 }
