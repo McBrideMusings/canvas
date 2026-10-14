@@ -8,16 +8,16 @@ description: "How a swarm worker builds and tests Canvas beside other workers: h
 Every worker builds into the main checkout's `target/` (`CARGO_TARGET_DIR`, set by swarm).
 Both Cargo workspaces, the root one and `app/src-tauri`, land there. A binary in it is whatever
 the last worker built, so never run `target/debug/canvas` or `target/debug/app` by path: run
-the copies `admin verify-app start` makes, as below.
+the copies `bash scripts/verify-app.sh start` makes, as below.
 
 ## Heavy commands
 
 Run each through `"$HOME/.claude/skills/swarm/swarm" heavy -- <command>`:
 
 - `cargo build …`, `cargo test …`, `cargo clippy …`, `cargo check …` (either workspace)
-- `admin test` (fmt check, `cargo test --workspace`, `cargo check` of the app)
-- `admin verify-app start` (builds both workspaces, then copies the binaries out)
-- `admin build canvas|app`, `cargo tauri build …`
+- `cargo test --workspace` and `cargo check --manifest-path app/src-tauri/Cargo.toml` (what `admin test` runs)
+- `bash scripts/verify-app.sh start` (builds both workspaces, then copies the binaries out)
+- `cargo tauri build …`
 - `bash scripts/readme-shots.sh`, `bash scripts/clip-demo.sh`, `bash scripts/seed.sh`:
   each writes a fixed `/tmp/canvas-*` folder, so the heavy lock also keeps two from colliding
 
@@ -25,17 +25,17 @@ Run each through `"$HOME/.claude/skills/swarm/swarm" heavy -- <command>`:
 
 `cargo fmt --all -- --check` needs no lock. For "does it compile", run
 `swarm heavy -- cargo check -p <crate>` (`canvas-core`, `canvasd`, `canvas`) once per round of
-edits, and the full `swarm heavy -- admin test` before the review step.
+edits, and the full `swarm heavy -- cargo test --workspace` plus `swarm heavy -- cargo check --manifest-path app/src-tauri/Cargo.toml` before the review step.
 
 ## Per-worker resources
 
-- **Throwaway daemon and dev app.** `admin verify-app start` puts each checkout in its own
+- **Throwaway daemon and dev app.** `bash scripts/verify-app.sh start` puts each checkout in its own
   `/tmp/cv-<hash of the checkout path>`: socket, data dir, logs, debug folder and `bin/` copies
-  of `canvas` and `app`. Then `eval "$(admin verify-app env)"` sets `CANVAS_DATA_DIR`,
+  of `canvas` and `app`. Then `eval "$(bash scripts/verify-app.sh env)"` sets `CANVAS_DATA_DIR`,
   `CANVAS_SOCKET` and puts that `bin/` first on `PATH`, so `canvas …` is this worktree's build.
   `shot` and `eval` find the window by this checkout's app pid. Where `verify-project` writes
   `target/debug/canvas` or `app/src-tauri/target/debug/app`, use `canvas` from that `PATH`,
-  or `"$(admin verify-app dir)/bin/canvas"` and `…/bin/app`. Run `admin verify-app stop`
+  or `"$(bash scripts/verify-app.sh dir)/bin/canvas"` and `…/bin/app`. Run `bash scripts/verify-app.sh stop`
   before the pass ends.
 - **Shared, so leave alone:** the dev app's localStorage (`~/Library/WebKit/app`) is one store
   for every checkout's dev app. Set the theme through `canvas theme light|dark` in your own
@@ -46,7 +46,8 @@ edits, and the full `swarm heavy -- admin test` before the review step.
 
 ## Never in a worker
 
-- `admin dev canvas|app`, `admin service *`, `admin deploy`, `admin kill`: they use the live
+- Any `admin` task: in a worktree it runs the main checkout's tree. `admin dev`, `service`,
+  `deploy` and `kill` also touch the live
   socket in `~/Library/Application Support/canvas`, the launchd agent, `~/.local/bin/canvas` or
   `/Applications/Canvas.app`, which belong to the person's running Canvas.
 - `cargo clean`: it deletes every worker's build.
