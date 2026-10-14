@@ -50,6 +50,28 @@ fn delete(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Uploads `bytes` as a `.ext` file through `POST /api/media` and returns the
+/// name a post's `images` carries.
+async fn upload(app: &axum::Router, bytes: &[u8], ext: &str) -> String {
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/media?ext={ext}"))
+        .body(Body::from(bytes.to_vec()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    body["name"].as_str().unwrap().to_string()
+}
+
+fn tray_png() -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/../app/src-tauri/icons/tray.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
 #[tokio::test]
 async fn root_serves_viewer() {
     let response = app().oneshot(get("/")).await.unwrap();
@@ -475,54 +497,69 @@ async fn card_with_images(app: &axum::Router, images: Vec<String>) -> Card {
 }
 
 #[tokio::test]
-async fn card_image_serves_the_cards_images_and_rejects_others() {
+async fn card_image_serves_the_uploaded_bytes_and_a_post_cannot_name_a_path() {
     let app = app();
-
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let card = card_with_images(
-        &app,
-        vec![
-            format!("{manifest_dir}/../app/src-tauri/icons/tray.png"),
-            format!("{manifest_dir}/Cargo.toml"),
-            // Resolves to a real png from the test process's cwd (the canvasd
-            // package root) — a relative path is rejected outright.
-            "../app/src-tauri/icons/tray.png".to_string(),
-        ],
-    )
-    .await;
-
-    let status = |uri: String| {
-        let app = app.clone();
-        async move { app.oneshot(get(&uri)).await.unwrap().status() }
-    };
+    let png = tray_png();
+    let name = upload(&app, &png, "png").await;
+    let card = card_with_images(&app, vec![name]).await;
     let id = &card.id;
-    assert_eq!(
-        status(format!("/api/cards/{id}/images/0")).await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        status(format!("/api/cards/{id}/images/1")).await,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        status(format!("/api/cards/{id}/images/2")).await,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        status(format!("/api/cards/{id}/images/3")).await,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        status("/api/cards/unknown/images/0".to_string()).await,
-        StatusCode::NOT_FOUND
-    );
+
+    let response = app
+        .clone()
+        .oneshot(get(&format!("/api/cards/{id}/images/0")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.to_vec(), png);
+    for uri in [
+        format!("/api/cards/{id}/images/1"),
+        "/api/cards/unknown/images/0".to_string(),
+    ] {
+        let response = app.clone().oneshot(get(&uri)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+    }
+
+    // A client path, a relative path and an unknown media name are all refused.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    for image in [
+        format!("{manifest_dir}/../app/src-tauri/icons/tray.png"),
+        "../app/src-tauri/icons/tray.png".to_string(),
+        format!("{}.png", uuid_like()),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(post(
+                "/api/posts",
+                json!({"session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code", "html": "<p>x</p>", "images": [image]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{image}");
+    }
+}
+
+fn uuid_like() -> &'static str {
+    "00000000-0000-0000-0000-000000000000"
+}
+
+#[tokio::test]
+async fn upload_refuses_a_type_that_is_not_media() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/media?ext=toml")
+        .body(Body::from("x"))
+        .unwrap();
+    let response = app().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
     let app = app();
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let tray = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
+    let tray = tray_png();
+    let name = upload(&app, &tray, "png").await;
+    let gone = upload(&app, b"x", "png").await;
     let response = app
         .clone()
         .oneshot(post(
@@ -530,12 +567,14 @@ async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
             json!({
                 "session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code",
                 "html": "<img src=\"canvas-image:0\"><img src=\"canvas-image:1\">",
-                "images": [tray, "/nonexistent/gone.png"],
+                "images": [name, gone],
             }),
         ))
         .await
         .unwrap();
     let card: Card = json_body(response).await;
+    let gone_path = card.images[1].clone();
+    std::fs::remove_file(&gone_path).unwrap();
     let response = app
         .clone()
         .oneshot(put(
@@ -553,18 +592,24 @@ async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let export: canvas_core::ExportResult = json_body(response).await;
-    let png = canvas_core::base64(&std::fs::read(&tray).unwrap());
+    let png = canvas_core::base64(&tray);
     assert!(export
         .html
         .contains(&format!("<img src=\"data:image/png;base64,{png}\">")));
-    assert!(export.html.contains("image missing: gone.png"));
+    assert!(export.html.contains(&format!(
+        "image missing: {}",
+        std::path::Path::new(&gone_path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+    )));
     assert!(!export.html.contains("/api/cards/"));
     assert!(export.html.contains(r#"var v={"n":7}"#));
     assert_eq!(
         export.warnings,
         vec![canvas_core::ExportWarning {
             kind: canvas_core::ExportWarningKind::MissingImage,
-            target: "/nonexistent/gone.png".into(),
+            target: gone_path,
             reason: "No such file or directory (os error 2)".into(),
         }]
     );
@@ -573,15 +618,7 @@ async fn export_inlines_images_warns_for_missing_ones_and_bakes_in_data() {
 #[tokio::test]
 async fn export_leaves_out_a_file_over_the_media_cap() {
     let app = app();
-    let dir = std::env::temp_dir().join(format!("canvasd-media-cap-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let clip = dir.join("clip.mov");
-    // Sparse, so the test writes nothing to disk.
-    std::fs::File::create(&clip)
-        .unwrap()
-        .set_len(canvas_core::MAX_MEDIA_BYTES as u64 + 1)
-        .unwrap();
-    let clip = clip.to_string_lossy().into_owned();
+    let name = upload(&app, &vec![0u8; canvas_core::MAX_MEDIA_BYTES + 1], "mov").await;
     let response = app
         .clone()
         .oneshot(post(
@@ -589,18 +626,18 @@ async fn export_leaves_out_a_file_over_the_media_cap() {
             json!({
                 "session_id": "s1", "cwd": "/tmp/proj", "agent": "claude-code",
                 "html": "<video src=\"canvas-image:0\" controls></video>",
-                "images": [clip],
+                "images": [name],
             }),
         ))
         .await
         .unwrap();
     let card: Card = json_body(response).await;
+    let clip = card.images[0].clone();
     let response = app
         .clone()
         .oneshot(get(&format!("/api/cards/{}/export", card.id)))
         .await
         .unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let export: canvas_core::ExportResult = json_body(response).await;
     assert!(export.html.contains("<video controls></video>"));
@@ -624,11 +661,8 @@ async fn export_unknown_card_is_404() {
 #[tokio::test]
 async fn card_video_serves_whole_and_by_byte_range() {
     let app = app();
-    let dir = std::env::temp_dir().join(format!("canvasd-video-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let clip = dir.join("clip.webm");
-    std::fs::write(&clip, b"0123456789").unwrap();
-    let card = card_with_images(&app, vec![clip.to_string_lossy().to_string()]).await;
+    let name = upload(&app, b"0123456789", "webm").await;
+    let card = card_with_images(&app, vec![name]).await;
     let uri = format!("/api/cards/{}/images/0", card.id);
 
     let ranged = |range: &'static str| {
@@ -678,15 +712,12 @@ async fn card_video_serves_whole_and_by_byte_range() {
     let (status, content_range, _) = ranged("bytes=10-").await;
     assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(content_range.as_deref(), Some("bytes */10"));
-
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[tokio::test]
 async fn image_placeholder_is_resolved_to_the_cards_image_route_and_serves() {
     let app = app();
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let png = format!("{manifest_dir}/../app/src-tauri/icons/tray.png");
+    let png = upload(&app, &tray_png(), "png").await;
 
     let response = app
         .clone()
@@ -1900,4 +1931,61 @@ async fn a_snapshot_request_the_cli_abandons_stops_waiting() {
         app.clone().oneshot(answer).await.unwrap().status(),
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn the_media_sweep_deletes_only_old_files_no_card_names() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let kept = upload(&app, b"kept", "png").await;
+    card_with_images(&app, vec![kept.clone()]).await;
+    let orphan = upload(&app, b"orphan", "png").await;
+    let fresh = upload(&app, b"fresh", "png").await;
+    let dir = state.media_dir().to_path_buf();
+    let old = std::time::SystemTime::now() - canvasd::state::MEDIA_GRACE * 2;
+    for name in [&kept, &orphan] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(name))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    assert_eq!(state.sweep_media().await, 1);
+    assert!(dir.join(&kept).exists(), "named by a card");
+    assert!(!dir.join(&orphan).exists(), "old and unnamed");
+    assert!(dir.join(&fresh).exists(), "unnamed but within the grace");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn an_update_keeps_the_media_it_names_through_a_sweep() {
+    let state = AppState::new();
+    let app = build_router(state.clone());
+    let first = upload(&app, b"first", "png").await;
+    let card = card_with_images(&app, vec![first.clone()]).await;
+    let second = upload(&app, b"second", "png").await;
+    let response = app
+        .clone()
+        .oneshot(put(
+            &format!("/api/cards/{}", card.id),
+            json!({"html": "<p>v2</p>", "images": [second.clone()]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let dir = state.media_dir().to_path_buf();
+    let old = std::time::SystemTime::now() - canvasd::state::MEDIA_GRACE * 2;
+    for name in [&first, &second] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(name))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    assert_eq!(state.sweep_media().await, 1);
+    assert!(dir.join(&second).exists(), "named by the updated card");
+    assert!(!dir.join(&first).exists(), "dropped by the update");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

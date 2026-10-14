@@ -282,6 +282,19 @@ beside the terminal all day.
   (`cli/src/inline_css.rs`); one inside SVG or MathML, which the browser never
   loads, stays as written. Hook
   dispatch never starts a tokio runtime; only `canvas daemon` does.
+  Media travels as bytes: before posting, `canvas post` uploads each local
+  image and video to `POST /api/media?ext=` (`canvasd/src/routes.rs`
+  `put_media`, the body streamed to a temp file and renamed, at most
+  `MAX_UPLOAD_BYTES`, only `MEDIA_EXTS`), which stores it as
+  `media/<uuid>.<ext>` in `CANVAS_DATA_DIR` and answers `{"name"}`; the post's
+  `images` carry those names, and canvasd refuses (400) any entry that is not an
+  uploaded name, so no route opens a path a client supplies. A card's `images`
+  then hold the stored absolute paths, which `/api/cards/:id/images/:n`
+  (refusing any path outside the media folder), the export, `media.rs`'s asset
+  scope and the viewer's video `src` all use. A card still shows its media after the source
+  file is deleted. The 30s sweep deletes a media file no card names once it is
+  10 minutes old (`AppState::sweep_media`, logged `media swept`); upload logs
+  `media stored`.
   `canvas card <card_id>` prints one post as JSON (`GET /api/cards/:id`), so
   a `canvas-post://<card_id>` link from a post's "Copy post link" menu item
   can be read by an agent.
@@ -289,7 +302,7 @@ beside the terminal all day.
   `canvasd/src/export.rs`) writes one post as a standalone page, to
   `<card_id>.html` by default, and prints `{"path", "cards": 1, "warnings"}`.
   Each `/api/cards/:id/images/:n` src becomes a base64 `data:` URI read from
-  the card's stored path (a missing file is a `missing-image` warning and an
+  the card's stored copy in canvasd's media folder (a missing file is a `missing-image` warning and an
   "image missing" placeholder; a file that would take the page's media past
   `MAX_MEDIA_BYTES`, 32 MB in all, is refused from its size before any byte
   is read (`export::read_media`) and is a `media-too-large` warning naming

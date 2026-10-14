@@ -101,8 +101,12 @@ pub fn run(args: PostArgs) -> Result<(), String> {
     for hint in &scanned.hints {
         eprintln!("canvas post: {hint}");
     }
+    let mut media = Vec::with_capacity(scanned.images.len());
+    for path in &scanned.images {
+        media.push(client::upload_media(path)?);
+    }
     let card = match args.update_id {
-        Some(id) => client::update_card(id, scanned.html, scanned.images, scanned.targets)?,
+        Some(id) => client::update_card(id, scanned.html, media, scanned.targets)?,
         None => {
             let (adapter, session_id) = session()?;
             let cwd = current_dir()?;
@@ -111,7 +115,7 @@ pub fn run(args: PostArgs) -> Result<(), String> {
                 cwd: cwd.clone(),
                 agent: adapter.agent(),
                 html: scanned.html,
-                images: scanned.images,
+                images: media,
                 targets: scanned.targets,
                 pid: adapter.pid(),
                 repo: crate::repo::github_repo(&cwd),

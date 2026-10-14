@@ -106,6 +106,50 @@ pub fn post_explicit(body: PostRequest) -> Result<Card, String> {
     handle_card_response(result)
 }
 
+/// How long one media upload may take per socket read or write; the file
+/// goes over the local socket in one request.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Uploads the image or video at `path` to canvasd and returns the name it
+/// stored it under, which a post's `images` carries. The card keeps these
+/// bytes, so the source file may be deleted afterwards.
+pub fn upload_media(path: &str) -> Result<String, String> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("could not read {path}: {e}"))?
+        .len();
+    if size > canvas_core::MAX_UPLOAD_BYTES as u64 {
+        return Err(format!(
+            "{path} is over the {} MB upload limit",
+            canvas_core::MAX_UPLOAD_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {path}: {e}"))?;
+    let response = unix_http::call(
+        "POST",
+        &format!("/api/media?ext={}", percent_encode(&ext)),
+        &[("Content-Type", "application/octet-stream")],
+        &bytes,
+        UPLOAD_TIMEOUT,
+    )
+    .map_err(|e| unix_http::failure_text(&e))?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "canvasd refused {path}: HTTP {} {}",
+            response.status,
+            String::from_utf8_lossy(&response.body).trim()
+        ));
+    }
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        name: String,
+    }
+    into_json::<Stored>(response).map(|s| s.name)
+}
+
 /// Replaces an existing card's content in place, keyed by the card id a
 /// prior `canvas post` reported. Same one-line error handling as
 /// `post_explicit` — `--update` is run by an agent that needs to know

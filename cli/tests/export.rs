@@ -143,7 +143,7 @@ fn export_inlines_the_image() {
 }
 
 #[test]
-fn export_warns_for_a_deleted_image_and_shows_a_placeholder() {
+fn export_keeps_the_image_after_the_source_file_is_deleted() {
     let daemon = spawn_daemon();
     let image = daemon.dir().join("gone.png");
     std::fs::write(&image, b"abc").unwrap();
@@ -151,11 +151,39 @@ fn export_warns_for_a_deleted_image_and_shows_a_placeholder() {
     std::fs::remove_file(&image).unwrap();
 
     let (printed, page) = export(&daemon, &card_id);
+    assert_eq!(printed["warnings"], serde_json::json!([]));
+    assert!(
+        page.contains("<img src=\"data:image/png;base64,YWJj\">"),
+        "{page}"
+    );
+}
+
+#[test]
+fn export_warns_for_a_stored_image_that_is_gone_and_shows_a_placeholder() {
+    let daemon = spawn_daemon();
+    let image = daemon.dir().join("src.png");
+    std::fs::write(&image, b"abc").unwrap();
+    let card_id = post(&daemon, &format!("<img src=\"{}\">", image.display()));
+    let stored = stored_media(&daemon);
+    std::fs::remove_file(&stored).unwrap();
+
+    let (printed, page) = export(&daemon, &card_id);
     let warnings = printed["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{printed}");
     assert_eq!(warnings[0]["kind"], "missing-image");
-    assert_eq!(warnings[0]["target"], image.to_str().unwrap());
-    assert!(page.contains("image missing: gone.png"), "{page}");
+    assert_eq!(warnings[0]["target"], stored.to_str().unwrap());
+    let file = stored.file_name().unwrap().to_string_lossy();
+    assert!(page.contains(&format!("image missing: {file}")), "{page}");
+}
+
+/// The one file in the daemon's media folder.
+fn stored_media(daemon: &Daemon) -> PathBuf {
+    let files: Vec<PathBuf> = std::fs::read_dir(daemon.dir().join("media"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    files[0].clone()
 }
 
 #[test]
@@ -336,7 +364,8 @@ fn export_all_tags_a_missing_image_with_its_card() {
     std::fs::write(&image, b"abc").unwrap();
     post(&daemon, "<h1>Fine</h1>");
     let broken = post(&daemon, &format!("<img src=\"{}\">", image.display()));
-    std::fs::remove_file(&image).unwrap();
+    let stored = stored_media(&daemon);
+    std::fs::remove_file(&stored).unwrap();
 
     let (printed, entries) = export_all(&daemon, &[]);
     assert_eq!(printed["cards"], 2, "{printed}");
@@ -344,8 +373,11 @@ fn export_all_tags_a_missing_image_with_its_card() {
     assert_eq!(warnings.len(), 1, "{printed}");
     assert_eq!(warnings[0]["card_id"], broken.as_str());
     assert_eq!(warnings[0]["kind"], "missing-image");
-    assert_eq!(warnings[0]["target"], image.to_str().unwrap());
-    assert!(entries[&format!("{broken}.html")].contains("image missing: gone.png"));
+    assert_eq!(warnings[0]["target"], stored.to_str().unwrap());
+    assert!(entries[&format!("{broken}.html")].contains(&format!(
+        "image missing: {}",
+        stored.file_name().unwrap().to_string_lossy()
+    )));
 }
 
 #[test]
