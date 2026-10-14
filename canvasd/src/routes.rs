@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::path::Path as StdPath;
 use std::process::Stdio;
@@ -423,6 +424,9 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
 /// the card is taller than the window.
 pub const CLIPPED_HEADER: &str = "x-canvas-clipped";
 
+/// The request header naming the viewer window a snapshot reply comes from.
+pub const WINDOW_HEADER: &str = "x-canvas-window";
+
 /// Removes a snapshot request from the waiting map however its handler ends,
 /// including when the CLI hangs up and axum drops the handler mid-wait.
 struct Waiting<'a> {
@@ -557,8 +561,9 @@ pub async fn snapshot(state: &AppState, what: Snapshotted, id: String) -> Respon
 }
 
 /// Reads viewers' replies until one sends a PNG, returned with whether it
-/// was clipped, or all `viewers` refused (`None`). Each refusal's reason is
-/// pushed onto `refusals`, so a timeout still has them.
+/// was clipped, or `viewers` distinct windows refused (`None`). A window's
+/// first refusal is pushed onto `refusals`, so a timeout still has them; its
+/// later ones are logged and counted for nothing.
 async fn first_png(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<SnapshotReply>,
     viewers: usize,
@@ -567,23 +572,30 @@ async fn first_png(
     id: &str,
     request: &str,
 ) -> Option<(Vec<u8>, bool)> {
+    let mut refused = HashSet::new();
     while let Some(reply) = rx.recv().await {
-        let reason = match reply {
+        let (window, reason) = match reply {
             SnapshotReply::Png { png, clipped } => return Some((png, clipped)),
-            SnapshotReply::Failed(reason) => reason,
+            SnapshotReply::Failed { window, reason } => (window, reason),
         };
+        let first = refused.insert(window.clone());
         canvas_core::log::info(
             "snapshot viewer refused",
             &[
                 (noun, &id),
                 ("request", &request),
+                ("window", &window),
                 ("reason", &reason),
-                ("refusals", &(refusals.len() + 1)),
+                ("repeat", &!first),
+                ("refusals", &refused.len()),
                 ("viewers", &viewers),
             ],
         );
+        if !first {
+            continue;
+        }
         refusals.push(reason);
-        if refusals.len() >= viewers {
+        if refused.len() >= viewers {
             break;
         }
     }
@@ -592,14 +604,28 @@ async fn first_png(
 
 /// A viewer's answer to a `card-snapshot` event: an `image/png` body (with
 /// `x-canvas-clipped: true` when the card ran past the window), or
-/// `{"error": "..."}` saying why it could not capture the card. 404 when no
-/// request with that id is waiting (it timed out, or was already answered).
+/// `{"error": "..."}` saying why it could not capture the card. Every reply
+/// names its viewer in `x-canvas-window` (400 without one), the id the viewer
+/// reports with `PUT /api/artifact-watch`. 404 when no request with that id
+/// is waiting (it timed out, or was already answered).
 pub async fn deliver_snapshot(
     State(state): State<AppState>,
     Path(request): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let Some(window) = headers
+        .get(WINDOW_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("a snapshot reply names its viewer in {WINDOW_HEADER}"),
+        )
+            .into_response();
+    };
     let is_png = headers
         .get(header::CONTENT_TYPE)
         .is_some_and(|v| v.as_bytes().starts_with(b"image/png"));
@@ -615,7 +641,7 @@ pub async fn deliver_snapshot(
             .ok()
             .and_then(|v| v["error"].as_str().map(str::to_string))
             .unwrap_or_else(|| "the viewer could not capture the card".to_string());
-        SnapshotReply::Failed(reason)
+        SnapshotReply::Failed { window, reason }
     };
     let sent = state
         .snapshots

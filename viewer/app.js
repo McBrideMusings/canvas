@@ -3322,6 +3322,8 @@
   // widget row is in view; hidden, it reports none. It reports at once when
   // either changes and after every state load, and renews every
   // WATCH_REPORT_MS while visible. canvasd lets a report lapse after 30s.
+  // A snapshot reply carries the same id, so canvasd counts each window's
+  // refusal once.
   const WATCH_REPORT_MS = 15000;
   const watchWindow =
     (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
@@ -4105,7 +4107,9 @@
   // window is cut at its bottom edge and the reply says `clipped`.
   async function snapshotCard(id, request) {
     const reply = (answer) =>
-      tauriCore.invoke("snapshot_reply", { request, ...answer }).catch(() => {});
+      tauriCore
+        .invoke("snapshot_reply", { request, window: watchWindow, ...answer })
+        .catch(() => {});
     const card = cards.get(id);
     const session = card && sessions.get(card.sessionId);
     const el = card && cardsEl.querySelector(`.card[data-card-id="${CSS.escape(id)}"]`);
@@ -4143,7 +4147,9 @@
   // `canvas focus`, which shows it.
   async function snapshotArtifact(id, request) {
     const reply = (answer) =>
-      tauriCore.invoke("snapshot_reply", { request, ...answer }).catch(() => {});
+      tauriCore
+        .invoke("snapshot_reply", { request, window: watchWindow, ...answer })
+        .catch(() => {});
     const artifact = artifacts.get(id);
     let error = null;
     if (!artifact) error = "the viewer has no artifact with that id";

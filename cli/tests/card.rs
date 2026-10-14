@@ -372,7 +372,7 @@ fn answer_snapshot(
         };
         let mut answer = std::os::unix::net::UnixStream::connect(&socket).unwrap();
         let head = format!(
-            "POST /api/snapshots/{request} HTTP/1.1\r\nHost: canvas\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /api/snapshots/{request} HTTP/1.1\r\nHost: canvas\r\nContent-Type: {content_type}\r\nX-Canvas-Window: w1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         answer.write_all(head.as_bytes()).unwrap();

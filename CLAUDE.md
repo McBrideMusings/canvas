@@ -402,7 +402,9 @@ beside the terminal all day.
   `POST /api/snapshots/:request`. canvasd answers the first PNG any viewer
   sends, or the first reason once every viewer the request reached (the
   count `publish` returned) has refused, or at the timeout once any has, and
-  404s a reply once the request is answered. No viewer is a 409, a reason a 422, no answer a 504; the CLI
+  404s a reply once the request is answered. Each reply names its viewer in
+  `x-canvas-window` (400 without one), the id the window reports with `PUT
+  /api/artifact-watch`, so a window that refuses twice counts once. No viewer is a 409, a reason a 422, no answer a 504; the CLI
   prints canvasd's one line and exits 1. A clipped capture exits 0 with a
   stderr note.
   `canvas record --window <app> <out.mp4|out.webp> [--seconds N]`

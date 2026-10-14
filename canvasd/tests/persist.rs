@@ -644,6 +644,7 @@ async fn artifact_snapshot_asks_the_viewer_and_answers_its_png() {
         data["request"].as_str().unwrap()
     ))
     .header("content-type", "image/png")
+    .header("x-canvas-window", "w1")
     .body(Body::from(png.clone()))
     .unwrap();
     assert_eq!(app.clone().oneshot(answer).await.unwrap().status(), 204);

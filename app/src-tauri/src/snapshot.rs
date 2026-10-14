@@ -23,12 +23,15 @@ pub struct Rect {
     height: f64,
 }
 
-/// `request` is canvasd's id for the snapshot, a UUID; `clipped` says the card
-/// ran past the window, so the PNG stops at its edge.
+/// `request` is canvasd's id for the snapshot, a UUID; `window` is the
+/// viewer's own id, the one it reports with `PUT /api/artifact-watch`, so
+/// canvasd counts each viewer's refusal once; `clipped` says the card ran
+/// past the window, so the PNG stops at its edge.
 #[tauri::command]
 pub async fn snapshot_reply(
     webview: tauri::Webview,
     request: String,
+    window: String,
     rect: Option<Rect>,
     clipped: Option<bool>,
     error: Option<String>,
@@ -36,6 +39,10 @@ pub async fn snapshot_reply(
     // It goes into a request line, so nothing but a UUID's characters.
     if request.is_empty() || !request.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err("not a snapshot request id".to_string());
+    }
+    // It goes into a header: a UUID, or the viewer's `w-<time>-<hex>` fallback.
+    if window.is_empty() || !window.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("not a viewer window id".to_string());
     }
     let answer = match (rect, error) {
         (_, Some(reason)) => Err(reason),
@@ -58,16 +65,24 @@ pub async fn snapshot_reply(
         }
     };
     let clipped = clipped.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || upload(&request, content_type, clipped, &body))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        upload(&request, &window, content_type, clipped, &body)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Sends the answer to canvasd.
-fn upload(request: &str, content_type: &str, clipped: bool, body: &[u8]) -> Result<(), String> {
+fn upload(
+    request: &str,
+    window: &str,
+    content_type: &str,
+    clipped: bool,
+    body: &[u8],
+) -> Result<(), String> {
     let socket = canvas_core::paths::socket_path().ok_or("no HOME to place the socket")?;
     let path = format!("/api/snapshots/{request}");
-    let mut headers = vec![("Content-Type", content_type)];
+    let mut headers = vec![("Content-Type", content_type), ("X-Canvas-Window", window)];
     if clipped {
         headers.push(("X-Canvas-Clipped", "true"));
     }
@@ -92,6 +107,7 @@ fn upload(request: &str, content_type: &str, clipped: bool, body: &[u8]) -> Resu
                 "snapshot sent",
                 &[
                     ("request", &request),
+                    ("window", &window),
                     ("type", &content_type),
                     ("bytes", &body.len()),
                     ("clipped", &clipped),

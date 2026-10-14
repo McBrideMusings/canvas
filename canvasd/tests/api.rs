@@ -1570,11 +1570,12 @@ async fn artifact_pane_refuses_an_empty_size_and_an_unknown_artifact() {
 }
 
 /// Plays the viewer's half of a snapshot: reads the `card-snapshot` event off
-/// an open `/api/events` body and answers its request with `content_type` and
-/// `body`. Returns the event's data.
+/// an open `/api/events` body and answers its request as viewer `window` with
+/// `content_type` and `body`. Returns the event's data.
 async fn answer_snapshot(
     app: &axum::Router,
     events: &mut (impl futures::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+    window: &str,
     content_type: &str,
     body: Vec<u8>,
 ) -> serde_json::Value {
@@ -1592,18 +1593,34 @@ async fn answer_snapshot(
         .find_map(|l| l.strip_prefix("data: "))
         .expect("event has data");
     let data: serde_json::Value = serde_json::from_str(data).unwrap();
+    let status = reply_snapshot(
+        app,
+        data["request"].as_str().unwrap(),
+        window,
+        content_type,
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    data
+}
+
+/// Posts one viewer's reply to snapshot `request`, as the app does.
+async fn reply_snapshot(
+    app: &axum::Router,
+    request: &str,
+    window: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> StatusCode {
     let request = Request::builder()
         .method("POST")
-        .uri(format!(
-            "/api/snapshots/{}",
-            data["request"].as_str().unwrap()
-        ))
+        .uri(format!("/api/snapshots/{request}"))
         .header("content-type", content_type)
+        .header("x-canvas-window", window)
         .body(Body::from(body))
         .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    data
+    app.clone().oneshot(request).await.unwrap().status()
 }
 
 #[tokio::test]
@@ -1618,7 +1635,7 @@ async fn snapshot_answers_the_png_a_viewer_sends_back() {
             .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
     );
     let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
-    let data = answer_snapshot(&app, &mut events, "image/png", png.clone()).await;
+    let data = answer_snapshot(&app, &mut events, "w1", "image/png", png.clone()).await;
     assert_eq!(data["id"], card.id.as_str());
 
     let response = waiting.await.unwrap().unwrap();
@@ -1643,6 +1660,7 @@ async fn snapshot_relays_the_reason_a_viewer_could_not_capture() {
     answer_snapshot(
         &app,
         &mut events,
+        "w1",
         "application/json",
         reason.to_string().into_bytes(),
     )
@@ -1671,26 +1689,28 @@ async fn snapshot_takes_a_png_from_one_viewer_over_another_viewers_refusal() {
     answer_snapshot(
         &app,
         &mut refusing,
+        "w1",
         "application/json",
         reason.to_string().into_bytes(),
     )
     .await;
     let png = b"\x89PNG\r\n\x1a\nsecond".to_vec();
-    let data = answer_snapshot(&app, &mut capturing, "image/png", png.clone()).await;
+    let data = answer_snapshot(&app, &mut capturing, "w2", "image/png", png.clone()).await;
 
     let response = waiting.await.unwrap().unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(bytes.to_vec(), png);
 
-    let late = post(
-        &format!("/api/snapshots/{}", data["request"].as_str().unwrap()),
-        json!({"error": "late"}),
-    );
-    assert_eq!(
-        app.clone().oneshot(late).await.unwrap().status(),
-        StatusCode::NOT_FOUND
-    );
+    let late = reply_snapshot(
+        &app,
+        data["request"].as_str().unwrap(),
+        "w1",
+        "application/json",
+        json!({"error": "late"}).to_string().into_bytes(),
+    )
+    .await;
+    assert_eq!(late, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1710,6 +1730,7 @@ async fn snapshot_refuses_only_once_every_viewer_refused() {
     answer_snapshot(
         &app,
         &mut first,
+        "w1",
         "application/json",
         hidden.to_string().into_bytes(),
     )
@@ -1724,6 +1745,7 @@ async fn snapshot_refuses_only_once_every_viewer_refused() {
     answer_snapshot(
         &app,
         &mut second,
+        "w2",
         "application/json",
         filtered.to_string().into_bytes(),
     )
@@ -1733,6 +1755,52 @@ async fn snapshot_refuses_only_once_every_viewer_refused() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"the card's session is hidden");
+}
+
+#[tokio::test]
+async fn snapshot_counts_a_viewer_that_refuses_twice_once() {
+    let app = app();
+    let card = seed_card(&app, "s1", "/tmp/proj").await;
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut refusing = response.into_body().into_data_stream();
+    let response = app.clone().oneshot(get("/api/events")).await.unwrap();
+    let mut capturing = response.into_body().into_data_stream();
+
+    let mut waiting = tokio::spawn(
+        app.clone()
+            .oneshot(post(&format!("/api/cards/{}/snapshot", card.id), json!({}))),
+    );
+    let hidden = json!({"error": "the card's session is hidden"});
+    let data = answer_snapshot(
+        &app,
+        &mut refusing,
+        "w1",
+        "application/json",
+        hidden.to_string().into_bytes(),
+    )
+    .await;
+    let again = reply_snapshot(
+        &app,
+        data["request"].as_str().unwrap(),
+        "w1",
+        "application/json",
+        hidden.to_string().into_bytes(),
+    )
+    .await;
+    assert_eq!(again, StatusCode::NO_CONTENT);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut waiting)
+            .await
+            .is_err(),
+        "one viewer's two refusals answered the snapshot"
+    );
+    let png = b"\x89PNG\r\n\x1a\nsecond".to_vec();
+    answer_snapshot(&app, &mut capturing, "w2", "image/png", png.clone()).await;
+
+    let response = waiting.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.to_vec(), png);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1752,6 +1820,7 @@ async fn snapshot_answers_a_refusal_when_the_other_viewer_never_answers() {
     answer_snapshot(
         &app,
         &mut refusing,
+        "w1",
         "application/json",
         reason.to_string().into_bytes(),
     )
@@ -1784,15 +1853,15 @@ async fn snapshot_of_unknown_card_is_404_and_a_stray_answer_is_404() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let response = app
-        .clone()
-        .oneshot(post(
-            "/api/snapshots/no-such-request",
-            json!({"error": "x"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let stray = reply_snapshot(
+        &app,
+        "no-such-request",
+        "w1",
+        "application/json",
+        json!({"error": "x"}).to_string().into_bytes(),
+    )
+    .await;
+    assert_eq!(stray, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1822,6 +1891,7 @@ async fn snapshot_passes_on_that_the_card_was_clipped() {
             data["request"].as_str().unwrap()
         ))
         .header("content-type", "image/png")
+        .header("x-canvas-window", "w1")
         .header("x-canvas-clipped", "true")
         .body(Body::from(b"\x89PNG".to_vec()))
         .unwrap();
@@ -1865,6 +1935,7 @@ async fn a_snapshot_request_the_cli_abandons_stops_waiting() {
             data["request"].as_str().unwrap()
         ))
         .header("content-type", "image/png")
+        .header("x-canvas-window", "w1")
         .body(Body::from(b"\x89PNG".to_vec()))
         .unwrap();
     assert_eq!(

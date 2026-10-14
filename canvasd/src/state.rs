@@ -162,8 +162,10 @@ impl ThemeSource {
 pub enum SnapshotReply {
     /// `clipped` when the card ran past the window, so the PNG stops at its edge.
     Png { png: Vec<u8>, clipped: bool },
-    /// Why the viewer could not capture the card, in its own words.
-    Failed(String),
+    /// Why the viewer could not capture the card, in its own words. `window`
+    /// is the viewer's id, the one it reports with `PUT /api/artifact-watch`,
+    /// so a viewer that refuses twice counts once.
+    Failed { window: String, reason: String },
 }
 
 /// The recorded projects, and whether `projects.json` failed to read at
