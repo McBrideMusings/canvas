@@ -232,6 +232,15 @@ pub struct PostRequest {
     /// Recorded on the session only when this post creates it.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// `owner/repo` of the cwd's GitHub `origin`, worked out by the CLI.
+    /// Recorded on the session only when this post creates it.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// The nearest folder at or above `cwd` holding `.git`, worked out by
+    /// the CLI. canvasd records it as a seen project when this post creates
+    /// the session.
+    #[serde(default)]
+    pub git_root: Option<String>,
 }
 
 /// Body for `PUT /api/cards/:id` — replaces an existing card's content in

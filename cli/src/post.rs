@@ -108,12 +108,15 @@ pub fn run(args: PostArgs) -> Result<(), String> {
             let cwd = current_dir()?;
             client::post_explicit(PostRequest {
                 session_id,
-                cwd,
+                cwd: cwd.clone(),
                 agent: adapter.agent(),
                 html: scanned.html,
                 images: scanned.images,
                 targets: scanned.targets,
                 pid: adapter.pid(),
+                repo: crate::repo::github_repo(&cwd),
+                git_root: canvas_core::instructions::git_root(std::path::Path::new(&cwd))
+                    .map(|root| root.display().to_string()),
             })?
         }
     };

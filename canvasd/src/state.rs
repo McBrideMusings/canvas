@@ -289,16 +289,17 @@ impl AppState {
             .clone()
     }
 
-    /// Records `cwd`'s git root as seen now, moving it to the front, and
-    /// rewrites `projects.json` (kept only in memory without a data dir). A
-    /// `cwd` outside git records nothing. While `projects.json` can't be read,
+    /// Records the git `root` the CLI sent as seen now, moving it to the
+    /// front, and rewrites `projects.json` (kept only in memory without a
+    /// data dir). A relative `root` records nothing. While `projects.json` can't be read,
     /// the root is kept in memory and the file is left as it is, so its
     /// earlier projects are never overwritten; once it reads again, the roots
     /// recorded meanwhile go in front of its own and it is rewritten.
-    pub fn record_project(&self, cwd: &str) {
-        let Some(root) = canvas_core::instructions::git_root(std::path::Path::new(cwd)) else {
+    pub fn record_project(&self, root: &std::path::Path) {
+        if !root.is_absolute() {
             return;
-        };
+        }
+        let root = root.to_path_buf();
         let name = root
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

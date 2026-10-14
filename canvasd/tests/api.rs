@@ -121,67 +121,28 @@ async fn the_sessions_registration_route_is_gone() {
     assert!(state.sessions.is_empty());
 }
 
-/// A throwaway git checkout whose `origin` is `remote`, plus a linked
-/// worktree of it.
-fn git_checkout_with_origin(remote: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("canvasd-repo-{}", uuid::Uuid::new_v4()));
-    let main = root.join("main");
-    let linked = root.join("linked");
-    std::fs::create_dir_all(&main).unwrap();
-    let git = |args: &[&str]| {
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&main)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?}");
-    };
-    git(&["init", "-q"]);
-    git(&["remote", "add", "origin", remote]);
-    git(&[
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@t",
-        "commit",
-        "-q",
-        "--allow-empty",
-        "-m",
-        "init",
-    ]);
-    git(&["worktree", "add", "-q", linked.to_str().unwrap()]);
-    (main, linked)
-}
-
 #[tokio::test]
-async fn sessions_record_the_github_repo_of_their_cwd() {
+async fn a_session_records_the_repo_its_first_post_names_and_runs_no_git() {
     let app = app();
-    let (main, linked) = git_checkout_with_origin("git@github.com:octo/hello.git");
-
-    // A first post from the main checkout.
+    // A cwd inside a real checkout of this very repo: were canvasd to run
+    // git on it, r2 would come back with a repo.
+    let cwd = env!("CARGO_MANIFEST_DIR");
+    for (id, repo) in [("r1", Some("octo/hello")), ("r2", None)] {
+        app.clone()
+            .oneshot(post(
+                "/api/posts",
+                json!({"session_id": id, "cwd": cwd, "agent": "claude-code",
+                       "html": "<p>x</p>", "repo": repo}),
+            ))
+            .await
+            .unwrap();
+    }
+    // Later posts never change it.
     app.clone()
         .oneshot(post(
             "/api/posts",
-            json!({"session_id": "r1", "cwd": main, "agent": "claude-code", "html": "<p>x</p>"}),
-        ))
-        .await
-        .unwrap();
-
-    // A first post from a linked worktree.
-    app.clone()
-        .oneshot(post(
-            "/api/posts",
-            json!({"session_id": "r2", "cwd": linked, "agent": "claude-code", "html": "<p>x</p>"}),
-        ))
-        .await
-        .unwrap();
-
-    // Outside any git checkout.
-    app.clone()
-        .oneshot(post(
-            "/api/posts",
-            json!({"session_id": "r3", "cwd": "/", "agent": "claude-code", "html": "<p>x</p>"}),
+            json!({"session_id": "r2", "cwd": cwd, "agent": "claude-code",
+                   "html": "<p>x</p>", "repo": "octo/other"}),
         ))
         .await
         .unwrap();
@@ -198,10 +159,7 @@ async fn sessions_record_the_github_repo_of_their_cwd() {
             .clone()
     };
     assert_eq!(repo("r1").as_deref(), Some("octo/hello"));
-    assert_eq!(repo("r2").as_deref(), Some("octo/hello"));
-    assert_eq!(repo("r3"), None);
-
-    std::fs::remove_dir_all(main.parent().unwrap()).unwrap();
+    assert_eq!(repo("r2"), None);
 }
 
 #[tokio::test]

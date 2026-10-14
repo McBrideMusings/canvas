@@ -40,8 +40,11 @@ beside the terminal all day.
   when the person's or project's layer doesn't parse, `reminders()` returns
   the built-in reminders and the reason (file and line). `seen_projects` reads
   `projects.json` in `CANVAS_DATA_DIR` (`{root, name, lastSeen}`, newest
-  first): canvasd records the git root of a session's working directory when
-  that session first posts (`AppState::record_project`, logged `project
+  first): canvasd records the git root the CLI sent with a session's first post
+  (`git_root` in `PostRequest`, with `repo`, the `owner/repo` of its GitHub
+  `origin`; `canvas post` works both out from its working directory in
+  `cli/src/repo.rs` and `canvas_core::instructions::git_root`, and canvasd runs
+  no git command for a post) (`AppState::record_project`, logged `project
   recorded`), outside the 24h stream retention. A `projects.json` that
   can't be read or parsed is an error (logged `projects list unreadable`;
   `canvas instructions projects` exits 1 naming it): canvasd keeps recording

@@ -12,6 +12,7 @@ pub mod instructions;
 pub mod integrations;
 pub mod post;
 pub mod record;
+pub mod repo;
 pub mod scan;
 pub mod snapshot;
 pub mod stop;

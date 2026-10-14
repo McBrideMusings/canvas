@@ -18,7 +18,6 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use uuid::Uuid;
 
-use crate::repo::github_repo;
 use crate::state::{
     process_alive, AppState, CanvasEvent, SnapshotReply, Theme, ThemeChoice, ThemeSource,
 };
@@ -43,8 +42,7 @@ fn cwd_basename(cwd: &str) -> String {
 /// the live process.
 /// Returns the new or resumed session so the caller can publish a
 /// `SessionUpserted` event; returns `None` when nothing about it changed.
-/// `repo` comes from [`repo_if_unknown`], resolved before the caller took
-/// the lock.
+/// `repo` is the `owner/repo` the CLI sent with the post.
 fn ensure_session(
     inner: &mut crate::state::Inner,
     session_id: &str,
@@ -92,16 +90,6 @@ fn ensure_session(
     };
     inner.sessions.insert(session.id.clone(), session.clone());
     Some(session)
-}
-
-/// The repo for a session `ensure_session` may be about to create, read
-/// only when the daemon doesn't know the session yet, so an ordinary turn
-/// never runs `git`.
-async fn repo_if_unknown(state: &AppState, session_id: &str, cwd: &str) -> Option<String> {
-    if state.inner.read().await.sessions.contains_key(session_id) {
-        return None;
-    }
-    github_repo(cwd).await
 }
 
 pub async fn end_session(
@@ -190,7 +178,6 @@ pub async fn post_explicit(
     if let Some(refused) = refuse_freezing(&req.html) {
         return refused;
     }
-    let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
     let (card, created) = {
@@ -201,7 +188,7 @@ pub async fn post_explicit(
             &req.session_id,
             &req.cwd,
             req.agent,
-            repo,
+            req.repo,
             req.pid,
         );
         let id = Uuid::new_v4().to_string();
@@ -224,10 +211,18 @@ pub async fn post_explicit(
         (card, created)
     };
     if created {
-        // A git root walk and a file write: off the executor's threads.
-        let state = state.clone();
-        let cwd = req.cwd.clone();
-        let _ = tokio::task::spawn_blocking(move || state.record_project(&cwd)).await;
+        // Only a folder holding the post's cwd can be its git root.
+        if let Some(root) = req
+            .git_root
+            .filter(|root| StdPath::new(&req.cwd).starts_with(root))
+        {
+            // A file write: off the executor's threads.
+            let state = state.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                state.record_project(std::path::Path::new(&root))
+            })
+            .await;
+        }
     }
 
     (StatusCode::OK, Json(card)).into_response()

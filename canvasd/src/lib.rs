@@ -10,7 +10,6 @@ pub mod instruction_routes;
 pub mod project_files;
 pub mod provenance;
 pub mod refresh;
-pub mod repo;
 pub mod routes;
 pub mod state;
 pub mod store;

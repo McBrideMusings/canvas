@@ -65,8 +65,8 @@ async fn json_of(app: &axum::Router, method: &str, uri: &str, body: Option<Value
 }
 
 async fn post_from(app: &axum::Router, session: &str, cwd: &Path) {
-    let body =
-        json!({"session_id": session, "cwd": cwd, "agent": "claude-code", "html": "<p>x</p>"});
+    let git_root = instructions::git_root(cwd);
+    let body = json!({"session_id": session, "cwd": cwd, "agent": "claude-code", "html": "<p>x</p>", "git_root": git_root});
     json_of(app, "POST", "/api/posts", Some(body)).await;
 }
 
@@ -97,6 +97,23 @@ async fn a_post_records_its_git_root_and_it_outlives_the_stream_and_a_restart() 
         instructions::seen_projects(&d.data).unwrap()[0].root,
         d.repo
     );
+}
+
+#[tokio::test]
+async fn a_git_root_that_does_not_hold_the_cwd_is_not_recorded() {
+    let d = dirs();
+    let app = build_router(AppState::open(&d.data).await);
+    for (session, root) in [
+        ("s1", json!(d.data)),
+        ("s2", json!("relative")),
+        ("s3", Value::Null),
+    ] {
+        let body = json!({"session_id": session, "cwd": d.repo, "agent": "claude-code",
+                          "html": "<p>x</p>", "git_root": root});
+        json_of(&app, "POST", "/api/posts", Some(body)).await;
+    }
+    let projects = json_of(&app, "GET", "/api/projects", None).await;
+    assert_eq!(projects, json!([]));
 }
 
 #[tokio::test]
