@@ -34,7 +34,7 @@ if ! api -o /dev/null --max-time 2 "http://localhost/api/state"; then
 fi
 
 cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
-canvas="${repo_root}/target/debug/canvas"
+canvas="${CARGO_TARGET_DIR:-${repo_root}/target}/debug/canvas"
 
 for id in "${ids[@]}"; do
   api -o /dev/null -X DELETE "http://localhost/api/sessions/${id}"

@@ -19,7 +19,7 @@ bash "${verify}" start
 trap 'bash "${verify}" stop' EXIT
 eval "$(bash "${verify}" env)"
 socket="${CANVAS_SOCKET}"
-canvas="${repo_root}/target/debug/canvas"
+canvas="$(bash "${verify}" dir)/bin/canvas"
 
 rm -rf "${root}"
 mkdir -p "${root}" "${out}"

@@ -23,7 +23,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 verify="${repo_root}/scripts/verify-app.sh"
 work=/tmp/canvas-clip-demo
 export CANVAS_VERIFY_DIR=/tmp/canvas-clip
-canvas="${repo_root}/target/debug/canvas"
+canvas="$(bash "${verify}" dir)/bin/canvas"
 PERIOD=5.6
 sessions=(demo-storefront demo-billing demo-web demo-docs)
 

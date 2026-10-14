@@ -11,7 +11,10 @@
 # touches the live daemon's socket. The dev app's localStorage (the theme, the
 # page choice) lives under ~/Library/WebKit/app and is shared by every checkout.
 #
-#   start       build both, start daemon and app, print the folder and socket
+#   start       build both, copy them to ${dir}/bin, start daemon and app from
+#               there, print the folder and socket. The copy keeps what runs
+#               this checkout's build when CARGO_TARGET_DIR is a target folder
+#               other checkouts build into too (a swarm's workers share one).
 #   shot <png> [settings]
 #               capture the app's "Canvas" window, or its "Settings" window, to
 #               <png> (no focus taken)
@@ -22,8 +25,9 @@
 #               debug app reads it from ${dir}/debug/eval within 200ms. A
 #               ${dir}/debug/save-path file answers an export's save dialog
 #               (its path; empty for cancelled) — see app/src-tauri/src/debug.rs
-#   env         print `export CANVAS_DATA_DIR=... CANVAS_SOCKET=...` and nothing
-#               else, for `eval "$(admin verify-app env)"` before `canvas post`
+#   env         print `export CANVAS_DATA_DIR=... CANVAS_SOCKET=... PATH=${dir}/bin:...`
+#               and nothing else, for `eval "$(admin verify-app env)"` before
+#               `canvas post`, so `canvas` is the copy `start` runs
 #   dir         print the folder
 #   stop        kill exactly the two processes `start` recorded
 set -euo pipefail
@@ -43,13 +47,16 @@ case "${1:-}" in
     mkdir -m 700 "${dir}"
     cargo build -q --manifest-path "${repo_root}/Cargo.toml" -p canvas
     cargo build -q --manifest-path "${repo_root}/app/src-tauri/Cargo.toml"
+    mkdir "${dir}/bin"
+    cp "${CARGO_TARGET_DIR:-${repo_root}/target}/debug/canvas" "${dir}/bin/canvas"
+    cp "${CARGO_TARGET_DIR:-${repo_root}/app/src-tauri/target}/debug/app" "${dir}/bin/app"
     export CANVAS_DATA_DIR="${dir}" CANVAS_SOCKET="${socket}"
-    "${repo_root}/target/debug/canvas" daemon > "${dir}/daemon.log" 2>&1 &
+    "${dir}/bin/canvas" daemon > "${dir}/daemon.log" 2>&1 &
     echo $! > "${dir}/daemon.pid"
     for _ in $(seq 1 50); do [ -S "${socket}" ] && break; sleep 0.1; done
     [ -S "${socket}" ] || { echo "verify-app: daemon never bound ${socket}" >&2; exit 1; }
     mkdir -p "${dir}/debug/eval"
-    CANVAS_DEBUG_DIR="${dir}/debug" "${repo_root}/app/src-tauri/target/debug/app" > "${dir}/app.log" 2>&1 &
+    CANVAS_DEBUG_DIR="${dir}/debug" "${dir}/bin/app" > "${dir}/app.log" 2>&1 &
     echo $! > "${dir}/app.pid"
     sleep 3
     echo "verify-app: daemon $(cat "${dir}/daemon.pid"), app $(cat "${dir}/app.pid"), dir ${dir}, socket ${socket}"
@@ -81,7 +88,7 @@ EOF
     mv "${tmp}" "${dir}/debug/eval/$(date +%s%N)-$$.${suffix}"
     ;;
   env)
-    printf 'export CANVAS_DATA_DIR=%q CANVAS_SOCKET=%q\n' "${dir}" "${socket}"
+    printf 'export CANVAS_DATA_DIR=%q CANVAS_SOCKET=%q PATH=%q\n' "${dir}" "${socket}" "${dir}/bin:${PATH}"
     ;;
   dir)
     echo "${dir}"
