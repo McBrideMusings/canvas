@@ -68,7 +68,17 @@ beside the terminal all day.
   not-yet-started or restarting daemon never leaves the window on a dead error
   page). It forwards a request's `Range` and passes back canvasd's status and
   `Accept-Ranges`/`Content-Range`, so a video reads canvasd's 206 slices (at
-  most 8 MB each) instead of the whole file on every loop. A custom scheme
+  most 8 MB each) instead of the whole file on every loop. A card's video
+  doesn't take that path in the window: WebKit's player reads a file in
+  thousands of ranges as small as 8 bytes, each a socket round trip to canvasd,
+  so the viewer points the frame's `<video>`/`<source>` at Tauri's asset
+  protocol (`convertFileSrc`, `asset://localhost/<path>`, served from disk
+  in-process with ranges; `protocol-asset` in `Cargo.toml`, `assetProtocol` in
+  `tauri.conf.json` with an empty scope). `media.rs` allows each video path
+  (`canvas_core::VIDEO_EXTS`) of every card in `/api/state` when the event
+  stream opens and of each `card-upserted` card, before re-emitting it, logged
+  `media allowed`; Tauri's scope can't drop a path, so one stays allowed until
+  the app quits. A path no card named is refused. A custom scheme
   response is one whole body, so it can't carry SSE:
   `bridge::forward_events` holds the one `/api/events` stream and re-emits it
   as `canvas-event` and `canvas-stream` Tauri events, which the viewer listens
@@ -168,6 +178,11 @@ beside the terminal all day.
   image toggles fit and 2.5x, wheel or pinch zooms at the cursor (1x to 8x),
   drag pans while zoomed, `+` `-` `0` zoom and reset, and only the X button,
   Esc or a click on the bare backdrop closes it.
+  An IntersectionObserver on every card iframe posts `{type:'canvas-visible',
+  visible}` into it (in view and the window visible; again after each load and
+  `visibilitychange`); out of sight the card's injected script pauses each
+  playing `<video>`, and one that starts meanwhile, and back in sight resumes
+  only those it paused, since WebKit keeps decoding an off-screen video.
   Settings' Instructions and Post reminders tabs (`layer-page.js`, one page
   per kind, built on canvasd's instruction routes) are three columns: the
   Include switch and an Edit list (Yours, then each seen project with its
@@ -258,7 +273,8 @@ beside the terminal all day.
   `<video src>` or `<source src>` joins `images` and is served by the same
   `/api/cards/:id/images/:n` route (which honours `Range`, since a video needs
   it); the viewer's lightbox skips those entries and the card CSP carries
-  `media-src`. A local `<link rel="stylesheet" href="/abs/x.css">` is replaced
+  `media-src` (with `asset:`, since in the window a video plays through the
+  asset protocol; the stored card, export and snapshot keep the route). A local `<link rel="stylesheet" href="/abs/x.css">` is replaced
   by a `<style>` block with its `url()` assets as data URIs, before the scan
   (`cli/src/inline_css.rs`); one inside SVG or MathML, which the browser never
   loads, stays as written. Hook
@@ -732,6 +748,12 @@ beside the terminal all day.
   with a CSP that allows scripts only from cdnjs, jsdelivr and unpkg and no
   `connect-src`, so a card never fetches anything itself and sends nothing
   back to canvasd. Never set post markup as `innerHTML` in the viewer's own origin.
+  The card CSP's `media-src` includes `asset:`, so any card can play any video
+  path in the app's asset scope: every absolute video path any card named since
+  the app started, kept after the card goes, since Tauri's scope can't drop
+  one. A card can show such a file but never send it anywhere. Only `media.rs`
+  adds to the scope, and only from canvasd's cards; never widen it to a
+  folder, a non-video file or a path the viewer supplies.
 - Every `canvas post` creates its own card; nothing creates a card automatically.
 - canvasd refuses a post or update (400, logged `card refused`) whose HTML would
   freeze Canvas.app's WebKit (`canvas_core::html::webkit_freeze`: an end tag

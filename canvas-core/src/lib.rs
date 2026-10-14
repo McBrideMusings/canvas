@@ -188,6 +188,10 @@ pub const MEDIA_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "webm", // video
 ];
 
+/// The video half of `MEDIA_EXTS`: the files Canvas.app lets a card's player
+/// read straight from disk through Tauri's asset protocol.
+pub const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm"];
+
 /// Standard base64 with padding, for `data:` URIs.
 pub fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

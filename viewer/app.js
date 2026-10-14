@@ -1754,6 +1754,25 @@
     );
   }
 
+  // A card's local video plays from disk through Tauri's asset protocol,
+  // whose scope Canvas.app opens to each video canvasd holds (media.rs);
+  // through the canvas:// bridge, each of the many small reads WebKit's
+  // player makes is a round trip to canvasd. Only the frame's copy changes:
+  // the stored card, its export and its snapshot keep `/api/cards/...`.
+  function localVideoSrcs(card) {
+    const convert = window.__TAURI__?.core?.convertFileSrc;
+    if (!convert) return card.html;
+    return card.html.replace(
+      /(src=["'])\/api\/cards\/[^/"']+\/images\/(\d+)(?=["'])/gi,
+      (match, prefix, n) => {
+        const path = card.images[Number(n)];
+        return path && path.startsWith("/") && VIDEO_PATH.test(path)
+          ? prefix + convert(path)
+          : match;
+      }
+    );
+  }
+
   // A card renders in the window's theme whatever it asks for. Its
   // `prefers-color-scheme` media queries are rewritten so only the active
   // theme's block matches (`(min-width:0px)` is always true, the huge
@@ -1769,7 +1788,8 @@
     );
   }
 
-  function buildIframeDoc(html) {
+  // `gated`: the frame is a card, which the viewer tells when it can be seen.
+  function buildIframeDoc(html, gated = false) {
     const theme = window.canvasTheme.get();
     const rootStyle = getComputedStyle(document.documentElement);
     const surface = rootStyle.getPropertyValue("--surface").trim();
@@ -1781,7 +1801,7 @@
       "style-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com; " +
       "font-src https://fonts.gstatic.com data:; " +
       "img-src * data: canvas:; " +
-      "media-src * data: canvas:;";
+      "media-src * data: canvas: asset:;";
     // Measure the content wrapper, not documentElement: documentElement's
     // scrollHeight is clamped to at least the iframe's own current viewport
     // height, so once the parent sets a height it can never report a
@@ -1982,6 +2002,40 @@
           var m = /\\/api\\/cards\\/[^\\/]+\\/images\\/(\\d+)$/.exec(img.getAttribute('src') || '');
           if (!m) return;
           parent.postMessage({ type: 'canvas-image', index: parseInt(m[1], 10) }, '*');
+        });
+
+        // WebKit keeps decoding a video scrolled out of view, on a hidden
+        // page or in a hidden window. The parent says whether this card can
+        // be seen; out of sight, every playing video pauses (one that starts
+        // meanwhile, autoplay included, pauses at once), and back in sight
+        // only the videos paused here resume. A card starts out of sight
+        // until the parent's first word; a widget, which gets none, starts in.
+        var canvasShown = ${!gated};
+        var canvasHeld = [];
+        function canvasHold(v) {
+          if (canvasHeld.indexOf(v) < 0) canvasHeld.push(v);
+          v.pause();
+        }
+        document.addEventListener('play', function (e) {
+          if (!canvasShown && e.target.tagName === 'VIDEO') canvasHold(e.target);
+        }, true);
+        window.addEventListener('message', function (e) {
+          if (e.source !== parent) return;
+          var d = e.data;
+          if (!d || d.type !== 'canvas-visible' || d.visible === canvasShown) return;
+          canvasShown = d.visible;
+          if (!canvasShown) {
+            Array.prototype.forEach.call(document.querySelectorAll('video'), function (v) {
+              if (!v.paused) canvasHold(v);
+            });
+          } else {
+            var held = canvasHeld;
+            canvasHeld = [];
+            held.forEach(function (v) {
+              var p = v.play();
+              if (p && p.catch) p.catch(function () {});
+            });
+          }
         });
 
         // Code blocks: each <pre> gets a header (language, Copy) and, past
@@ -2213,6 +2267,29 @@
       frame.contentWindow.postMessage({ type: "canvas-data", value }, "*");
     }
   }
+
+  // Whether a card can be seen: its frame in the window's view (a hidden
+  // session, a search miss or the Artifacts page all leave it out) and the
+  // window visible. The card's script pauses its videos while it can't.
+  const cardFramesInView = new WeakSet();
+
+  function postCardVisible(frame) {
+    if (!frame.contentWindow) return;
+    const visible = document.visibilityState === "visible" && cardFramesInView.has(frame);
+    frame.contentWindow.postMessage({ type: "canvas-visible", visible }, "*");
+  }
+
+  const cardFrameObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) cardFramesInView.add(entry.target);
+      else cardFramesInView.delete(entry.target);
+      postCardVisible(entry.target);
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    for (const frame of cardsEl.querySelectorAll("iframe")) postCardVisible(frame);
+  });
 
   // How many values each card has been pushed live. A replay that started
   // before a push finished after it would overwrite the newer value with the
@@ -2512,12 +2589,14 @@
 
     const iframe = document.createElement("iframe");
     iframe.setAttribute("sandbox", "allow-scripts");
-    iframe.srcdoc = buildIframeDoc(card.html);
+    iframe.srcdoc = buildIframeDoc(localVideoSrcs(card), true);
     iframe.addEventListener("load", () => {
       postTargetKinds(iframe, card);
       if (highlightQuery) postHighlight(iframe);
       replayCardData(card.id, iframe);
+      postCardVisible(iframe);
     });
+    cardFrameObserver.observe(iframe);
     body.appendChild(iframe);
 
     el.appendChild(body);

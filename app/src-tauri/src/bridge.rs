@@ -173,14 +173,22 @@ pub fn forward_events(app: AppHandle) {
         let stream = match canvas_core::paths::socket_path() {
             None => Err("no HOME to place the socket".to_string()),
             Some(socket) => match canvas_core::unix_http::open_stream(&socket, "/api/events", STREAM_TIMEOUT) {
-                Ok(s) if s.status == 200 => Ok(s),
+                Ok(s) if s.status == 200 => Ok((s, socket)),
                 Ok(s) => Err(format!("canvasd answered HTTP {}", s.status)),
                 Err(e) => Err(e.to_string()),
             },
         };
         match stream {
-            Ok(stream) => {
+            Ok((stream, socket)) => {
                 failures.recovered();
+                // "open" makes the viewer load the state, whose videos must
+                // already be readable through the asset protocol; until they
+                // are, the stream counts as not open and is retried.
+                if let Err(e) = crate::media::allow_state(&app, &socket) {
+                    canvas_core::log::warn("media state unreadable", &[("error", &e)]);
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
                 canvas_core::log::info("event stream open", &[]);
                 let _ = app.emit("canvas-stream", "open");
                 read_events(&app, stream.body);
@@ -204,6 +212,11 @@ fn read_events(app: &AppHandle, reader: impl BufRead) {
         let Ok(line) = line else { return };
         if line.is_empty() {
             if !event.is_empty() {
+                if event == "card-upserted" {
+                    if let Ok(card) = serde_json::from_str(&data) {
+                        crate::media::allow_card(app, &card);
+                    }
+                }
                 let _ = app.emit(
                     "canvas-event",
                     serde_json::json!({ "event": event, "data": data }),

@@ -11,6 +11,7 @@ mod debug;
 mod escape;
 mod export;
 mod integrations;
+mod media;
 mod snapshot;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
