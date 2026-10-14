@@ -32,6 +32,7 @@ pub fn build_router(state: AppState) -> Router {
             delete(routes::clear_session_cards),
         )
         .route("/api/posts", post(routes::post_explicit))
+        .route("/api/media", post(routes::put_media))
         .route("/api/state", get(routes::get_state))
         .route(
             "/api/instructions/:kind",

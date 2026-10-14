@@ -119,6 +119,7 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     pub html: String,
+    /// The absolute path of each image and video in canvasd's media folder.
     #[serde(default)]
     pub images: Vec<String>,
     #[serde(default)]
@@ -188,6 +189,28 @@ pub const MEDIA_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "webm", // video
 ];
 
+/// The folder in `CANVAS_DATA_DIR` that holds the bytes of every card's images
+/// and videos: `canvas post` uploads each file to `POST /api/media`, which
+/// stores it there as `<uuid>.<ext>`.
+pub const MEDIA_DIR: &str = "media";
+
+/// Largest file `POST /api/media` accepts.
+pub const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
+
+/// Whether `name` is a stored media file's name: a hyphenated lowercase-hex
+/// UUID, a dot, and an extension in `MEDIA_EXTS`. A card names its media only
+/// this way, so a name never carries a path.
+pub fn is_media_name(name: &str) -> bool {
+    let Some((stem, ext)) = name.split_once('.') else {
+        return false;
+    };
+    stem.len() == 36
+        && stem
+            .bytes()
+            .all(|b| b == b'-' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && MEDIA_EXTS.contains(&ext)
+}
+
 /// The video half of `MEDIA_EXTS`: the files Canvas.app lets a card's player
 /// read straight from disk through Tauri's asset protocol.
 pub const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm"];
@@ -225,6 +248,8 @@ pub struct PostRequest {
     /// Recorded on the session only when this post creates it.
     pub agent: Agent,
     pub html: String,
+    /// Names `POST /api/media` returned for this post's images and videos, in
+    /// the order the HTML's `canvas-image:<n>` placeholders count them.
     #[serde(default)]
     pub images: Vec<String>,
     #[serde(default)]
@@ -240,6 +265,7 @@ pub struct PostRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateCardRequest {
     pub html: String,
+    /// Media names, as in [`PostRequest::images`].
     #[serde(default)]
     pub images: Vec<String>,
     #[serde(default)]

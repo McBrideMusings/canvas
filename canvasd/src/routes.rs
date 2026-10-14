@@ -180,6 +180,94 @@ fn refuse_freezing(html: &str) -> Option<Response> {
     Some((StatusCode::BAD_REQUEST, format!("card refused: {reason}")).into_response())
 }
 
+fn refuse_media(reason: &str) -> Response {
+    canvas_core::log::warn("card refused", &[("reason", &reason)]);
+    (StatusCode::BAD_REQUEST, format!("card refused: {reason}")).into_response()
+}
+
+/// `POST /api/media?ext=png`: stores the request body as a new file in the
+/// media folder and answers `{"name": "<uuid>.png"}`, the name a post's
+/// `images` carries. Only the extensions in `MEDIA_EXTS` are taken, up to
+/// `MAX_UPLOAD_BYTES`; the body streams to a temp file and is renamed into
+/// place, so a failed upload leaves no file a card could name.
+pub async fn put_media(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Body,
+) -> Response {
+    use tokio::io::AsyncWriteExt;
+    let ext = query
+        .get("ext")
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !canvas_core::MEDIA_EXTS.contains(&ext.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("ext {ext:?} is not an image or video type"),
+        )
+            .into_response();
+    }
+    let dir = state.media_dir().to_path_buf();
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return media_failure("media folder", &e);
+    }
+    let id = Uuid::new_v4();
+    let name = format!("{id}.{ext}");
+    let part = dir.join(format!(".{id}.part"));
+    let mut file = match tokio::fs::File::create(&part).await {
+        Ok(f) => f,
+        Err(e) => return media_failure("create", &e),
+    };
+    let mut stream = body.into_data_stream();
+    let mut size = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&part).await;
+                return (StatusCode::BAD_REQUEST, format!("upload interrupted: {e}"))
+                    .into_response();
+            }
+        };
+        size += chunk.len();
+        if size > canvas_core::MAX_UPLOAD_BYTES {
+            let _ = tokio::fs::remove_file(&part).await;
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "upload is over the {} MB limit",
+                    canvas_core::MAX_UPLOAD_BYTES / (1024 * 1024)
+                ),
+            )
+                .into_response();
+        }
+        if let Err(e) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&part).await;
+            return media_failure("write", &e);
+        }
+    }
+    if let Err(e) = file.flush().await {
+        let _ = tokio::fs::remove_file(&part).await;
+        return media_failure("write", &e);
+    }
+    drop(file);
+    if let Err(e) = tokio::fs::rename(&part, dir.join(&name)).await {
+        let _ = tokio::fs::remove_file(&part).await;
+        return media_failure("rename", &e);
+    }
+    canvas_core::log::info("media stored", &[("name", &name), ("bytes", &size)]);
+    Json(serde_json::json!({"name": name})).into_response()
+}
+
+fn media_failure(step: &str, e: &std::io::Error) -> Response {
+    canvas_core::log::error("media store failed", &[("step", &step), ("error", e)]);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("could not store media ({step}): {e}"),
+    )
+        .into_response()
+}
+
 /// Every post creates its own card — no open/closed lifecycle, no merging
 /// into a prior card from the same session. HTML that would freeze the
 /// viewer is refused before anything is created.
@@ -190,6 +278,10 @@ pub async fn post_explicit(
     if let Some(refused) = refuse_freezing(&req.html) {
         return refused;
     }
+    let images = match state.resolve_media(&req.images) {
+        Ok(images) => images,
+        Err(reason) => return refuse_media(&reason),
+    };
     let repo = repo_if_unknown(&state, &req.session_id, &req.cwd).await;
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
@@ -211,7 +303,7 @@ pub async fn post_explicit(
             session_id: req.session_id.clone(),
             at: now(),
             updated_at: None,
-            images: req.images,
+            images,
             targets: req.targets,
         };
         inner.push_card(card.clone());
@@ -252,11 +344,21 @@ pub async fn export_card(State(state): State<AppState>, Path(id): Path<String>) 
         };
         (card, inner.data.get(&id).cloned())
     };
+    let media_dir = state.media_dir().to_path_buf();
     let result = tokio::task::spawn_blocking(move || {
         crate::export::export_card(
             &card,
             data.as_ref(),
-            crate::export::read_media,
+            |path: &str, limit| {
+                if StdPath::new(path).parent() == Some(media_dir.as_path()) {
+                    crate::export::read_media(path, limit)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "not in canvasd's media folder",
+                    ))
+                }
+            },
             crate::cdn::Network,
         )
     })
@@ -294,13 +396,17 @@ pub async fn update_card(
         if let Some(refused) = refuse_freezing(&req.html) {
             return refused;
         }
+        let images = match state.resolve_media(&req.images) {
+            Ok(images) => images,
+            Err(reason) => return refuse_media(&reason),
+        };
         let card = Card {
             id: id.clone(),
             session_id: inner.cards[idx].session_id.clone(),
             at: inner.cards[idx].at.clone(),
             updated_at: Some(now()),
             html: resolve_image_placeholders(&req.html, &id),
-            images: req.images,
+            images,
             targets: req.targets,
         };
         inner.upsert_card(card.clone());
@@ -882,7 +988,7 @@ pub async fn get_card_image(
     let Some(image) = image else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !image.starts_with('/') {
+    if !state.is_media_path(&image) {
         return StatusCode::NOT_FOUND.into_response();
     }
 

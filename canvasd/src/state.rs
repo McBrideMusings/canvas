@@ -214,6 +214,9 @@ pub struct AppState {
     pub(crate) layer_writes: Arc<tokio::sync::Mutex<()>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
+    /// Where uploaded images and videos live: `media/` in the data dir, or a
+    /// folder of its own in the temp dir for a state with no data dir.
+    media_dir: std::path::PathBuf,
 }
 
 impl Default for AppState {
@@ -241,6 +244,7 @@ impl AppState {
             layer_writes: Arc::default(),
             store: None,
             data_dir: None,
+            media_dir: std::env::temp_dir().join(format!("canvasd-media-{}", uuid::Uuid::new_v4())),
         }
     }
 
@@ -272,7 +276,80 @@ impl AppState {
             layer_writes: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
+            media_dir: dir.join(canvas_core::MEDIA_DIR),
         }
+    }
+
+    /// The folder holding every card's uploaded images and videos.
+    pub fn media_dir(&self) -> &std::path::Path {
+        &self.media_dir
+    }
+
+    /// The absolute path of each stored file `names` names, in order; an error
+    /// naming the first that isn't a media name or has no file.
+    pub fn resolve_media(&self, names: &[String]) -> Result<Vec<String>, String> {
+        names
+            .iter()
+            .map(|name| {
+                if !canvas_core::is_media_name(name) {
+                    return Err(format!("{name:?} is not an uploaded media name"));
+                }
+                let path = self.media_dir.join(name);
+                if !path.is_file() {
+                    return Err(format!("no uploaded media named {name}"));
+                }
+                Ok(path.to_string_lossy().into_owned())
+            })
+            .collect()
+    }
+
+    /// Whether `path` is a file directly inside the media folder.
+    pub fn is_media_path(&self, path: &str) -> bool {
+        std::path::Path::new(path).parent() == Some(self.media_dir.as_path())
+    }
+
+    /// Deletes every media file no card names, once it is older than
+    /// [`MEDIA_GRACE`] (an upload waits that long for its post). Returns how
+    /// many it deleted.
+    pub async fn sweep_media(&self) -> usize {
+        let referenced: std::collections::HashSet<std::ffi::OsString> = {
+            let inner = self.inner.read().await;
+            inner
+                .cards
+                .iter()
+                .flat_map(|c| c.images.iter())
+                .filter_map(|p| std::path::Path::new(p).file_name().map(|n| n.to_owned()))
+                .collect()
+        };
+        let Ok(entries) = std::fs::read_dir(&self.media_dir) else {
+            return 0;
+        };
+        let mut deleted = 0;
+        for entry in entries.flatten() {
+            if referenced.contains(&entry.file_name()) {
+                continue;
+            }
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > MEDIA_GRACE);
+            if !old {
+                continue;
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => deleted += 1,
+                Err(e) => canvas_core::log::warn(
+                    "media sweep failed",
+                    &[("path", &entry.path().display()), ("error", &e)],
+                ),
+            }
+        }
+        if deleted > 0 {
+            canvas_core::log::info("media swept", &[("deleted", &deleted)]);
+        }
+        deleted
     }
 
     /// The data dir this state persists to; `None` for `AppState::new()`.
@@ -423,6 +500,10 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// How long an uploaded file may sit unnamed by any card before the sweep
+/// deletes it.
+pub const MEDIA_GRACE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// How often the daemon checks that each session's agent process still runs.
 pub const LIVENESS_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -433,6 +514,7 @@ pub fn spawn_liveness_sweep(state: AppState) {
         loop {
             tick.tick().await;
             state.sweep_dead_sessions(process_alive).await;
+            state.sweep_media().await;
         }
     });
 }
