@@ -256,3 +256,45 @@ async fn a_shared_post_reaches_upstream_with_its_image_bytes() {
     assert_eq!(std::fs::read(&cards[0].images[0]).unwrap(), png);
     assert_eq!(upstream.inner.read().await.sessions["s1"].cwd, "/work/app");
 }
+
+#[tokio::test]
+async fn an_artifact_pane_in_a_browser_reaches_its_files_errors_and_state_only() {
+    let addr = start(AppState::new(), &[], None, false).await;
+    let host = addr.to_string();
+    let origin = format!("http://{host}");
+    let pane = [("Host", host.as_str()), ("Origin", "null")];
+    let viewer = [("Host", host.as_str()), ("Origin", origin.as_str())];
+    // Past the guard: canvasd answers, whatever the empty body earns.
+    for (method, path, headers) in [
+        ("GET", "/artifacts/art-x/app.js", &pane),
+        ("GET", "/api/artifacts/art-x/state", &viewer),
+        ("PUT", "/api/artifacts/art-x/state/k", &viewer),
+        ("POST", "/api/artifacts/art-x/errors", &viewer),
+    ] {
+        assert_ne!(
+            http(addr, method, path, headers).await.0,
+            403,
+            "{method} {path}"
+        );
+    }
+    // A null origin reads nothing else.
+    assert_eq!(http(addr, "GET", "/api/state", &pane).await.0, 403);
+    assert_eq!(
+        http(addr, "POST", "/artifacts/art-x/app.js", &pane).await.0,
+        403
+    );
+    // Nothing here opens a link or a path, or changes an artifact itself.
+    for (method, path) in [
+        ("POST", "/api/artifacts/art-x/open"),
+        ("POST", "/api/artifacts/art-x/reset"),
+        ("DELETE", "/api/artifacts/art-x/state"),
+        ("PUT", "/api/artifacts/art-x/data"),
+        ("PUT", "/api/artifacts/art-x/state/a/b"),
+    ] {
+        assert_eq!(
+            http(addr, method, path, &viewer).await.0,
+            403,
+            "{method} {path}"
+        );
+    }
+}

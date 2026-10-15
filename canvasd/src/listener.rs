@@ -195,17 +195,34 @@ fn origin_host(value: &str) -> Option<String> {
 
 /// Whether the listener serves this request at all: reads, except the
 /// daemon's own folders-and-machine routes under `/api`, plus the two routes
-/// a machine posts through.
+/// a machine posts through and the three an artifact pane in a browser needs:
+/// its script errors, and its saved state, which `canvasd` confines to one
+/// JSON file per key in the artifact's `canvas-data/`. Opening a link or a
+/// path stays with the machine's own person.
 fn route_served(method: &Method, path: &str) -> bool {
+    let api = path.strip_prefix("/api/");
+    let artifact_part = api
+        .and_then(|api| api.strip_prefix("artifacts/"))
+        .and_then(|rest| rest.split_once('/'))
+        .map(|(_, part)| part);
     if method == Method::POST {
-        return path == "/api/posts" || path == "/api/media";
+        return path == "/api/posts" || path == "/api/media" || artifact_part == Some("errors");
+    }
+    if method == Method::PUT {
+        return artifact_part
+            .is_some_and(|p| p.strip_prefix("state/").is_some_and(|k| !k.contains('/')));
     }
     if method != Method::GET && method != Method::HEAD {
         return false;
     }
-    match path.strip_prefix("/api/") {
+    match api {
         None => true,
-        Some(api) => api == "state" || api == "events" || api.starts_with("cards/"),
+        Some(api) => {
+            api == "state"
+                || api == "events"
+                || api.starts_with("cards/")
+                || artifact_part == Some("state")
+        }
     }
 }
 
@@ -246,9 +263,19 @@ async fn guard(State(guard): State<Arc<Guard>>, mut request: Request, next: Next
         None => return refuse("no Host header", &peer, &request),
     }
     if let Some(origin) = request.headers().get(header::ORIGIN) {
+        // An artifact pane is a sandboxed frame in an opaque origin, so the
+        // module scripts and sub-resources it loads from its own folder carry
+        // `Origin: null`, and WebKit and Chrome send no Referer with them.
+        // Only reads of `/artifacts/` get that pass; the artifact's id (40
+        // random bits, never listed outside the viewer's own state) is what
+        // names a page the caller may read.
+        let pane_read = origin.as_bytes() == b"null"
+            && matches!(*request.method(), Method::GET | Method::HEAD)
+            && request.uri().path().starts_with("/artifacts/");
         let origin = origin.to_str().ok().and_then(origin_host);
         match origin {
             Some(o) if guard.hosts.contains(&o) => {}
+            _ if pane_read => {}
             _ => return refuse("origin is not served", &peer, &request),
         }
     }

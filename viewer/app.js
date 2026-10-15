@@ -511,6 +511,9 @@
   // stream open (canvasd keeps it in memory, so a restart forgets it), and
   // after every change.
   function reportTheme() {
+    // The listener doesn't serve the report, and a browser tab is not the
+    // window `canvas theme` reads back.
+    if (!tauriCore) return;
     fetch("/api/theme", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -748,6 +751,9 @@
 
   const settingsToggleEl = document.getElementById("settings-toggle");
   settingsToggleEl.appendChild(buildIcon("gear"));
+  // Settings reads and writes files on the machine through routes the
+  // tailnet listener doesn't serve, so a browser has no Settings window.
+  if (!tauriCore) settingsToggleEl.hidden = true;
 
   // Canvas.app opens the Settings window through its own command; a browser
   // tab gets a popup window on the same page, and reopening it focuses the
@@ -2466,6 +2472,12 @@
       // and canvasd refuses anything but http(s).
       if (!artifactFrame || event.source !== artifactFrame.contentWindow) return;
       if (typeof data.url !== "string") return;
+      if (!tauriCore) {
+        // The machine's `open` belongs to the person at it; this browser
+        // opens the link itself.
+        if (/^https?:\/\//i.test(data.url)) window.open(data.url, "_blank", "noopener,noreferrer");
+        return;
+      }
       fetch(`/api/artifacts/${encodeURIComponent(artifactFrameId)}/open`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -2484,6 +2496,10 @@
       // name a path for.
       const target = targetForMessage(event.source, data.index);
       if (target === null) return;
+      if (data.type === "canvas-open" && !tauriCore) {
+        toast("Opening a local path works only in Canvas.app");
+        return;
+      }
       if (data.type === "canvas-copy-target") {
         navigator.clipboard
           .writeText(target)
@@ -3362,6 +3378,7 @@
   // doesn't lapse.
   function reportWatch(renew) {
     clearTimeout(watchTimer);
+    if (!tauriCore) return;
     const visible = document.visibilityState === "visible";
     const ids = watchedArtifactIds();
     const key = `${visible}\n${ids.join("\n")}`;
@@ -3879,6 +3896,7 @@
   }
 
   function reportPane() {
+    if (!tauriCore) return;
     if (page !== "artifacts" || !artifactFrame || !openArtifactId) {
       if (paneReported === "none") return;
       paneReported = "none";
@@ -3961,11 +3979,17 @@
     reportTheme();
   }
 
-  // canvasd has no TCP port, so there is no EventSource here: Canvas.app holds
-  // the one /api/events stream and re-emits it as `canvas-event` (one per
-  // server-sent event) and `canvas-stream` ("open" / "closed").
+  // Canvas.app holds the one /api/events stream and re-emits it as
+  // `canvas-event` (one per server-sent event) and `canvas-stream` ("open" /
+  // "closed"). A browser tab reads the stream itself with an EventSource.
   function connectEvents() {
-    const { listen } = window.__TAURI__.event;
+    const browserListeners = [];
+    const listen = tauriCore
+      ? window.__TAURI__.event.listen
+      : (name, callback) => {
+          browserListeners.push([name, callback]);
+          return Promise.resolve();
+        };
     // Listeners are up before the first loadState, so nothing published in
     // between is lost. Every "open" re-fetches the full snapshot: events
     // published while the stream was down (including the up-to-1s gap between
@@ -4044,7 +4068,48 @@
 
     handlers["artifact-pane"] = (request) => paneCommand(request);
 
-    return Promise.all(registered);
+    if (tauriCore) return Promise.all(registered);
+    return openEventSource(browserListeners, handlers);
+  }
+
+  // The browser's stream: the same two Tauri events, made from the
+  // EventSource's own. Resolves on the first open or error so the first
+  // snapshot loads either way; every later open re-fetches it, as the app's
+  // "open" does, since an EventSource reconnects by itself.
+  function openEventSource(listeners, handlers) {
+    const stream = (listeners.find(([name]) => name === "canvas-stream") || [])[1];
+    const event = (listeners.find(([name]) => name === "canvas-event") || [])[1];
+    return new Promise((resolve) => {
+      const source = new EventSource("/api/events");
+      let first = true;
+      source.addEventListener("open", () => {
+        if (first) {
+          first = false;
+          bannerEl.hidden = true;
+          resolve();
+          return;
+        }
+        stream({ payload: "open" });
+      });
+      source.addEventListener("error", () => {
+        stream({ payload: "closed" });
+        // A refusal (403) closes an EventSource for good, where a dropped
+        // connection reconnects by itself: start a new one.
+        if (source.readyState === EventSource.CLOSED) {
+          setTimeout(() => openEventSource(listeners, handlers), 5000);
+          source.close();
+        }
+        if (first) {
+          first = false;
+          resolve();
+        }
+      });
+      for (const name of Object.keys(handlers)) {
+        source.addEventListener(name, (message) =>
+          event({ payload: { event: name, data: message.data } })
+        );
+      }
+    });
   }
 
   // A `canvas-post://<card id>` link waits in the app until the viewer takes
@@ -4106,6 +4171,9 @@
   // part inside the stream's viewport is captured, so a card taller than the
   // window is cut at its bottom edge and the reply says `clipped`.
   async function snapshotCard(id, request) {
+    // Only Canvas.app can capture its window; a browser tab leaves the
+    // request to the app's windows.
+    if (!tauriCore) return;
     const reply = (answer) =>
       tauriCore
         .invoke("snapshot_reply", { request, window: watchWindow, ...answer })
@@ -4146,6 +4214,7 @@
   // view: an artifact that isn't the one showing gets a reason naming
   // `canvas focus`, which shows it.
   async function snapshotArtifact(id, request) {
+    if (!tauriCore) return;
     const reply = (answer) =>
       tauriCore
         .invoke("snapshot_reply", { request, window: watchWindow, ...answer })
