@@ -37,6 +37,11 @@ pub struct Session {
     /// one is never swept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// The machine the session ran on, named by the daemon that first held it
+    /// (a post forwarded from another machine carries that machine's name).
+    /// Absent on a session stored before machines were named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 /// The shortest `every_secs` a refresh may ask for.
@@ -266,6 +271,11 @@ pub struct PostRequest {
     /// the session.
     #[serde(default)]
     pub git_root: Option<String>,
+    /// The machine this post was made on, set by a daemon forwarding it
+    /// upstream. Recorded on the session only when this post creates it, and
+    /// only for a post that arrived over the tailnet listener.
+    #[serde(default)]
+    pub machine: Option<String>,
 }
 
 /// Body for `PUT /api/cards/:id` — replaces an existing card's content in
@@ -296,6 +306,22 @@ pub struct StateResponse {
     /// Most recently changed first.
     #[serde(default)]
     pub artifacts: Vec<ArtifactView>,
+    /// The upstream this daemon merges in, with whether it is reachable;
+    /// absent when `sharing.toml` names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<UpstreamStatus>,
+}
+
+/// Whether the upstream named in `sharing.toml` is feeding this daemon.
+/// `online` is false until the first connection succeeds and again whenever
+/// it is lost; `error` says why the last attempt failed (absent while the
+/// first attempt is still running).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamStatus {
+    pub url: String,
+    pub online: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Where an artifact's files live, written as `"kind"` on the record:
@@ -344,6 +370,9 @@ pub struct ArtifactSize {
 pub struct ArtifactView {
     #[serde(flatten)]
     pub artifact: Artifact,
+    /// The machine whose canvasd holds the artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
     /// Where the files are, absolute: the owned folder, or the linked path.
     pub path: String,
     /// True when a linked artifact's path no longer exists.

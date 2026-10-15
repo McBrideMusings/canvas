@@ -785,6 +785,19 @@ html.full-width .empty-state {
   margin-left: 6px;
 }
 
+/* Which machine a post or artifact came from; shown only while the stream
+   holds items from more than one. */
+.card-header .session-machine,
+.artifact-machine {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg3);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  margin-left: 6px;
+}
+
 .card-header .time {
   font-weight: 400;
   color: var(--muted);

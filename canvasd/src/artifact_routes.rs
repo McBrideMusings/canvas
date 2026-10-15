@@ -653,20 +653,22 @@ pub async fn get_pane(State(state): State<AppState>) -> Response {
 /// `/artifacts/:id/` — the artifact's entry page.
 pub async fn artifact_entry(
     state: State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    serve_file(state, id, String::new(), headers).await
+    serve_file(state, id, String::new(), headers, caller.is_some()).await
 }
 
 /// `/artifacts/:id/*path` — one file of the artifact, confined to its folder
 /// (or, for a linked HTML file, to that file).
 pub async fn artifact_file(
     state: State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
     Path((id, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    serve_file(state, id, path, headers).await
+    serve_file(state, id, path, headers, caller.is_some()).await
 }
 
 /// Serves one artifact file with the artifact CSP, honouring a single `Range`
@@ -676,10 +678,34 @@ async fn serve_file(
     id: String,
     rel: String,
     request_headers: HeaderMap,
+    from_peer: bool,
 ) -> Response {
     let folder = {
         let artifacts = state.artifacts.read().await;
         let Some(record) = artifacts.records.get(&id) else {
+            drop(artifacts);
+            // An upstream's artifact: its files come from the upstream.
+            if !from_peer && state.remote.read().await.artifacts.contains_key(&id) {
+                // The same segment refusal as a local path: a dot segment
+                // would let the URL climb out of the artifact's route.
+                if rel
+                    .split('/')
+                    .any(|s| s == ".." || s == "." || s.contains('\\'))
+                {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        artifacts::Refusal::BadSegment.as_str(),
+                    )
+                        .into_response();
+                }
+                let path = format!(
+                    "/artifacts/{}/{}",
+                    crate::upstream::encode_path(&id),
+                    crate::upstream::encode_path(&rel)
+                );
+                return crate::upstream::proxy_get(&state, &path, &request_headers, Some(&id))
+                    .await;
+            }
             return not_found();
         };
         match artifacts.source_path(record) {

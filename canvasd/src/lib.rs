@@ -15,6 +15,7 @@ pub mod routes;
 pub mod sharing;
 pub mod state;
 pub mod store;
+pub mod upstream;
 pub mod viewer;
 pub mod watcher;
 

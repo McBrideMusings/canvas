@@ -69,6 +69,22 @@ impl Sharing {
     }
 }
 
+/// This machine's name as other machines see it: the host name without a
+/// trailing `.local`.
+pub fn machine_name() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is 256 bytes and gethostname writes at most that many.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let name = name.strip_suffix(".local").unwrap_or(&name);
+    if ok && !name.is_empty() {
+        name.to_string()
+    } else {
+        "this machine".to_string()
+    }
+}
+
 /// What the rules match: the git root when it holds the working directory,
 /// else the working directory.
 pub fn share_key(req: &PostRequest) -> String {
@@ -144,6 +160,7 @@ pub fn forward_post(upstream: &str, media_dir: &Path, mut req: PostRequest) -> R
     req.images = names;
     // The pid belongs to this machine; upstream's sweep must not check it.
     req.pid = None;
+    req.machine = Some(machine_name());
     agent
         .post(&format!("{base}/api/posts"))
         .set("content-type", "application/json")

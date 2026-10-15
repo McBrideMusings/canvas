@@ -69,6 +69,9 @@ pub enum CanvasEvent {
         id: String,
         action: PaneAction,
     },
+    /// The link to the upstream came up or went down (`sharing.toml`'s
+    /// `upstream`); viewers reload their state. Sent to viewers only.
+    UpstreamChanged(canvas_core::UpstreamStatus),
 }
 
 /// One change to an artifact's pane: a size for its frame (clamped to the
@@ -192,6 +195,10 @@ pub struct Inner {
 pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
+    /// What the upstream's items changed, for this machine's own viewers
+    /// only: kept apart from `events` so the tailnet listener never passes
+    /// another machine's items on to a peer.
+    pub remote_events: broadcast::Sender<CanvasEvent>,
     /// Every artifact record; see [`crate::artifacts`].
     pub artifacts: Arc<RwLock<crate::artifacts::Artifacts>>,
     /// The artifact folders being watched; see [`crate::watcher`].
@@ -214,6 +221,9 @@ pub struct AppState {
     pub(crate) layer_writes: Arc<tokio::sync::Mutex<()>>,
     /// `sharing.toml`, read when the state opened.
     pub sharing: Arc<crate::sharing::Sharing>,
+    /// What the upstream holds, merged into `/api/state`; see
+    /// [`crate::upstream`].
+    pub remote: Arc<RwLock<crate::upstream::Remote>>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
     /// Where uploaded images and videos live: `media/` in the data dir, or a
@@ -230,7 +240,9 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(1024);
+        let (remote_tx, _rx) = broadcast::channel(1024);
         AppState {
+            remote_events: remote_tx,
             inner: Arc::new(RwLock::new(Inner {
                 sessions: HashMap::new(),
                 cards: VecDeque::new(),
@@ -245,6 +257,7 @@ impl AppState {
             projects: Arc::default(),
             layer_writes: Arc::default(),
             sharing: Arc::default(),
+            remote: Arc::default(),
             store: None,
             data_dir: None,
             media_dir: std::env::temp_dir().join(format!("canvasd-media-{}", uuid::Uuid::new_v4())),
@@ -283,7 +296,9 @@ impl AppState {
             },
         };
         let (tx, _rx) = broadcast::channel(1024);
+        let (remote_tx, _rx) = broadcast::channel(1024);
         AppState {
+            remote_events: remote_tx,
             inner: Arc::new(RwLock::new(inner)),
             events: tx,
             artifacts: Arc::new(RwLock::new(artifacts)),
@@ -300,6 +315,7 @@ impl AppState {
                 );
                 crate::sharing::Sharing::default()
             })),
+            remote: Arc::default(),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
             media_dir: dir.join(canvas_core::MEDIA_DIR),
@@ -506,6 +522,7 @@ impl AppState {
                     | CanvasEvent::ArtifactReset(_)
                     | CanvasEvent::ArtifactSnapshot { .. }
                     | CanvasEvent::ArtifactPane { .. }
+                    | CanvasEvent::UpstreamChanged(_)
             ) {
                 store.append(&event);
             }
@@ -581,7 +598,8 @@ impl Inner {
             | CanvasEvent::ArtifactFocus(_)
             | CanvasEvent::ArtifactReset(_)
             | CanvasEvent::ArtifactSnapshot { .. }
-            | CanvasEvent::ArtifactPane { .. } => {}
+            | CanvasEvent::ArtifactPane { .. }
+            | CanvasEvent::UpstreamChanged(_) => {}
         }
     }
 

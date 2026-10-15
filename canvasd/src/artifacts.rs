@@ -365,6 +365,7 @@ impl Artifacts {
         let size = entry_page(&root).and_then(|page| declared_size(&page));
         ArtifactView {
             artifact: artifact.clone(),
+            machine: Some(crate::sharing::machine_name()),
             path: root.to_string_lossy().into_owned(),
             source_missing,
             entry,

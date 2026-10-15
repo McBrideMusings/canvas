@@ -50,6 +50,7 @@ fn ensure_session(
     agent: Agent,
     repo: Option<String>,
     pid: Option<u32>,
+    machine: Option<String>,
 ) -> Option<Session> {
     if let Some(session) = inner.sessions.get_mut(session_id) {
         let ended = session.ended_at.is_some();
@@ -87,6 +88,7 @@ fn ensure_session(
         started_at: now(),
         ended_at: None,
         pid,
+        machine,
     };
     inner.sessions.insert(session.id.clone(), session.clone());
     Some(session)
@@ -294,6 +296,12 @@ pub async fn post_explicit(
             req.agent,
             req.repo,
             req.pid,
+            // A peer's post names its own machine; a local one is ours.
+            if from_peer {
+                req.machine.clone()
+            } else {
+                Some(crate::sharing::machine_name())
+            },
         );
         let id = Uuid::new_v4().to_string();
         let card = Card {
@@ -351,9 +359,25 @@ pub async fn post_explicit(
 }
 
 /// One card as the daemon holds it; 404s when the id names none.
-pub async fn get_card(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let inner = state.inner.read().await;
-    match inner.cards.iter().find(|c| c.id == id) {
+pub async fn get_card(
+    State(state): State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
+    Path(id): Path<String>,
+) -> Response {
+    let found = state
+        .inner
+        .read()
+        .await
+        .cards
+        .iter()
+        .find(|c| c.id == id)
+        .cloned();
+    if found.is_none() && caller.is_none() {
+        if let Some(card) = state.remote.read().await.card(&id) {
+            return Json(card.clone()).into_response();
+        }
+    }
+    match found {
         Some(card) => Json(card.clone()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -790,12 +814,24 @@ pub async fn deliver_snapshot(
 /// The latest value `put_card_data` stored for this card; 204 until one has,
 /// since the viewer asks for every card and most never get a value. 404 only
 /// for a card canvasd doesn't hold.
-pub async fn get_card_data(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+pub async fn get_card_data(
+    State(state): State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
+    Path(id): Path<String>,
+) -> Response {
     let inner = state.inner.read().await;
     match inner.data.get(&id) {
         Some(value) => (StatusCode::OK, Json(value.clone())).into_response(),
         None if inner.cards.iter().any(|c| c.id == id) => StatusCode::NO_CONTENT.into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        None if caller.is_some() => StatusCode::NOT_FOUND.into_response(),
+        None => {
+            let remote = state.remote.read().await;
+            match remote.data.get(&id) {
+                Some(value) => (StatusCode::OK, Json(value.clone())).into_response(),
+                None if remote.card(&id).is_some() => StatusCode::NO_CONTENT.into_response(),
+                None => StatusCode::NOT_FOUND.into_response(),
+            }
+        }
     }
 }
 
@@ -861,23 +897,72 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
     StatusCode::OK.into_response()
 }
 
-pub async fn get_state(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn get_state(
+    State(state): State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
+) -> impl IntoResponse {
+    // What the upstream holds is this machine's to show, not to pass on to a
+    // peer outside its own `sharing.toml` rules.
+    let from_peer = caller.is_some();
     let inner = state.inner.read().await;
-    let sessions: Vec<Session> = inner.sessions.values().cloned().collect();
-    let cards: Vec<Card> = inner.cards.iter().cloned().collect();
-    let artifacts = state.artifacts.read().await.views();
+    let mut sessions: Vec<Session> = inner.sessions.values().cloned().collect();
+    let mut cards: Vec<Card> = inner.cards.iter().cloned().collect();
+    let mut artifacts = state.artifacts.read().await.views();
+    // The upstream's items join this machine's. Its copy of a session this
+    // machine holds is a post this machine forwarded: shown once, from here.
+    let remote = state.remote.read().await;
+    if !from_peer {
+        sessions.extend(
+            remote
+                .sessions
+                .values()
+                .filter(|s| !inner.sessions.contains_key(&s.id))
+                .cloned(),
+        );
+        cards.extend(
+            remote
+                .cards
+                .iter()
+                .filter(|c| !inner.sessions.contains_key(&c.session_id))
+                .cloned(),
+        );
+        cards.sort_by(|a, b| b.touched_at().cmp(a.touched_at()));
+        artifacts.extend(
+            remote
+                .artifacts
+                .values()
+                .filter(|v| !artifacts.iter().any(|own| own.artifact.id == v.artifact.id))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        artifacts.sort_by(|a, b| b.artifact.updated_at.cmp(&a.artifact.updated_at));
+    }
     Json(StateResponse {
         sessions,
         cards,
         artifacts,
+        upstream: if from_peer {
+            None
+        } else {
+            remote.status.clone()
+        },
     })
 }
 
 pub async fn events(
     State(state): State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = state.events.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
+    let local = BroadcastStream::new(state.events.subscribe());
+    // This machine's own viewers also hear what the upstream's items change;
+    // a peer on the listener never does.
+    let items: std::pin::Pin<Box<dyn Stream<Item = _> + Send>> = if caller.is_some() {
+        Box::pin(local)
+    } else {
+        let remote = BroadcastStream::new(state.remote_events.subscribe());
+        Box::pin(futures::stream::select(local, remote))
+    };
+    let stream = items.filter_map(|item| match item {
         Ok(CanvasEvent::CardUpserted(card)) => Some(Ok(SseEvent::default()
             .event("card-upserted")
             .data(serde_json::to_string(&card).unwrap_or_default()))),
@@ -926,6 +1011,9 @@ pub async fn events(
         Ok(CanvasEvent::ArtifactSnapshot { id, request }) => Some(Ok(SseEvent::default()
             .event("artifact-snapshot")
             .data(serde_json::json!({ "id": id, "request": request }).to_string()))),
+        Ok(CanvasEvent::UpstreamChanged(status)) => Some(Ok(SseEvent::default()
+            .event("upstream-status")
+            .data(serde_json::to_string(&status).unwrap_or_default()))),
         Ok(CanvasEvent::ArtifactPane { id, action }) => {
             let mut data = serde_json::to_value(action).unwrap_or_default();
             data["id"] = serde_json::Value::String(id);
@@ -999,6 +1087,7 @@ fn parse_byte_range(header: &str, len: u64) -> ByteRange {
 /// and `/api/events` send no CORS headers.
 pub async fn get_card_image(
     State(state): State<AppState>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
     Path((id, index)): Path<(String, usize)>,
     headers: HeaderMap,
 ) -> Response {
@@ -1011,6 +1100,26 @@ pub async fn get_card_image(
             .and_then(|c| c.images.get(index).cloned())
     };
     let Some(image) = image else {
+        // An upstream's card: its bytes come from the upstream.
+        if caller.is_none()
+            && state
+                .remote
+                .read()
+                .await
+                .card(&id)
+                .is_some_and(|c| index < c.images.len())
+        {
+            return crate::upstream::proxy_get(
+                &state,
+                &format!(
+                    "/api/cards/{}/images/{index}",
+                    crate::upstream::encode_path(&id)
+                ),
+                &headers,
+                None,
+            )
+            .await;
+        }
         return StatusCode::NOT_FOUND.into_response();
     };
     if !state.is_media_path(&image) {

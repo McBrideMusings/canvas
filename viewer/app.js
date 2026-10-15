@@ -33,6 +33,7 @@
     { passive: false }
   );
   const bannerEl = document.getElementById("disconnected-banner");
+  const upstreamBannerEl = document.getElementById("upstream-banner");
   const overlayEl = document.getElementById("image-overlay");
   const overlayImgEl = document.getElementById("image-overlay-img");
   const overlayPrevEl = document.getElementById("image-overlay-prev");
@@ -557,6 +558,44 @@
   function sessionName(sessionId) {
     const s = sessions.get(sessionId);
     return s ? s.name : sessionId;
+  }
+
+  // The machines the stream's sessions and artifacts came from. A machine's
+  // name shows only while there is more than one, so a single-machine
+  // stream looks as it always did.
+  function machineLabel(machine) {
+    if (!machine) return "";
+    const names = new Set();
+    for (const s of sessions.values()) if (s.machine) names.add(s.machine);
+    for (const a of artifacts.values()) if (a.machine) names.add(a.machine);
+    return names.size > 1 ? machine : "";
+  }
+
+  function paintMachines() {
+    for (const el of cardsEl.querySelectorAll(".card .session-machine")) {
+      const session = sessions.get(el.closest(".card").dataset.sessionId);
+      const label = machineLabel(session && session.machine);
+      el.textContent = label;
+      el.hidden = !label;
+    }
+    if (artifactsLoaded) {
+      for (const [id, entry] of artifactRows) {
+        const artifact = artifacts.get(id);
+        if (artifact) paintArtifactRow(entry, artifact);
+      }
+      const open = openArtifactId && artifacts.get(openArtifactId);
+      if (open) paintArtifactTitle(open);
+    }
+  }
+
+  // A daemon with an upstream says whether it is reachable. While it isn't,
+  // its posts and artifacts are gone from the stream, and this says why.
+  function paintUpstream(status) {
+    const down = status && !status.online && status.error;
+    upstreamBannerEl.hidden = !down;
+    upstreamBannerEl.textContent = down
+      ? `Hub offline: ${status.url} is unreachable (${status.error}). Its posts and artifacts are hidden until it returns.`
+      : "";
   }
 
   // `owner/repo` on GitHub, or "" when the session's directory has none.
@@ -2561,6 +2600,10 @@
     repoSpan.className = "session-repo";
     repoSpan.textContent = sessionRepo(card.sessionId);
     repoSpan.hidden = !repoSpan.textContent;
+    const machineSpan = document.createElement("span");
+    machineSpan.className = "session-machine";
+    machineSpan.textContent = machineLabel(session && session.machine);
+    machineSpan.hidden = !machineSpan.textContent;
     const sep = document.createTextNode(" · ");
     const timeSpan = document.createElement("span");
     timeSpan.className = "time";
@@ -2569,6 +2612,7 @@
     timeSpan.title = timeLabel.title;
     headerInfo.appendChild(nameSpan);
     headerInfo.appendChild(repoSpan);
+    headerInfo.appendChild(machineSpan);
     headerInfo.appendChild(sep);
     headerInfo.appendChild(timeSpan);
     header.appendChild(headerInfo);
@@ -3128,6 +3172,13 @@
     if (entry.time.textContent !== text) entry.time.textContent = text;
   }
 
+  function machineBadge(machine) {
+    const badge = document.createElement("span");
+    badge.className = "artifact-machine";
+    badge.textContent = machine;
+    return badge;
+  }
+
   function paintArtifactRow(entry, artifact) {
     const name = artifactTitle(artifact);
     entry.title.replaceChildren();
@@ -3137,6 +3188,8 @@
       entry.title.appendChild(warn);
     }
     entry.title.appendChild(document.createTextNode(name));
+    const machine = machineLabel(artifact.machine);
+    if (machine) entry.title.appendChild(machineBadge(machine));
     entry.row.title = artifact.sourceMissing ? "Source missing" : "";
     paintArtifactRowTime(entry, artifact);
     entry.time.title = new Date(artifact.updatedAt).toLocaleString();
@@ -3440,6 +3493,13 @@
     artifactFrameId = null;
   }
 
+  function paintArtifactTitle(artifact) {
+    artifactTitleEl.textContent = artifactTitle(artifact);
+    artifactTitleEl.title = artifact.id;
+    const machine = machineLabel(artifact.machine);
+    if (machine) artifactTitleEl.appendChild(machineBadge(machine));
+  }
+
   function paintArtifactPane() {
     paintRefreshError();
     paintRefreshLine();
@@ -3448,8 +3508,7 @@
       dropArtifactFrame();
       return;
     }
-    artifactTitleEl.textContent = artifactTitle(artifact);
-    artifactTitleEl.title = artifact.id;
+    paintArtifactTitle(artifact);
     titlebarArtifactEl.textContent = artifactTitle(artifact);
     const size = artifact.size;
     artifactSizeEl.hidden = !size;
@@ -3565,6 +3624,7 @@
     if (artifact.refresh) stoppedRefreshes.delete(artifact.id);
     else if (before && before.refresh) stoppedRefreshes.add(artifact.id);
     artifacts.set(artifact.id, artifact);
+    paintMachines();
     if (page === "artifacts") renderArtifacts();
   }
 
@@ -3595,6 +3655,7 @@
       setArtifactFull(false);
       openArtifactId = null;
     }
+    paintMachines();
     if (page === "artifacts") renderArtifacts();
   }
 
@@ -3957,7 +4018,9 @@
       if (!cards.has(id)) unseen.cardIds.delete(id);
     }
     prunePrefs();
+    paintUpstream(data.upstream);
     bootstrapRender();
+    paintMachines();
     reportTheme();
   }
 
@@ -3994,6 +4057,7 @@
       sessionColour(session);
       refreshVisibility();
       patchSessionNames(session.id);
+      paintMachines();
       // Only the upsert that first sets endedAt on a session this viewer was
       // showing announces the archive; a reload finds it archived silently.
       const endedJustNow = before && !before.endedAt && session.endedAt;
@@ -4005,6 +4069,13 @@
     };
 
     handlers["card-upserted"] = (card) => upsertCard(card);
+
+    // The upstream came up or went down; its items joined or left the
+    // state, so take it again.
+    handlers["upstream-status"] = (status) => {
+      paintUpstream(status);
+      loadState();
+    };
 
     handlers["card-data"] = ({ id, value }) => deliverCardData(id, value);
 

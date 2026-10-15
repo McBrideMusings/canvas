@@ -32,6 +32,38 @@ beside the terminal all day.
   CLI (`TailscaleCli`: `status --json`, `whois --json`), retries its bind every
   30s while Tailscale is down (`listener not started`), and logs each refusal
   as `listener refused` with the reason.
+  A daemon with an `upstream` also merges that canvasd's stream in
+  (`canvasd/src/upstream.rs`): `canvas daemon` spawns one link that opens the
+  upstream's `/api/events`, then reads its `/api/state` (so no change between
+  the two is missed), then applies `session-`, `card-` and `artifact-` upserts,
+  removals and `card-data`/`artifact-data` as they arrive, logged `upstream
+  connected` (with counts). The items live in `AppState::remote`, in memory
+  only, never in `stream.jsonl` or `artifacts.json`, and join this daemon's
+  own in `/api/state` (cards by touched time, artifacts by `updatedAt`) and
+  its SSE; the upstream's focus, snapshot, theme and pane events are never
+  applied. An upstream session whose id this daemon also holds is a post this
+  daemon forwarded, and is shown once, from here. A remote card's `images`
+  read `upstream:<file name>`, never the upstream's path (nothing may widen
+  the app's asset scope), and its images, a remote artifact's files and a
+  `GET /api/cards/:id` or `/data` for a remote card are answered by this
+  daemon fetching them from the upstream (`upstream::proxy_get`, keeping
+  `Range`; an artifact's reply always carries this daemon's own CSP, CORS,
+  `no-store` and `nosniff` headers, and a `.` or `..` segment is refused as for
+  a local file); every other route finds only this machine's own items, so a
+  remote item is read-only here. Remote items never reach a peer on the
+  listener: its `/api/state` omits them and `upstream`, its `/api/events` hears
+  only `AppState::events` (remote changes go on `remote_events`), and the
+  routes above refuse a remote id for it. Each
+  `Session` and `ArtifactView` carries `machine`, the host name of the daemon
+  that first held it (a forwarded post's `machine` names the sender; one with
+  none reads as the upstream's host); `/api/state` also carries `upstream`
+  `{url, online, error}`, `online` false until the first connect and again
+  when the link drops. A lost link (error, stream closed, 45s with no byte)
+  drops every remote item, publishes the viewer-only `upstream-status` event,
+  logs `upstream lost` and retries after 2s, doubling to 30s; the viewer
+  reloads its state on that event, shows a "Hub offline" banner while
+  `online` is false with an `error`, and shows a machine's name on each card
+  header and artifact row only while the stream holds more than one machine.
 - Instructions (`canvas-core/src/instructions.rs`): what an agent reads at
   session start, and the post reminders (`canvas-core/src/reminders.rs`, the
   directive parser), each come from up to three layers, joined in this order

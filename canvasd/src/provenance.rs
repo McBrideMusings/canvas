@@ -115,7 +115,10 @@ pub async fn append(dir: &Path, id: &str, action: Action, actor: &Actor) {
         if torn {
             line.insert(0, b'\n');
         }
-        file.write_all(&line).await
+        file.write_all(&line).await?;
+        // tokio's File finishes a write on the blocking pool after write_all
+        // returns; without a flush, the line can land after the response.
+        file.flush().await
     }
     .await;
     if let Err(e) = written {

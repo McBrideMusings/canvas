@@ -121,6 +121,7 @@ pub fn run(args: PostArgs) -> Result<(), String> {
                 repo: crate::repo::github_repo(&cwd),
                 git_root: canvas_core::instructions::git_root(std::path::Path::new(&cwd))
                     .map(|root| root.display().to_string()),
+                machine: None,
             })?
         }
     };
