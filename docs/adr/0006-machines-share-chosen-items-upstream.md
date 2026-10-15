@@ -8,8 +8,8 @@ session's working directory, else the working directory, with exclude winning. W
 rule, nothing is shared. Each item lives in exactly one canvasd. A shared item travels
 upstream as bytes, never as a path, and the daemon it came from keeps the work that needs
 its machine: pid checks, refresh commands, watching a linked folder, opening local paths,
-and writing a linked artifact's `canvas-data/`. A canvasd accepts other machines only
-through an HTTPS listener bound to its Tailscale address. It identifies each caller
-through Tailscale and checks Host and Origin, since browsers on the tailnet load the
-viewer from it. A daemon with an upstream merges the upstream's stream into its own, so
-Canvas.app reads one source and shows which machine each item came from.
+and writing a linked artifact's `canvas-data/`. Other machines and browsers reach canvasd
+only over HTTP on its Tailscale address and `sharing.toml` port, maybe behind a TLS proxy;
+it names each caller by Tailscale WhoIs of the peer, or of the forwarded client when the
+peer is the `sharing.toml` proxy, and allows only its own and listed Host and Origin. A
+daemon with an upstream merges its stream in, showing each item's machine.
