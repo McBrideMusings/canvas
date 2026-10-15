@@ -480,7 +480,12 @@ pub async fn proxy_get(
                 let own = [
                     (
                         header::CONTENT_SECURITY_POLICY,
-                        crate::artifacts::content_security_policy(id),
+                        crate::artifacts::content_security_policy(
+                            id,
+                            request_headers
+                                .get(header::HOST)
+                                .and_then(|h| h.to_str().ok()),
+                        ),
                     ),
                     (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
                     (header::CACHE_CONTROL, "no-store".to_string()),
