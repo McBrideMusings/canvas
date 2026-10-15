@@ -19,6 +19,19 @@ beside the terminal all day.
   pid, clears `ended_at` and keeps `started_at`, logged `session resumed`; a pid that
   still runs is kept, and a post with no pid changes nothing), SSE push to
   viewers, and `viewer/` asset serving. No binary of its own — `canvas daemon` runs it.
+- Sharing (ADR-0006, `canvasd/src/sharing.rs`, `listener.rs`): `sharing.toml` in
+  `CANVAS_DATA_DIR`, read when canvasd starts (an unreadable one is logged
+  `sharing.toml unreadable` and shares nothing): `upstream` (base URL),
+  `[timeline]` and `[artifacts]` with `include`/`exclude` globs (`*` stops at
+  `/`, `**` doesn't, leading `~/`; exclude wins; no include shares nothing),
+  and `[listener]` with `port`, `proxy` and `hosts`. A new post whose git root
+  (else cwd) matches a timeline rule is forwarded after the local reply, as bytes:
+  each stored image to the upstream's `POST /api/media`, then the post to its
+  `POST /api/posts` (logged `post forwarded` or `post forward failed`; the local
+  post stands either way). The listener asks Tailscale through the `tailscale`
+  CLI (`TailscaleCli`: `status --json`, `whois --json`), retries its bind every
+  30s while Tailscale is down (`listener not started`), and logs each refusal
+  as `listener refused` with the reason.
 - Instructions (`canvas-core/src/instructions.rs`): what an agent reads at
   session start, and the post reminders (`canvas-core/src/reminders.rs`, the
   directive parser), each come from up to three layers, joined in this order
@@ -805,10 +818,17 @@ beside the terminal all day.
 - An artifact's page writes to disk only as state: one JSON file per valid key in
   `canvas-data/` (see State above). Never widen that to a path the page names,
   and never follow a symlink for `canvas-data` or a key file.
-- canvasd has no TCP listener, so nothing reaches it except a process that can
-  open its 0600 socket, and its routes carry no Host or Origin checks. Never add
-  a TCP or other network listener to it; a client that needs it goes through the
-  socket (Canvas.app's `canvas://` proxy is the only bridge for a webview).
+- The 0600 socket is canvasd's own door and its routes carry no Host or Origin
+  checks. The one network listener (ADR-0006, `canvasd/src/listener.rs`) is plain
+  HTTP on the machine's Tailscale address and the `sharing.toml` `[listener]`
+  port, started only when that table exists, and every request passes its guard:
+  Host and Origin must be this machine's tailnet name or address or in `hosts`,
+  the caller (the TCP peer, or the last `X-Forwarded-For` address when the peer is
+  `proxy`) must be named by Tailscale WhoIs, and only reads (not under `/api`
+  except `state`, `events`, `cards/`) plus `POST /api/posts` and `/api/media` are
+  served. Never bind any other address, never serve a route that runs a command or
+  opens a path on this machine, and never skip the guard; Canvas.app's `canvas://`
+  proxy remains the only bridge for a webview.
 
 ## Commands
 

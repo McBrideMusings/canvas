@@ -212,6 +212,8 @@ pub struct AppState {
     /// Held across every instruction-layer write, so two requests never share
     /// `write_atomic`'s temp file name.
     pub(crate) layer_writes: Arc<tokio::sync::Mutex<()>>,
+    /// `sharing.toml`, read when the state opened.
+    pub sharing: Arc<crate::sharing::Sharing>,
     store: Option<Store>,
     data_dir: Option<std::path::PathBuf>,
     /// Where uploaded images and videos live: `media/` in the data dir, or a
@@ -242,10 +244,17 @@ impl AppState {
             viewer_pane: Arc::default(),
             projects: Arc::default(),
             layer_writes: Arc::default(),
+            sharing: Arc::default(),
             store: None,
             data_dir: None,
             media_dir: std::env::temp_dir().join(format!("canvasd-media-{}", uuid::Uuid::new_v4())),
         }
+    }
+
+    /// This state with `sharing` in place of what `sharing.toml` held.
+    pub fn with_sharing(mut self, sharing: crate::sharing::Sharing) -> Self {
+        self.sharing = Arc::new(sharing);
+        self
     }
 
     /// State backed by `dir/stream.jsonl` for sessions and cards, and
@@ -284,6 +293,13 @@ impl AppState {
             viewer_pane: Arc::default(),
             projects: Arc::new(std::sync::Mutex::new(projects)),
             layer_writes: Arc::default(),
+            sharing: Arc::new(crate::sharing::Sharing::load(dir).unwrap_or_else(|e| {
+                canvas_core::log::error(
+                    "sharing.toml unreadable; sharing nothing",
+                    &[("error", &e)],
+                );
+                crate::sharing::Sharing::default()
+            })),
             store: Some(store),
             data_dir: Some(dir.to_path_buf()),
             media_dir: dir.join(canvas_core::MEDIA_DIR),

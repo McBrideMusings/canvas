@@ -261,11 +261,20 @@ fn media_failure(step: &str, e: &std::io::Error) -> Response {
 /// viewer is refused before anything is created.
 pub async fn post_explicit(
     State(state): State<AppState>,
-    Json(req): Json<PostRequest>,
+    caller: Option<axum::Extension<crate::listener::Caller>>,
+    Json(mut req): Json<PostRequest>,
 ) -> Response {
     if let Some(refused) = refuse_freezing(&req.html) {
         return refused;
     }
+    // A post that came in over the tailnet listener is another machine's: its
+    // pid means nothing here and it is never forwarded on, so two daemons
+    // naming each other upstream can't pass a post back and forth.
+    let from_peer = caller.is_some();
+    if from_peer {
+        req.pid = None;
+    }
+    let forward = (!from_peer && state.sharing.shares_post(&req)).then(|| req.clone());
     // One lock hold for both writes, so a concurrent DELETE of the session
     // can't land between creating it and adding its card.
     let (card, created) = {
@@ -318,6 +327,24 @@ pub async fn post_explicit(
             })
             .await;
         }
+    }
+
+    if let (Some(forward), Some(upstream)) = (forward, state.sharing.upstream.clone()) {
+        let media_dir = state.media_dir().to_path_buf();
+        let card_id = card.id.clone();
+        // Off the response: a slow or down upstream never delays the post.
+        tokio::task::spawn_blocking(move || {
+            match crate::sharing::forward_post(&upstream, &media_dir, forward) {
+                Ok(()) => canvas_core::log::info(
+                    "post forwarded",
+                    &[("card", &card_id), ("upstream", &upstream)],
+                ),
+                Err(e) => canvas_core::log::warn(
+                    "post forward failed",
+                    &[("card", &card_id), ("upstream", &upstream), ("error", &e)],
+                ),
+            }
+        });
     }
 
     (StatusCode::OK, Json(card)).into_response()
