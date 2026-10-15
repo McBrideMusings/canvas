@@ -44,7 +44,9 @@ pub struct TailscaleCli;
 
 impl TailscaleCli {
     fn run(args: &[&str]) -> Result<serde_json::Value, String> {
-        let app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+        // The lowercase name is the CLI; `MacOS/Tailscale` starts the GUI app
+        // and prints an error instead of JSON.
+        let app = "/Applications/Tailscale.app/Contents/MacOS/tailscale";
         let bin = if std::path::Path::new(app).exists() {
             app
         } else {
