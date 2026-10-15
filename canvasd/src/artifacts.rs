@@ -743,7 +743,7 @@ const CANVAS_STYLESHEET: &str = "canvas://localhost/canvas.css";
 /// outside the viewer's sandboxed iframe.
 ///
 /// `host` is the `Host` the request came in on. Canvas.app reaches canvasd as
-/// `canvas://localhost`; a browser reaches it at the tailnet listener's own
+/// `canvas://localhost`; a browser reaches it at the network listener's own
 /// address, so the folder and `/canvas.css` are named under that host too (a
 /// source with no scheme matches the page's own scheme, http behind a proxy
 /// included). A value that isn't a plain host and port is ignored.

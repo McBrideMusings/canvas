@@ -791,7 +791,7 @@
   const settingsToggleEl = document.getElementById("settings-toggle");
   settingsToggleEl.appendChild(buildIcon("gear"));
   // Settings reads and writes files on the machine through routes the
-  // tailnet listener doesn't serve, so a browser has no Settings window.
+  // network listener doesn't serve, so a browser has no Settings window.
   if (!tauriCore) settingsToggleEl.hidden = true;
 
   // Canvas.app opens the Settings window through its own command; a browser

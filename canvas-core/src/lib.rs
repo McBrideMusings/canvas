@@ -273,7 +273,7 @@ pub struct PostRequest {
     pub git_root: Option<String>,
     /// The machine this post was made on, set by a daemon forwarding it
     /// upstream. Recorded on the session only when this post creates it, and
-    /// only for a post that arrived over the tailnet listener.
+    /// only for a post that arrived over the network listener.
     #[serde(default)]
     pub machine: Option<String>,
 }
