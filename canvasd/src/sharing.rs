@@ -296,8 +296,5 @@ mod tests {
         assert!(
             toml::from_str::<Sharing>("[listener]\nport = 1\nallow = [\"100.64.0.0/33\"]").is_err()
         );
-        assert!(
-            toml::from_str::<Sharing>("[listener]\nport = 1\nallow = [\"100.64.0.0/33\"]").is_err()
-        );
     }
 }
