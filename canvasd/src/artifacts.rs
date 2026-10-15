@@ -741,13 +741,24 @@ const CANVAS_STYLESHEET: &str = "canvas://localhost/canvas.css";
 /// fetching anything, `form-action 'none'` from posting a form, and the
 /// `sandbox` directive keeps it in an opaque origin even when it is opened
 /// outside the viewer's sandboxed iframe.
-pub fn content_security_policy(id: &str) -> String {
-    let own = format!("canvas://localhost/{ARTIFACTS_DIR}/{id}/");
+///
+/// `host` is the `Host` the request came in on. Canvas.app reaches canvasd as
+/// `canvas://localhost`; a browser reaches it at the tailnet listener's own
+/// address, so the folder and `/canvas.css` are named under that host too (a
+/// source with no scheme matches the page's own scheme, http behind a proxy
+/// included). A value that isn't a plain host and port is ignored.
+pub fn content_security_policy(id: &str, host: Option<&str>) -> String {
+    let mut own = format!("canvas://localhost/{ARTIFACTS_DIR}/{id}/");
+    let mut stylesheet = CANVAS_STYLESHEET.to_string();
+    if let Some(host) = host.filter(|h| plain_host(h)) {
+        own.push_str(&format!(" {host}/{ARTIFACTS_DIR}/{id}/"));
+        stylesheet.push_str(&format!(" {host}/canvas.css"));
+    }
     let cdns = "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com";
     format!(
         "default-src 'none'; \
          script-src {own} 'unsafe-inline' 'unsafe-eval' blob: {cdns}; \
-         style-src {own} {CANVAS_STYLESHEET} 'unsafe-inline' {cdns} https://fonts.googleapis.com; \
+         style-src {own} {stylesheet} 'unsafe-inline' {cdns} https://fonts.googleapis.com; \
          font-src {own} data: https://fonts.gstatic.com; \
          img-src * data: blob: canvas:; \
          media-src * data: blob: canvas:; \
@@ -756,6 +767,16 @@ pub fn content_security_policy(id: &str) -> String {
          base-uri 'none'; \
          sandbox allow-scripts"
     )
+}
+
+/// A host name or address with an optional port: nothing that could add a
+/// source expression, a path or a directive to the policy.
+fn plain_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 255
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
 }
 
 /// Copies `source` into `folder`: a file under its own name, a folder's
@@ -895,6 +916,20 @@ pub fn fingerprint(folder: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_policy_names_a_browsers_host_beside_the_apps_and_refuses_odd_hosts() {
+        let app = content_security_policy("art-1", None);
+        assert!(app.contains("script-src canvas://localhost/artifacts/art-1/ 'unsafe-inline'"));
+        let web = content_security_policy("art-1", Some("100.64.0.1:4000"));
+        assert!(
+            web.contains("canvas://localhost/artifacts/art-1/ 100.64.0.1:4000/artifacts/art-1/")
+        );
+        assert!(web.contains("100.64.0.1:4000/canvas.css"));
+        for odd in ["", "a b", "x;script-src *", "h/p", "*.evil"] {
+            assert_eq!(content_security_policy("art-1", Some(odd)), app, "{odd:?}");
+        }
+    }
 
     #[test]
     fn fingerprint_leaves_out_ignored_names() {

@@ -735,7 +735,12 @@ async fn serve_file(
         (header::CACHE_CONTROL, "no-store".to_string()),
         (
             header::CONTENT_SECURITY_POLICY,
-            artifacts::content_security_policy(&id),
+            artifacts::content_security_policy(
+                &id,
+                request_headers
+                    .get(header::HOST)
+                    .and_then(|h| h.to_str().ok()),
+            ),
         ),
         // The pane's sandboxed page has an opaque origin, so its module
         // scripts load cross-origin and need this to run.
@@ -893,7 +898,7 @@ fn refused_page(id: &str, rel: &str, reason: &str) -> Response {
             (header::CACHE_CONTROL, "no-store".to_string()),
             (
                 header::CONTENT_SECURITY_POLICY,
-                artifacts::content_security_policy(id),
+                artifacts::content_security_policy(id, None),
             ),
         ],
         format!("Canvas won't show this page: {reason}.\n"),

@@ -28,7 +28,16 @@ beside the terminal all day.
   (else cwd) matches a timeline rule is forwarded after the local reply, as bytes:
   each stored image to the upstream's `POST /api/media`, then the post to its
   `POST /api/posts` (logged `post forwarded` or `post forward failed`; the local
-  post stands either way). The listener asks Tailscale through the `tailscale`
+  post stands either way). A browser tab loads the viewer from the listener
+  (`GET /`): `viewer/app.js` then reads `/api/events` with an `EventSource`
+  (the app's `canvas-event`/`canvas-stream` Tauri events, made from its own),
+  skips every `window.__TAURI__` call, the theme/watch/pane reports, snapshots,
+  local-path opens and the Settings button, and opens an artifact's link with
+  `window.open`; a card's video takes its `/api/cards/:id/images/:n` route.
+  Beyond the reads, the listener serves an artifact pane's `POST
+  /api/artifacts/:id/errors`, `GET .../state` and `PUT .../state/:key`, and an
+  `Origin: null` read of `/artifacts/` (the pane's module scripts); an artifact
+  page's CSP names the request's `Host` beside `canvas://localhost`. The listener asks Tailscale through the `tailscale`
   CLI (`TailscaleCli`: `status --json`, `whois --json`), retries its bind every
   30s while Tailscale is down (`listener not started`), and logs each refusal
   as `listener refused` with the reason.
@@ -858,7 +867,10 @@ beside the terminal all day.
   the caller (the TCP peer, or the last `X-Forwarded-For` address when the peer is
   `proxy`) must be named by Tailscale WhoIs, and only reads (not under `/api`
   except `state`, `events`, `cards/`) plus `POST /api/posts` and `/api/media` are
-  served. Never bind any other address, never serve a route that runs a command or
+  served, plus the three routes an artifact pane in a browser needs (its script
+  errors, and its state read and written one key at a time) and an `Origin: null`
+  read of `/artifacts/` (a sandboxed frame sends no Referer, so the artifact
+  id is what names a page the caller may read). Never bind any other address, never serve a route that runs a command or
   opens a path on this machine, and never skip the guard; Canvas.app's `canvas://`
   proxy remains the only bridge for a webview.
 
