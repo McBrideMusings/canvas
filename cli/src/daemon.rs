@@ -73,10 +73,7 @@ async fn serve() {
     canvasd::refresh::spawn_refresh_loop(state.clone());
     canvasd::watcher::spawn_artifact_watcher(state.clone());
     canvasd::upstream::spawn(state.clone());
-    canvasd::listener::spawn(
-        state.clone(),
-        std::sync::Arc::new(canvasd::listener::TailscaleCli),
-    );
+    canvasd::listener::spawn(state.clone());
     let app = build_router(state);
 
     let listener =

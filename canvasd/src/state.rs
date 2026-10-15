@@ -196,7 +196,7 @@ pub struct AppState {
     pub inner: Arc<RwLock<Inner>>,
     pub events: broadcast::Sender<CanvasEvent>,
     /// What the upstream's items changed, for this machine's own viewers
-    /// only: kept apart from `events` so the tailnet listener never passes
+    /// only: kept apart from `events` so the network listener never passes
     /// another machine's items on to a peer.
     pub remote_events: broadcast::Sender<CanvasEvent>,
     /// Every artifact record; see [`crate::artifacts`].

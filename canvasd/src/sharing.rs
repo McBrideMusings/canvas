@@ -37,15 +37,88 @@ pub struct Rules {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListenerConfig {
-    /// TCP port on the machine's Tailscale address.
+    /// TCP port to listen on.
     pub port: u16,
-    /// Tailnet address of a reverse proxy whose requests carry the real
-    /// client in `X-Forwarded-For`.
+    /// The one address to listen on. Without it the listener does not start.
+    pub bind: Option<IpAddr>,
+    /// Addresses or CIDR ranges (`100.64.0.0/10`, `100.70.1.2`) admitted as
+    /// callers. Without the key the listener does not start; an empty list
+    /// admits nothing.
+    pub allow: Option<Vec<Cidr>>,
+    /// Address of a reverse proxy whose requests carry the real client in
+    /// `X-Forwarded-For`.
     pub proxy: Option<IpAddr>,
-    /// Host names besides this machine's own tailnet name and address that
-    /// the listener answers, such as the proxy's name for this machine.
+    /// Host names besides the bind address that the listener answers, such as
+    /// the proxy's name for this machine.
     #[serde(default)]
     pub hosts: Vec<String>,
+}
+
+/// An IP address range: `addr/prefix`, or a single address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        // An IPv4-mapped IPv6 address is the IPv4 address it wraps.
+        let ip = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            v4 => v4,
+        };
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => prefix_matches(
+                u128::from(u32::from(net)),
+                u128::from(u32::from(ip)),
+                self.prefix,
+                32,
+            ),
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                prefix_matches(u128::from(net), u128::from(ip), self.prefix, 128)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn prefix_matches(net: u128, ip: u128, prefix: u8, bits: u8) -> bool {
+    let shift = u32::from(bits - prefix);
+    shift >= 128 || (net >> shift) == (ip >> shift)
+}
+
+impl std::str::FromStr for Cidr {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Cidr, String> {
+        let (addr, prefix) = match text.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (text, None),
+        };
+        let addr: IpAddr = addr
+            .trim()
+            .parse()
+            .map_err(|_| format!("{text:?} is not an IP address or CIDR range"))?;
+        let bits = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(p) => p
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= bits)
+                .ok_or_else(|| format!("{text:?} has a bad prefix length"))?,
+            None => bits,
+        };
+        Ok(Cidr { addr, prefix })
+    }
+}
+
+impl<'de> Deserialize<'de> for Cidr {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Cidr, D::Error> {
+        let text = String::deserialize(d)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 impl Sharing {
@@ -203,14 +276,28 @@ mod tests {
             include = ["/work/*"]
             [listener]
             port = 7000
+            bind = "100.64.0.1"
+            allow = ["100.64.0.0/10", "192.168.1.5"]
             proxy = "100.64.0.9"
             hosts = ["canvas.test"]
             "#,
         )
         .unwrap();
         let l = s.listener.unwrap();
+        assert_eq!(l.bind, Some("100.64.0.1".parse().unwrap()));
+        let allow = l.allow.clone().unwrap();
+        assert!(allow[0].contains("100.127.255.255".parse().unwrap()));
+        assert!(!allow[0].contains("100.128.0.0".parse().unwrap()));
+        assert!(allow[1].contains("192.168.1.5".parse().unwrap()));
+        assert!(!allow[1].contains("192.168.1.6".parse().unwrap()));
         assert_eq!((l.port, l.hosts), (7000, vec!["canvas.test".to_string()]));
         assert_eq!(l.proxy, Some("100.64.0.9".parse().unwrap()));
         assert!(toml::from_str::<Sharing>("bogus = 1").is_err());
+        assert!(
+            toml::from_str::<Sharing>("[listener]\nport = 1\nallow = [\"100.64.0.0/33\"]").is_err()
+        );
+        assert!(
+            toml::from_str::<Sharing>("[listener]\nport = 1\nallow = [\"100.64.0.0/33\"]").is_err()
+        );
     }
 }

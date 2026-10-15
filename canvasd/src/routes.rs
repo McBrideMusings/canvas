@@ -269,7 +269,7 @@ pub async fn post_explicit(
     if let Some(refused) = refuse_freezing(&req.html) {
         return refused;
     }
-    // A post that came in over the tailnet listener is another machine's: its
+    // A post that came in over the network listener is another machine's: its
     // pid means nothing here and it is never forwarded on, so two daemons
     // naming each other upstream can't pass a post back and forth.
     let from_peer = caller.is_some();

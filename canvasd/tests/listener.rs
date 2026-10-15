@@ -1,64 +1,38 @@
-//! The tailnet listener and forwarding (ADR-0006), driven over real TCP on
-//! 127.0.0.1 with a stand-in for Tailscale's WhoIs.
+//! The network listener and forwarding (ADR-0006), driven over real TCP on
+//! 127.0.0.1 with `bind` and `allow` from `sharing.toml`.
 
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::net::SocketAddr;
 
 use axum::body::Body;
 use axum::http::Request;
 use canvasd::build_router;
-use canvasd::listener::{self, Caller, Guard, SelfInfo, Tailnet};
+use canvasd::listener::{self, Guard};
 use canvasd::sharing::{ListenerConfig, Rules, Sharing};
 use canvasd::state::AppState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
-/// Knows 127.0.0.1 and 100.64.0.7 as people; `unknown_loopback` makes
-/// 127.0.0.1 a stranger.
-struct Stand {
-    unknown_loopback: bool,
-}
-
-impl Tailnet for Stand {
-    fn self_info(&self) -> Result<SelfInfo, String> {
-        Ok(SelfInfo {
-            addrs: vec!["127.0.0.1".parse().unwrap()],
-            names: vec!["box".into(), "box.tailnet.test".into()],
-        })
-    }
-
-    fn whois(&self, ip: IpAddr) -> Result<Caller, String> {
-        match ip.to_string().as_str() {
-            "127.0.0.1" if !self.unknown_loopback => Ok(Caller {
-                login: "a@example.test".into(),
-                node: "laptop".into(),
-            }),
-            "100.64.0.7" => Ok(Caller {
-                login: "b@example.test".into(),
-                node: "phone".into(),
-            }),
-            _ => Err(format!("{ip} is not on the tailnet")),
-        }
-    }
-}
-
-async fn start(
-    state: AppState,
-    hosts: &[&str],
-    proxy: Option<&str>,
-    unknown_loopback: bool,
-) -> SocketAddr {
-    let config = ListenerConfig {
+fn config(hosts: &[&str], proxy: Option<&str>, allow: &[&str]) -> ListenerConfig {
+    ListenerConfig {
         port: 0,
+        bind: Some("127.0.0.1".parse().unwrap()),
+        allow: Some(allow.iter().map(|a| a.parse().unwrap()).collect()),
         proxy: proxy.map(|p| p.parse().unwrap()),
         hosts: hosts.iter().map(|h| h.to_string()).collect(),
-    };
-    let tailnet: Arc<dyn Tailnet> = Arc::new(Stand { unknown_loopback });
-    let (socket, me) = listener::bind(&config, tailnet.as_ref()).unwrap();
+    }
+}
+
+async fn start_with(state: AppState, config: ListenerConfig) -> SocketAddr {
+    let socket = listener::bind(&config).unwrap();
     let addr = socket.local_addr().unwrap();
-    let app = listener::router(state, Guard::new(&config, tailnet, &me));
+    let app = listener::router(state, Guard::new(&config).unwrap());
     tokio::spawn(listener::serve_tcp(socket, app));
     addr
+}
+
+/// Listens on 127.0.0.1, admitting loopback and 100.64.0.0/10.
+async fn start(state: AppState, hosts: &[&str], proxy: Option<&str>) -> SocketAddr {
+    start_with(state, config(hosts, proxy, &["127.0.0.1", "100.64.0.0/10"])).await
 }
 
 /// Sends one request with `headers` and returns the status and body.
@@ -84,18 +58,16 @@ async fn http(
 }
 
 #[tokio::test]
-async fn a_direct_request_to_the_tailnet_address_answers() {
-    let addr = start(AppState::new(), &[], None, false).await;
+async fn an_allowed_direct_caller_answers() {
+    let addr = start(AppState::new(), &[], None).await;
     let host = addr.to_string();
     let (status, body) = http(addr, "GET", "/api/state", &[("Host", &host)]).await;
     assert_eq!(status, 200, "{body}");
-    let (status, _) = http(addr, "GET", "/api/state", &[("Host", "box.tailnet.test")]).await;
-    assert_eq!(status, 200);
 }
 
 #[tokio::test]
 async fn a_request_through_the_proxy_with_an_allowed_host_answers() {
-    let addr = start(AppState::new(), &["canvas.test"], Some("127.0.0.1"), false).await;
+    let addr = start(AppState::new(), &["canvas.test"], Some("127.0.0.1")).await;
     let ok = [
         ("Host", "canvas.test"),
         ("X-Forwarded-For", "9.9.9.9, 100.64.0.7"),
@@ -103,10 +75,10 @@ async fn a_request_through_the_proxy_with_an_allowed_host_answers() {
     let (status, body) = http(addr, "GET", "/api/state", &ok).await;
     assert_eq!(status, 200, "{body}");
 
-    // The last forwarded address is the client, and WhoIs must know it.
+    // The last forwarded address is the client, and `allow` must admit it.
     let stranger = [
         ("Host", "canvas.test"),
-        ("X-Forwarded-For", "100.64.0.7, 100.64.0.99"),
+        ("X-Forwarded-For", "100.64.0.7, 9.9.9.9"),
     ];
     assert_eq!(http(addr, "GET", "/api/state", &stranger).await.0, 403);
     // A proxy request with no forwarded client is refused.
@@ -120,7 +92,7 @@ async fn a_request_through_the_proxy_with_an_allowed_host_answers() {
 
 #[tokio::test]
 async fn a_foreign_host_or_origin_is_refused() {
-    let addr = start(AppState::new(), &["canvas.test"], None, false).await;
+    let addr = start(AppState::new(), &["canvas.test"], None).await;
     let (status, body) = http(addr, "GET", "/api/state", &[("Host", "evil.test")]).await;
     assert_eq!(status, 403);
     assert!(body.contains("evil.test"), "{body}");
@@ -133,17 +105,35 @@ async fn a_foreign_host_or_origin_is_refused() {
 }
 
 #[tokio::test]
-async fn a_caller_whois_cannot_identify_is_refused() {
-    let addr = start(AppState::new(), &[], None, true).await;
+async fn a_caller_outside_allow_is_refused() {
+    let addr = start_with(AppState::new(), config(&[], None, &["100.64.0.0/10"])).await;
     let host = addr.to_string();
     let (status, body) = http(addr, "GET", "/api/state", &[("Host", &host)]).await;
     assert_eq!(status, 403);
-    assert!(body.contains("not identified"), "{body}");
+    assert!(body.contains("not in allow"), "{body}");
+}
+
+#[tokio::test]
+async fn a_listener_without_bind_or_allow_does_not_start() {
+    let mut no_bind = config(&[], None, &["127.0.0.1"]);
+    no_bind.bind = None;
+    assert!(Guard::new(&no_bind).is_err());
+    assert!(listener::bind(&no_bind).is_err());
+    let mut no_allow = config(&[], None, &[]);
+    no_allow.allow = None;
+    assert!(Guard::new(&no_allow).is_err());
+    // An empty allow list starts and admits nobody.
+    let addr = start_with(AppState::new(), config(&[], None, &[])).await;
+    let host = addr.to_string();
+    assert_eq!(
+        http(addr, "GET", "/api/state", &[("Host", &host)]).await.0,
+        403
+    );
 }
 
 #[tokio::test]
 async fn routes_that_run_things_on_this_machine_are_not_served() {
-    let addr = start(AppState::new(), &[], None, false).await;
+    let addr = start(AppState::new(), &[], None).await;
     let host = addr.to_string();
     let h = [("Host", host.as_str())];
     assert_eq!(http(addr, "POST", "/api/open", &h).await.0, 403);
@@ -152,18 +142,20 @@ async fn routes_that_run_things_on_this_machine_are_not_served() {
 }
 
 #[tokio::test]
-async fn sharing_toml_names_the_port_proxy_and_hosts() {
+async fn sharing_toml_names_the_bind_allow_port_proxy_and_hosts() {
     let dir = std::env::temp_dir().join(format!("canvasd-sharing-{}", uuid()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("sharing.toml"),
-        "[listener]\nport = 4100\nproxy = \"100.64.0.9\"\nhosts = [\"canvas.test\"]\n",
+        "[listener]\nport = 4100\nbind = \"127.0.0.1\"\nallow = [\"100.64.0.0/10\"]\nproxy = \"100.64.0.9\"\nhosts = [\"canvas.test\"]\n",
     )
     .unwrap();
     let state = AppState::open(&dir).await;
     let l = state.sharing.listener.clone().unwrap();
     assert_eq!((l.port, l.hosts), (4100, vec!["canvas.test".to_string()]));
     assert_eq!(l.proxy, Some("100.64.0.9".parse().unwrap()));
+    assert_eq!(l.bind, Some("127.0.0.1".parse().unwrap()));
+    assert_eq!(l.allow.unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -177,7 +169,7 @@ fn uuid() -> String {
 #[tokio::test]
 async fn a_shared_post_reaches_upstream_with_its_image_bytes() {
     let upstream = AppState::new();
-    let upstream_addr = start(upstream.clone(), &[], None, false).await;
+    let upstream_addr = start(upstream.clone(), &[], None).await;
 
     let local = AppState::new().with_sharing(Sharing {
         upstream: Some(format!("http://{upstream_addr}")),
@@ -259,7 +251,7 @@ async fn a_shared_post_reaches_upstream_with_its_image_bytes() {
 
 #[tokio::test]
 async fn an_artifact_pane_in_a_browser_reaches_its_files_errors_and_state_only() {
-    let addr = start(AppState::new(), &[], None, false).await;
+    let addr = start(AppState::new(), &[], None).await;
     let host = addr.to_string();
     let origin = format!("http://{host}");
     let pane = [("Host", host.as_str()), ("Origin", "null")];

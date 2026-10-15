@@ -226,15 +226,14 @@ async fn merges_the_upstream_stream_and_drops_it_when_the_link_is_lost() {
         .to_bytes();
     assert_eq!(bytes.as_ref(), png.as_slice());
 
-    // A peer on the tailnet listener is offered only this machine's own
+    // A peer on the network listener is offered only this machine's own
     // items, never the upstream's.
     let mut as_peer = Request::builder()
         .uri("/api/state")
         .body(Body::empty())
         .unwrap();
     as_peer.extensions_mut().insert(canvasd::listener::Caller {
-        login: "peer@example".into(),
-        node: "peer".into(),
+        ip: "100.64.0.7".parse().unwrap(),
     });
     let peer_view: StateResponse =
         json_body(build_router(local.clone()).oneshot(as_peer).await.unwrap()).await;

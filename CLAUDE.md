@@ -24,7 +24,8 @@ beside the terminal all day.
   `sharing.toml unreadable` and shares nothing): `upstream` (base URL),
   `[timeline]` and `[artifacts]` with `include`/`exclude` globs (`*` stops at
   `/`, `**` doesn't, leading `~/`; exclude wins; no include shares nothing),
-  and `[listener]` with `port`, `proxy` and `hosts`. A new post whose git root
+  and `[listener]` with `port`, `bind` (the one address it listens on), `allow`
+  (IPs or CIDRs admitted as callers), `proxy` and `hosts`. A new post whose git root
   (else cwd) matches a timeline rule is forwarded after the local reply, as bytes:
   each stored image to the upstream's `POST /api/media`, then the post to its
   `POST /api/posts` (logged `post forwarded` or `post forward failed`; the local
@@ -37,10 +38,11 @@ beside the terminal all day.
   Beyond the reads, the listener serves an artifact pane's `POST
   /api/artifacts/:id/errors`, `GET .../state` and `PUT .../state/:key`, and an
   `Origin: null` read of `/artifacts/` (the pane's module scripts); an artifact
-  page's CSP names the request's `Host` beside `canvas://localhost`. The listener asks Tailscale through the `tailscale`
-  CLI (`TailscaleCli`: `status --json`, `whois --json`), retries its bind every
-  30s while Tailscale is down (`listener not started`), and logs each refusal
-  as `listener refused` with the reason.
+  page's CSP names the request's `Host` beside `canvas://localhost`. A listener without `bind` or without `allow` is
+  logged once as `listener not started` with the reason and never retried; a bind
+  that fails is retried every 30s. `listener started` logs the bind address and
+  port, and each refusal is logged as `listener refused` with the reason, the peer
+  and the caller IP.
   A daemon with an `upstream` also merges that canvasd's stream in
   (`canvasd/src/upstream.rs`): `canvas daemon` spawns one link that opens the
   upstream's `/api/events`, then reads its `/api/state` (so no change between
@@ -861,11 +863,11 @@ beside the terminal all day.
   and never follow a symlink for `canvas-data` or a key file.
 - The 0600 socket is canvasd's own door and its routes carry no Host or Origin
   checks. The one network listener (ADR-0006, `canvasd/src/listener.rs`) is plain
-  HTTP on the machine's Tailscale address and the `sharing.toml` `[listener]`
-  port, started only when that table exists, and every request passes its guard:
-  Host and Origin must be this machine's tailnet name or address or in `hosts`,
-  the caller (the TCP peer, or the last `X-Forwarded-For` address when the peer is
-  `proxy`) must be named by Tailscale WhoIs, and only reads (not under `/api`
+  HTTP on the `sharing.toml` `[listener]` `bind` address and `port`, started only
+  when that table has both `bind` and `allow`, and every request passes its guard:
+  Host and Origin must be the bind address (with or without the port) or in
+  `hosts`, the caller (the TCP peer, or the last `X-Forwarded-For` address when the
+  peer is `proxy`) must be inside `allow` (empty admits nothing), and only reads (not under `/api`
   except `state`, `events`, `cards/`) plus `POST /api/posts` and `/api/media` are
   served, plus the three routes an artifact pane in a browser needs (its script
   errors, and its state read and written one key at a time) and an `Origin: null`
