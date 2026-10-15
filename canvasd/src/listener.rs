@@ -52,8 +52,11 @@ impl TailscaleCli {
         } else {
             "tailscale"
         };
+        // With XPC_SERVICE_NAME set, as launchd sets it for canvasd's agent,
+        // the binary runs as the GUI app and prints no JSON.
         let mut child = std::process::Command::new(bin)
             .args(args)
+            .env_remove("XPC_SERVICE_NAME")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
